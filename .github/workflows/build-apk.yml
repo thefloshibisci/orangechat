@@ -41,6 +41,8 @@ jobs:
 
       - name: Allow Gradle to run
         run: chmod +x gradlew
+      - name: Create debug signing key
+        run: keytool -genkeypair -keystore app/debug.keystore -storepass android -alias androiddebugkey -keypass android -dname "CN=Android Debug,O=Android,C=US" -keyalg RSA -keysize 2048 -validity 10000
 
       - name: Build APK
         run: ./gradlew assembleDebug
