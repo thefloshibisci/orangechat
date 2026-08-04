@@ -13,6 +13,8 @@ jobs:
     steps:
       - name: Download source code
         uses: actions/checkout@v4
+      - name: Download color utilities
+        run: git submodule update --init --depth 1 material3/material-color-utilities
 
       - name: Install pnpm
         uses: pnpm/action-setup@v4
