@@ -22,9 +22,12 @@ private const val TIME_GAP_THRESHOLD_SECONDS = 300L // 5 分钟
 /**
  * 时间提醒注入转换器
  *
- * 首次用户消息仍会注入当前时间。
- * 当用户在上一条 assistant 消息完成 5 分钟或更久后回复时，
- * 额外注入精确到秒的时间间隔，帮助 AI 自然理解时间流逝。
+ * 首次用户消息仍会注入当时的时间。
+ * 仅检查当前上下文里最新一条用户消息：当它在上一条 assistant 消息完成
+ * 5 分钟或更久后发出时，额外注入精确到秒的时间间隔。
+ *
+ * 只处理最新一次回复间隔，避免把历史中的每段长间隔重复注入，
+ * 从而减少额外 token 消耗，也避免模型反复关注已经过去的等待时间。
  */
 object TimeReminderTransformer : InputMessageTransformer {
     override suspend fun transform(
@@ -37,34 +40,49 @@ object TimeReminderTransformer : InputMessageTransformer {
 }
 
 internal fun applyTimeReminder(messages: List<UIMessage>): List<UIMessage> {
-    val result = mutableListOf<UIMessage>()
+    val firstUserIndex = messages.indexOfFirst { it.role == MessageRole.USER }
+    if (firstUserIndex == -1) return messages
+
+    val latestUserIndex = messages.indexOfLast { it.role == MessageRole.USER }
     val tz = TimeZone.currentSystemDefault()
 
-    var firstUserFound = false
-    for (i in messages.indices) {
-        val current = messages[i]
-        if (current.role == MessageRole.USER) {
-            val currInstant = current.createdAt.toInstant(tz)
+    val firstUserReminder = buildTimeReminderMessage(
+        gapSeconds = null,
+        instant = messages[firstUserIndex].createdAt.toInstant(tz),
+    )
 
-            if (!firstUserFound) {
-                firstUserFound = true
-                result.add(buildTimeReminderMessage(null, currInstant))
+    val latestReplyReminder = if (latestUserIndex > firstUserIndex) {
+        val latestUser = messages[latestUserIndex]
+        val previous = messages.getOrNull(latestUserIndex - 1)
+
+        if (previous?.role == MessageRole.ASSISTANT) {
+            val latestUserInstant = latestUser.createdAt.toInstant(tz)
+            val previousEndInstant = (previous.finishedAt ?: previous.createdAt).toInstant(tz)
+            val gapSeconds = (latestUserInstant - previousEndInstant).inWholeSeconds
+
+            if (gapSeconds >= TIME_GAP_THRESHOLD_SECONDS) {
+                buildTimeReminderMessage(gapSeconds, latestUserInstant)
             } else {
-                val previous = messages.getOrNull(i - 1)
-                if (previous?.role == MessageRole.ASSISTANT) {
-                    val previousEnd = (previous.finishedAt ?: previous.createdAt).toInstant(tz)
-                    val gapSeconds = (currInstant - previousEnd).inWholeSeconds
-
-                    if (gapSeconds >= TIME_GAP_THRESHOLD_SECONDS) {
-                        result.add(buildTimeReminderMessage(gapSeconds, currInstant))
-                    }
-                }
+                null
             }
+        } else {
+            null
         }
-        result.add(current)
+    } else {
+        null
     }
 
-    return result
+    return buildList(messages.size + 2) {
+        messages.forEachIndexed { index, message ->
+            if (index == firstUserIndex) {
+                add(firstUserReminder)
+            }
+            if (index == latestUserIndex && latestReplyReminder != null) {
+                add(latestReplyReminder)
+            }
+            add(message)
+        }
+    }
 }
 
 private fun buildTimeReminderMessage(gapSeconds: Long?, instant: Instant): UIMessage {
