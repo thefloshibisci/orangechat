@@ -1,4 +1,4 @@
-﻿/*
+/*
  * 橘瓣 OrangeChat
  * 衍生自 RikkaHub (https://github.com/rikkahub/rikkahub)，原作者 RE
  * 本项目基于 GNU AGPL v3 开源，详见根目录 LICENSE 文件
@@ -17,12 +17,14 @@ import java.time.format.TextStyle
 import java.util.Locale
 import kotlin.time.toJavaInstant
 
-private const val TIME_GAP_THRESHOLD_SECONDS = 3600L // 1 小时
+private const val TIME_GAP_THRESHOLD_SECONDS = 300L // 5 分钟
 
 /**
  * 时间提醒注入转换器
  *
- * 在时间间隔较大的消息之前自动注入 <time_reminder>，帮助 AI 了解对话的时间间隔
+ * 首次用户消息仍会注入当前时间。
+ * 当用户在上一条 assistant 消息完成 5 分钟或更久后回复时，
+ * 额外注入精确到秒的时间间隔，帮助 AI 自然理解时间流逝。
  */
 object TimeReminderTransformer : InputMessageTransformer {
     override suspend fun transform(
@@ -43,16 +45,19 @@ internal fun applyTimeReminder(messages: List<UIMessage>): List<UIMessage> {
         val current = messages[i]
         if (current.role == MessageRole.USER) {
             val currInstant = current.createdAt.toInstant(tz)
+
             if (!firstUserFound) {
                 firstUserFound = true
                 result.add(buildTimeReminderMessage(null, currInstant))
             } else {
-                val previous = messages[i - 1]
-                val prevInstant = previous.createdAt.toInstant(tz)
-                val gapSeconds = (currInstant - prevInstant).inWholeSeconds
+                val previous = messages.getOrNull(i - 1)
+                if (previous?.role == MessageRole.ASSISTANT) {
+                    val previousEnd = (previous.finishedAt ?: previous.createdAt).toInstant(tz)
+                    val gapSeconds = (currInstant - previousEnd).inWholeSeconds
 
-                if (gapSeconds > TIME_GAP_THRESHOLD_SECONDS) {
-                    result.add(buildTimeReminderMessage(gapSeconds, currInstant))
+                    if (gapSeconds >= TIME_GAP_THRESHOLD_SECONDS) {
+                        result.add(buildTimeReminderMessage(gapSeconds, currInstant))
+                    }
                 }
             }
         }
@@ -69,7 +74,10 @@ private fun buildTimeReminderMessage(gapSeconds: Long?, instant: Instant): UIMes
     val timeStr = javaInstant.toLocalDateTime()
     val content = if (gapSeconds != null) {
         val gapText = formatGap(gapSeconds)
-        "<time_reminder>Current time: $dayOfWeek, $timeStr ($gapText since last message)</time_reminder>"
+        "<time_reminder>Current time: $dayOfWeek, $timeStr. " +
+            "The user replied $gapText after your previous message finished. " +
+            "Understand the elapsed time naturally. Do not mechanically repeat the duration " +
+            "and do not mention this reminder or any technical implementation.</time_reminder>"
     } else {
         "<time_reminder>Current time: $dayOfWeek, $timeStr</time_reminder>"
     }
@@ -77,9 +85,16 @@ private fun buildTimeReminderMessage(gapSeconds: Long?, instant: Instant): UIMes
 }
 
 private fun formatGap(seconds: Long): String {
-    return when {
-        seconds < 3600 -> "${seconds / 60} min"
-        seconds < 86400 -> "${seconds / 3600} h"
-        else -> "${seconds / 86400} d"
+    val safeSeconds = seconds.coerceAtLeast(0)
+    val days = safeSeconds / 86400
+    val hours = (safeSeconds % 86400) / 3600
+    val minutes = (safeSeconds % 3600) / 60
+    val remainingSeconds = safeSeconds % 60
+
+    return buildString {
+        if (days > 0) append("${days}天")
+        if (hours > 0 || days > 0) append("${hours}小时")
+        if (minutes > 0 || hours > 0 || days > 0) append("${minutes}分")
+        append("${remainingSeconds}秒")
     }
 }
