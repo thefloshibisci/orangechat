@@ -337,6 +337,18 @@ private fun ChatPageContent(
                         }
                         inputState.clearInput()
                     },
+                    onStickerSend = { markdown ->
+                        if (currentChatModel == null) {
+                            toaster.show("请先选择模型", type = ToastType.Error)
+                            return@ChatInput
+                        }
+                        vm.handleMessageSend(
+                            listOf(UIMessagePart.Text(markdown))
+                        )
+                        scope.launch {
+                            chatListState.requestScrollToItem(conversation.currentMessages.size + 5)
+                        }
+                    },
                     onVoiceMessage = { url, duration, transcript ->
                         if (currentChatModel == null) {
                             toaster.show("请先选择模型", type = ToastType.Error)
