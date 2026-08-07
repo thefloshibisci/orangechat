@@ -245,14 +245,19 @@ fun ChatPage(id: Uuid, text: String?, files: List<Uri>, nodeId: Uuid? = null, au
                     modifier = Modifier
                         .fillMaxSize()
                         .graphicsLayer {
-                            translationX = 34.dp.toPx() * drawerProgress
-                            scaleX = 1f - (0.075f * drawerProgress)
+                            // Rotate around the vertical axis instead of simply
+                            // tilting the page in 2D. The left edge acts like a
+                            // hinge so the conversation visually faces the drawer.
+                            translationX = 56.dp.toPx() * drawerProgress
+                            scaleX = 1f - (0.09f * drawerProgress)
                             scaleY = 1f - (0.075f * drawerProgress)
-                            rotationZ = 1.4f * drawerProgress
-                            transformOrigin = TransformOrigin(0.12f, 0.5f)
+                            rotationY = -11.5f * drawerProgress
+                            rotationZ = 0.2f * drawerProgress
+                            cameraDistance = 18f * density
+                            transformOrigin = TransformOrigin(0f, 0.5f)
                             shape = chatCardShape
                             clip = drawerProgress > 0.001f
-                            shadowElevation = 22.dp.toPx() * drawerProgress
+                            shadowElevation = 28.dp.toPx() * drawerProgress
                         }
                 ) {
                     ChatPageContent(

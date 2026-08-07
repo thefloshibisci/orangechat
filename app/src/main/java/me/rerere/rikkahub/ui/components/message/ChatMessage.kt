@@ -56,7 +56,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -729,20 +728,31 @@ private fun BubbleSurface(
     val hasImage = imagePath.isNotBlank() && java.io.File(imagePath).exists()
     val glassStyleEnabled = LocalDisplaySettings.current.enableGlassCardsAndBubbles
     val bubbleShape = RoundedCornerShape(cornerRadius)
-    val glassOutline = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.075f)
-    if (hasImage) {
+
+    if (glassStyleEnabled) {
+        // Glass mode replaces the original bubble instead of decorating it.
+        // This avoids the opaque bubble + glass layer "double bubble" effect.
         Box(
             modifier = Modifier
                 .animateContentSize()
-                .then(if (glassStyleEnabled) Modifier.shadow(4.dp, bubbleShape) else Modifier)
                 .clip(bubbleShape)
-                .then(
-                    if (glassStyleEnabled) Modifier.border(
-                        1.dp,
-                        Color.White.copy(alpha = 0.14f),
-                        bubbleShape,
-                    ) else Modifier
+                .background(color.copy(alpha = minOf(bubbleAlpha, 0.30f)))
+                .border(
+                    width = 1.dp,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.10f),
+                    shape = bubbleShape,
                 )
+                .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
+        ) {
+            Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 9.dp)) {
+                content()
+            }
+        }
+    } else if (hasImage) {
+        Box(
+            modifier = Modifier
+                .animateContentSize()
+                .clip(bubbleShape)
                 .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
         ) {
             AsyncImage(
@@ -758,38 +768,16 @@ private fun BubbleSurface(
                         .background(color.copy(alpha = bubbleAlpha))
                 )
             }
-            Column(
-                modifier = if (glassStyleEnabled) {
-                    Modifier.padding(horizontal = 10.dp, vertical = 9.dp)
-                } else {
-                    Modifier.padding(8.dp)
-                }
-            ) { content() }
+            Column(modifier = Modifier.padding(8.dp)) { content() }
         }
     } else {
         Surface(
-            modifier = Modifier
-                .animateContentSize()
-                .then(
-                    if (glassStyleEnabled) {
-                        Modifier
-                            .shadow(3.dp, bubbleShape)
-                            .border(1.dp, glassOutline, bubbleShape)
-                    } else {
-                        Modifier
-                    }
-                ),
+            modifier = Modifier.animateContentSize(),
             shape = bubbleShape,
             color = color.copy(alpha = bubbleAlpha),
             onClick = onClick ?: {},
         ) {
-            Column(
-                modifier = if (glassStyleEnabled) {
-                    Modifier.padding(horizontal = 10.dp, vertical = 9.dp)
-                } else {
-                    Modifier.padding(8.dp)
-                }
-            ) { content() }
+            Column(modifier = Modifier.padding(8.dp)) { content() }
         }
     }
 }
