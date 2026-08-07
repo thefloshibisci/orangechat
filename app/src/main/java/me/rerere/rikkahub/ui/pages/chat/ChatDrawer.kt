@@ -8,6 +8,8 @@ package me.rerere.rikkahub.ui.pages.chat
 
 import androidx.activity.ComponentActivity
 import android.graphics.BitmapFactory
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -28,6 +30,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -41,6 +44,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.material3.adaptive.currentWindowDpSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -53,6 +57,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -61,6 +67,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.unit.dp
+import dev.chrisbanes.haze.HazeState
+import dev.chrisbanes.haze.hazeEffect
+import dev.chrisbanes.haze.materials.HazeMaterials
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.paging.compose.collectAsLazyPagingItems
 import kotlinx.coroutines.flow.collectLatest
@@ -116,6 +125,7 @@ fun ChatDrawerContent(
     vm: ChatVM,
     settings: Settings,
     current: Conversation,
+    hazeState: HazeState,
 ) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
@@ -176,8 +186,46 @@ fun ChatDrawerContent(
     // Menu popup 状态
     var showMenuPopup by remember { mutableStateOf(false) }
 
+    val glassDrawerEnabled = settings.displaySetting.enableGlassDrawer
+    val drawerShape = if (glassDrawerEnabled) {
+        RoundedCornerShape(topEnd = 30.dp, bottomEnd = 30.dp)
+    } else {
+        RoundedCornerShape(topEnd = 16.dp, bottomEnd = 16.dp)
+    }
+    val windowWidth = currentWindowDpSize().width
+    val drawerWidth = if (glassDrawerEnabled) {
+        (windowWidth * 0.78f).coerceAtMost(340.dp)
+    } else {
+        300.dp
+    }
+    val glassTint = MaterialTheme.colorScheme.surface.copy(alpha = 0.78f)
+    val glassBorder = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)
+
     ModalDrawerSheet(
-        modifier = Modifier.width(300.dp)
+        modifier = Modifier
+            .width(drawerWidth)
+            .then(
+                if (glassDrawerEnabled) {
+                    Modifier
+                        .shadow(
+                            elevation = 28.dp,
+                            shape = drawerShape,
+                            ambientColor = Color.Black.copy(alpha = 0.22f),
+                            spotColor = Color.Black.copy(alpha = 0.28f),
+                        )
+                        .clip(drawerShape)
+                        .hazeEffect(
+                            state = hazeState,
+                            style = HazeMaterials.ultraThin(containerColor = glassTint),
+                        )
+                        .border(1.dp, glassBorder, drawerShape)
+                } else {
+                    Modifier
+                }
+            ),
+        drawerShape = drawerShape,
+        drawerContainerColor = if (glassDrawerEnabled) Color.Transparent else MaterialTheme.colorScheme.surface,
+        drawerTonalElevation = if (glassDrawerEnabled) 0.dp else 1.dp,
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
             // 侧边栏背景图（最底层）
@@ -199,6 +247,24 @@ fun ChatDrawerContent(
                         )
                     }
                 }
+            }
+
+            // A very soft highlight makes the translucent panel read as glass
+            // on both light and dark themes without replacing the user's theme.
+            if (glassDrawerEnabled) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(
+                            Brush.linearGradient(
+                                colors = listOf(
+                                    Color.White.copy(alpha = 0.10f),
+                                    Color.Transparent,
+                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.035f),
+                                )
+                            )
+                        )
+                )
             }
 
             Column(
@@ -291,6 +357,7 @@ fun ChatDrawerContent(
                 conversationJobs = conversationJobs.keys,
                 listState = conversationListState,
                 drawerItemAlpha = settings.displaySetting.drawerItemAlpha,
+                glassStyleEnabled = settings.displaySetting.enableGlassCardsAndBubbles,
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f),

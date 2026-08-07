@@ -681,6 +681,10 @@ data class DisplaySetting(
     val enableAutoScroll: Boolean = true,
     val enableLatexRendering: Boolean = true,
     val enableBlurEffect: Boolean = false,
+    // 可独立启用的水玻璃界面效果，默认关闭以保持原有体验
+    val enableGlassDrawer: Boolean = false,
+    val enableDrawerCardTransform: Boolean = false,
+    val enableGlassCardsAndBubbles: Boolean = false,
     val chatFontFamily: ChatFontFamily = ChatFontFamily.DEFAULT,
     val enableVolumeKeyScroll: Boolean = false,
     val volumeKeyScrollRatio: Float = 1.0f,

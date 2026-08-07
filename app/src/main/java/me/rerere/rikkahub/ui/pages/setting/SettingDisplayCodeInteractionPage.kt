@@ -112,6 +112,51 @@ fun SettingDisplayCodeInteractionPage(vm: SettingVM = koinViewModel()) {
                 }
             }
 
+            // 水玻璃视觉效果（均为独立开关）
+            item {
+                CardGroup(
+                    modifier = Modifier.padding(horizontal = 8.dp),
+                    title = { Text("水玻璃视觉效果") },
+                ) {
+                    item(
+                        headlineContent = { Text("侧边栏水玻璃") },
+                        supportingContent = { Text("开启磨砂、半透明、亮边和柔和阴影") },
+                        trailingContent = {
+                            Switch(
+                                checked = displaySetting.enableGlassDrawer,
+                                onCheckedChange = {
+                                    updateDisplaySetting(displaySetting.copy(enableGlassDrawer = it))
+                                }
+                            )
+                        },
+                    )
+                    item(
+                        headlineContent = { Text("聊天页卡片动效") },
+                        supportingContent = { Text("打开侧边栏时，聊天页右移、缩小并轻微倾斜") },
+                        trailingContent = {
+                            Switch(
+                                checked = displaySetting.enableDrawerCardTransform,
+                                onCheckedChange = {
+                                    updateDisplaySetting(displaySetting.copy(enableDrawerCardTransform = it))
+                                }
+                            )
+                        },
+                    )
+                    item(
+                        headlineContent = { Text("玻璃气泡与会话卡片") },
+                        supportingContent = { Text("为聊天气泡和侧边栏会话增加玻璃描边与悬浮感") },
+                        trailingContent = {
+                            Switch(
+                                checked = displaySetting.enableGlassCardsAndBubbles,
+                                onCheckedChange = {
+                                    updateDisplaySetting(displaySetting.copy(enableGlassCardsAndBubbles = it))
+                                }
+                            )
+                        },
+                    )
+                }
+            }
+
             // 交互与通知设置
             item {
                 CardGroup(
