@@ -21,7 +21,19 @@ data class WorkflowAction(
     val args: JsonObject,
     /** Per-action timeout, 1..600s. Default 60. */
     val timeoutSeconds: Int = 60,
+    /** Optional name used by later actions as {{name}}. */
+    val outputVariable: String? = null,
+    /** What to do when this action fails after all retries. */
+    val onError: WorkflowActionErrorPolicy = WorkflowActionErrorPolicy.STOP,
+    /** Additional attempts after the first one. */
+    val retryCount: Int = 0,
 )
+
+@Serializable
+enum class WorkflowActionErrorPolicy {
+    STOP,
+    CONTINUE,
+}
 
 /**
  * Outcome of one workflow fire.
@@ -89,6 +101,7 @@ object WorkflowConstants {
     const val MAX_ACTIONS = 32
     const val MIN_ACTION_TIMEOUT_S = 1
     const val MAX_ACTION_TIMEOUT_S = 600
+    const val MAX_ACTION_RETRIES = 5
     const val MAX_COOLDOWN_S = 24 * 60 * 60 // 24h
     const val MAX_RUNS_PER_DAY_FLOOR = 1
     const val MAX_RUNS_PER_DAY_CEIL = 1000

@@ -14,6 +14,11 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.put
 import me.rerere.ai.core.Tool
 import me.rerere.rikkahub.data.ai.tools.HardlineCommandGuard
@@ -23,6 +28,7 @@ import me.rerere.rikkahub.data.security.SecurityAuditRepository
 import me.rerere.rikkahub.workflow.condition.ConditionEvaluator
 import me.rerere.rikkahub.workflow.condition.ContextProvider
 import me.rerere.rikkahub.workflow.model.WorkflowAction
+import me.rerere.rikkahub.workflow.model.WorkflowActionErrorPolicy
 import me.rerere.rikkahub.workflow.model.WorkflowDefinition
 import me.rerere.rikkahub.workflow.model.WorkflowRunStatus
 import me.rerere.rikkahub.workflow.repository.WorkflowRepository
@@ -387,8 +393,10 @@ class WorkflowActionRunner {
 
     suspend fun run(actions: List<WorkflowAction>, availableTools: List<Tool>): RunResult {
         val outputs = mutableListOf<String>()
+        val variables = mutableMapOf<String, String>()
         for ((idx, action) in actions.withIndex()) {
-            val argsJson = action.args.toString()
+            val resolvedArgs = resolveVariables(action.args, variables) as JsonObject
+            val argsJson = resolvedArgs.toString()
             val hardlineReason = HardlineCommandGuard.checkTool(action.tool, argsJson)
             if (hardlineReason != null) {
                 logSafe("workflow hardline-blocked action $idx tool=${action.tool}: $hardlineReason")
@@ -398,30 +406,50 @@ class WorkflowActionRunner {
             }
             val tool = availableTools.find { it.name == action.tool }
                 ?: return RunResult(false, "action $idx: unknown_tool:${action.tool}", outputs.joinToString("\n"))
-            val out = try {
-                withTimeoutOrNull(action.timeoutSeconds * 1000L) { tool.execute(action.args) }
-            } catch (c: kotlinx.coroutines.CancellationException) {
-                // Don't swallow cancellation — re-throw so structured concurrency can
-                // unwind the fire (e.g. the engine scope is cancelled on shutdown). The
-                // generic catch below would otherwise turn it into a spurious FAILED row.
-                throw c
-            } catch (t: Throwable) {
-                logSafe("workflow action $idx tool=${action.tool} threw: ${t.message}")
-                return RunResult(false,
-                    "action $idx: ${t::class.simpleName}: ${t.message.orEmpty()}".take(500),
-                    outputs.joinToString("\n"))
+            var out: List<me.rerere.ai.ui.UIMessagePart>? = null
+            var lastError: String? = null
+            for (attempt in 0..action.retryCount) {
+                try {
+                    out = withTimeoutOrNull(action.timeoutSeconds * 1000L) {
+                        tool.execute(resolvedArgs)
+                    }
+                    lastError = if (out == null) {
+                        "${action.tool} exceeded ${action.timeoutSeconds}s"
+                    } else null
+                } catch (c: kotlinx.coroutines.CancellationException) {
+                    throw c
+                } catch (t: Throwable) {
+                    lastError = "${t::class.simpleName}: ${t.message.orEmpty()}".take(500)
+                    logSafe("workflow action $idx attempt $attempt tool=${action.tool} threw: ${t.message}")
+                }
+                if (out != null) break
             }
-            if (out == null) {
-                return RunResult(false,
-                    "action $idx: ${action.tool} exceeded ${action.timeoutSeconds}s",
-                    outputs.joinToString("\n"))
+            val completedOut = out
+            if (completedOut == null) {
+                outputs += "[$idx] ${action.tool}: FAILED ${lastError.orEmpty()}"
+                if (action.onError == WorkflowActionErrorPolicy.CONTINUE) continue
+                return RunResult(false, "action $idx: ${lastError.orEmpty()}", outputs.joinToString("\n"))
             }
             // Surface the first ~200 chars of the tool's text output for the run history.
-            val text = out.filterIsInstance<me.rerere.ai.ui.UIMessagePart.Text>()
+            val text = completedOut.filterIsInstance<me.rerere.ai.ui.UIMessagePart.Text>()
                 .joinToString("\n") { it.text }
             outputs += "[$idx] ${action.tool}: ${text.take(200)}"
+            action.outputVariable?.takeIf { it.isNotBlank() }?.let { variables[it] = text }
         }
         return RunResult(true, null, outputs.joinToString("\n").take(2000))
+    }
+
+    internal fun resolveVariables(element: JsonElement, variables: Map<String, String>): JsonElement = when (element) {
+        is JsonObject -> JsonObject(element.mapValues { (_, value) -> resolveVariables(value, variables) })
+        is JsonArray -> JsonArray(element.map { resolveVariables(it, variables) })
+        is JsonPrimitive -> {
+            if (!element.isString) element else {
+                var value = element.contentOrNull.orEmpty()
+                VARIABLE_PATTERN.replace(value) { match -> variables[match.groupValues[1]] ?: match.value }
+                    .let(::JsonPrimitive)
+            }
+        }
+        else -> element
     }
 
     /**
@@ -432,5 +460,8 @@ class WorkflowActionRunner {
         runCatching { Log.w(TAG, msg) }
     }
 
-    companion object { private const val TAG = "WorkflowActionRunner" }
+    companion object {
+        private const val TAG = "WorkflowActionRunner"
+        private val VARIABLE_PATTERN = Regex("\\{\\{\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*}}")
+    }
 }

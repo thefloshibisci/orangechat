@@ -101,9 +101,11 @@ fun workflowCreateTool(
         means "when NOT on that WiFi", is_charging with invert:true means "only if NOT
         charging". Works for every condition type.
 
-        ACTIONS: each is { tool: <existing tool name>, args: { ... }, timeout_seconds?: int }.
-        Use any tool currently registered for this assistant. workflow_run is NOT allowed
-        as an action (no chaining in v1).
+        ACTIONS: each is { tool: <existing tool name>, args: { ... }, timeout_seconds?: int,
+        output_variable?: string, retry_count?: 0..5, on_error?: "stop"|"continue" }.
+        A text output saved with output_variable can be inserted into later string arguments
+        as {{variable_name}}. Use any tool currently registered for this assistant.
+        workflow_run is NOT allowed as an action (no chaining in v1).
     """.trimIndent(),
     parameters = {
         InputSchema.Obj(

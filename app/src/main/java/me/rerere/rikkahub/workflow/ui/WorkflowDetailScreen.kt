@@ -39,11 +39,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
-import me.rerere.rikkahub.Screen
 import me.rerere.rikkahub.ui.components.nav.BackButton
 import me.rerere.rikkahub.ui.context.LocalNavController
 import me.rerere.rikkahub.ui.theme.CustomColors
-import me.rerere.rikkahub.utils.base64Encode
 import me.rerere.rikkahub.utils.plus
 import me.rerere.rikkahub.workflow.model.WorkflowAction
 import me.rerere.rikkahub.workflow.model.WorkflowRun
@@ -64,6 +62,7 @@ fun WorkflowDetailScreen(
     var loaded by remember { mutableStateOf<Loaded?>(null) }
     var history by remember { mutableStateOf<List<WorkflowRun>>(emptyList()) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
+    var showEditor by remember { mutableStateOf(false) }
 
     LaunchedEffect(workflowId) {
         loaded = vm.get(workflowId)
@@ -112,6 +111,21 @@ fun WorkflowDetailScreen(
         )
     }
 
+    if (showEditor) {
+        WorkflowEditorDialog(
+            definition = currentLoaded.definition,
+            onDismiss = { showEditor = false },
+            onSave = { updated ->
+                scope.launch {
+                    vm.save(updated)
+                    loaded = vm.get(workflowId)
+                    showEditor = false
+                    snackbarHostState.showSnackbar("工作流已保存")
+                }
+            },
+        )
+    }
+
     Scaffold(
         topBar = {
             LargeFlexibleTopAppBar(
@@ -127,30 +141,41 @@ fun WorkflowDetailScreen(
                 tonalElevation = 3.dp,
                 color = CustomColors.topBarColors.containerColor,
             ) {
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 16.dp, vertical = 10.dp),
                 ) {
-                    Button(onClick = {
-                        scope.launch {
-                            val outcome = vm.runNow(currentLoaded.entity.id)
-                            history = vm.history(currentLoaded.entity.id)
-                            loaded = vm.get(currentLoaded.entity.id)
-                            snackbarHostState.showSnackbar("运行结束：${outcome.status.name}")
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(onClick = {
+                            scope.launch {
+                                val outcome = vm.runNow(currentLoaded.entity.id)
+                                history = vm.history(currentLoaded.entity.id)
+                                loaded = vm.get(currentLoaded.entity.id)
+                                snackbarHostState.showSnackbar("运行结束：${outcome.status.name}")
+                            }
+                        }) { Text("立即运行") }
+                        TextButton(onClick = { showEditor = true }) { Text("编辑步骤") }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        TextButton(onClick = {
+                            scope.launch {
+                                val newId = vm.duplicate(currentLoaded.entity.id) ?: return@launch
+                                nav.navigate(me.rerere.rikkahub.Screen.WorkflowDetail(newId))
+                            }
+                        }) { Text("复制") }
+                        TextButton(onClick = {
+                            scope.launch {
+                                val json = vm.exportJson(currentLoaded.entity.id) ?: return@launch
+                                val clipboard = ctx.getSystemService(android.content.ClipboardManager::class.java)
+                                clipboard?.setPrimaryClip(android.content.ClipData.newPlainText("OrangeChat 工作流", json))
+                                snackbarHostState.showSnackbar("工作流 JSON 已复制")
+                            }
+                        }) { Text("导出") }
+                        TextButton(onClick = { showDeleteConfirm = true }) {
+                            Text("删除", color = MaterialTheme.colorScheme.error)
                         }
-                    }) { Text("立即运行") }
-                    TextButton(onClick = {
-                        nav.navigate(
-                            Screen.Chat(
-                                id = kotlin.uuid.Uuid.random().toString(),
-                                text = "帮我修改工作流「${currentLoaded.entity.name}」".base64Encode(),
-                            )
-                        )
-                    }) { Text("编辑") }
-                    TextButton(onClick = { showDeleteConfirm = true }) {
-                        Text("删除", color = MaterialTheme.colorScheme.error)
                     }
                 }
             }
@@ -255,6 +280,17 @@ private fun ActionRow(index: Int, action: WorkflowAction) {
             Text(" (${action.timeoutSeconds}s)", style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(start = 4.dp))
+        }
+        val extras = buildList {
+            action.outputVariable?.let { add("输出 → {{$it}}") }
+            if (action.retryCount > 0) add("失败重试 ${action.retryCount} 次")
+            if (action.onError == me.rerere.rikkahub.workflow.model.WorkflowActionErrorPolicy.CONTINUE) {
+                add("失败后继续")
+            }
+        }
+        if (extras.isNotEmpty()) {
+            Text(extras.joinToString(" · "), style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.primary)
         }
         if (action.args.isNotEmpty()) {
             TextButton(onClick = { expanded = !expanded },

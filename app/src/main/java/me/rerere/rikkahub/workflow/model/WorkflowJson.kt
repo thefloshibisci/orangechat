@@ -156,7 +156,24 @@ object WorkflowJson {
                 return ParseResult.Err("invalid_timeout",
                     "action $idx timeout_seconds must be ${WorkflowConstants.MIN_ACTION_TIMEOUT_S}..${WorkflowConstants.MAX_ACTION_TIMEOUT_S}")
             }
-            actions += WorkflowAction(tool = toolName, args = args, timeoutSeconds = timeout)
+            val outputVariable = ao["output_variable"]?.jsonPrimitive?.contentOrNull
+                ?.trim()?.takeIf { it.matches(Regex("[A-Za-z_][A-Za-z0-9_]{0,63}")) }
+            val onError = ao["on_error"]?.jsonPrimitive?.contentOrNull
+                ?.uppercase()?.let { runCatching { WorkflowActionErrorPolicy.valueOf(it) }.getOrNull() }
+                ?: WorkflowActionErrorPolicy.STOP
+            val retryCount = ao["retry_count"]?.jsonPrimitive?.intOrNull ?: 0
+            if (retryCount !in 0..WorkflowConstants.MAX_ACTION_RETRIES) {
+                return ParseResult.Err("invalid_retry_count",
+                    "action $idx retry_count must be 0..${WorkflowConstants.MAX_ACTION_RETRIES}")
+            }
+            actions += WorkflowAction(
+                tool = toolName,
+                args = args,
+                timeoutSeconds = timeout,
+                outputVariable = outputVariable,
+                onError = onError,
+                retryCount = retryCount,
+            )
         }
 
         val cooldown = obj["cooldown_seconds"]?.jsonPrimitive?.intOrNull ?: 0
@@ -215,6 +232,11 @@ object WorkflowJson {
                         put("tool", JsonPrimitive(a.tool))
                         put("args", a.args)
                         put("timeout_seconds", JsonPrimitive(a.timeoutSeconds))
+                        if (a.outputVariable != null) {
+                            put("output_variable", JsonPrimitive(a.outputVariable))
+                        }
+                        put("on_error", JsonPrimitive(a.onError.name.lowercase()))
+                        put("retry_count", JsonPrimitive(a.retryCount))
                     })
                 }
             })
@@ -257,7 +279,21 @@ object WorkflowJson {
             val toolName = ao["tool"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
             val args = ao["args"] as? JsonObject ?: buildJsonObject { }
             val timeout = ao["timeout_seconds"]?.jsonPrimitive?.intOrNull ?: 60
-            WorkflowAction(tool = toolName, args = args, timeoutSeconds = timeout)
+            val outputVariable = ao["output_variable"]?.jsonPrimitive?.contentOrNull
+                ?.trim()?.takeIf { it.isNotEmpty() }
+            val onError = ao["on_error"]?.jsonPrimitive?.contentOrNull
+                ?.uppercase()?.let { runCatching { WorkflowActionErrorPolicy.valueOf(it) }.getOrNull() }
+                ?: WorkflowActionErrorPolicy.STOP
+            val retryCount = (ao["retry_count"]?.jsonPrimitive?.intOrNull ?: 0)
+                .coerceIn(0, WorkflowConstants.MAX_ACTION_RETRIES)
+            WorkflowAction(
+                tool = toolName,
+                args = args,
+                timeoutSeconds = timeout,
+                outputVariable = outputVariable,
+                onError = onError,
+                retryCount = retryCount,
+            )
         }
         if (actions.isEmpty()) return null
         val cooldown = obj["cooldown_seconds"]?.jsonPrimitive?.intOrNull ?: 0

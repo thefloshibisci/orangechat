@@ -14,6 +14,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import me.rerere.rikkahub.workflow.execution.WorkflowEngine
+import me.rerere.rikkahub.workflow.model.WorkflowDefinition
+import me.rerere.rikkahub.workflow.model.WorkflowJson
 import me.rerere.rikkahub.workflow.model.WorkflowRun
 import me.rerere.rikkahub.workflow.repository.WorkflowRepository
 import me.rerere.rikkahub.workflow.repository.WorkflowRepository.Loaded
@@ -43,4 +45,40 @@ class WorkflowsViewModel(
         repository.lastRuns(id, limit)
 
     suspend fun get(id: String): Loaded? = repository.getById(id)
+
+    suspend fun save(definition: WorkflowDefinition) {
+        repository.upsert(definition.copy(updatedAtMs = System.currentTimeMillis()))
+    }
+
+    suspend fun duplicate(id: String): String? {
+        val original = repository.getById(id)?.definition ?: return null
+        val now = System.currentTimeMillis()
+        val copy = original.copy(
+            id = kotlin.uuid.Uuid.random().toString(),
+            name = "${original.name} - 副本".take(80),
+            enabled = false,
+            createdAtMs = now,
+            updatedAtMs = now,
+        )
+        repository.upsert(copy)
+        return copy.id
+    }
+
+    suspend fun importJson(raw: String): Result<String> = runCatching {
+        val parsed = WorkflowJson.parseStored(raw)
+            ?: error("无法识别这个工作流 JSON")
+        val now = System.currentTimeMillis()
+        val imported = parsed.copy(
+            id = kotlin.uuid.Uuid.random().toString(),
+            name = "${parsed.name} - 导入".take(80),
+            enabled = false,
+            createdAtMs = now,
+            updatedAtMs = now,
+        )
+        repository.upsert(imported)
+        imported.id
+    }
+
+    suspend fun exportJson(id: String): String? =
+        repository.getById(id)?.definition?.let(WorkflowJson::encode)
 }
