@@ -48,13 +48,11 @@ val appModule = module {
         )
     }
     single { me.rerere.rikkahub.workflow.condition.ContextProvider(get(), get(), get()) }
-    single { me.rerere.rikkahub.workflow.execution.WorkflowActionRunner() }
     single {
         me.rerere.rikkahub.workflow.execution.WorkflowEngine(
             repository = get(),
             settingsStore = get(),
             contextProvider = get(),
-            actionRunner = get(),
             auditRepo = get(),
         ).also { engine ->
             get<me.rerere.rikkahub.workflow.repository.WorkflowRepository>().bindEngine(engine)
