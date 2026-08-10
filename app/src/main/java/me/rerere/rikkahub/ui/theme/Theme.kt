@@ -27,6 +27,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.core.view.WindowCompat
 import kotlinx.serialization.Serializable
+import me.rerere.rikkahub.data.datastore.VisualThemePalette
 import me.rerere.rikkahub.ui.components.ui.toComposeColor
 import me.rerere.rikkahub.ui.hooks.rememberAmoledDarkMode
 import me.rerere.rikkahub.ui.hooks.rememberColorMode
@@ -89,9 +90,40 @@ fun RikkahubTheme(
         colorSchemeConverted,
         settings.displaySetting.primaryColor,
         settings.displaySetting.globalTextColor,
+        settings.displaySetting.visualThemePalette,
         settings.themeId,
     ) {
         var scheme = colorSchemeConverted
+        scheme = when (settings.displaySetting.visualThemePalette) {
+            VisualThemePalette.SEA_SALT -> scheme.copy(
+                primary = Color(0xFF397D82),
+                secondary = Color(0xFF5F7D80),
+                tertiary = Color(0xFF6D7891),
+                primaryContainer = Color(0xFFC5ECEE),
+                secondaryContainer = Color(0xFFD7E8E8),
+            )
+            VisualThemePalette.SAKURA_MIST -> scheme.copy(
+                primary = Color(0xFFA75E78),
+                secondary = Color(0xFF8C6974),
+                tertiary = Color(0xFF80658F),
+                primaryContainer = Color(0xFFFFD9E4),
+                secondaryContainer = Color(0xFFF4DDE4),
+            )
+            VisualThemePalette.AURORA -> scheme.copy(
+                primary = Color(0xFF3D7E68),
+                secondary = Color(0xFF52736B),
+                tertiary = Color(0xFF536C8D),
+                primaryContainer = Color(0xFFBDEED7),
+                secondaryContainer = Color(0xFFCFE9DF),
+            )
+            VisualThemePalette.MIDNIGHT -> scheme.copy(
+                primary = Color(0xFF7D91D4),
+                secondary = Color(0xFF707A9A),
+                tertiary = Color(0xFF8B70A9),
+                primaryContainer = Color(0xFFDCE1FF),
+                secondaryContainer = Color(0xFFE0E2F2),
+            )
+        }
         settings.displaySetting.primaryColor?.let { pc ->
             val primaryColor = pc.toComposeColor()
             val luminance = 0.299f * primaryColor.red + 0.587f * primaryColor.green + 0.114f * primaryColor.blue

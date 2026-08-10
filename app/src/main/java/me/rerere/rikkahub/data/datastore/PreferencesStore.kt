@@ -650,6 +650,21 @@ enum class ChatFontFamily {
 }
 
 @Serializable
+enum class UiMaterialStyle {
+    ORIGINAL,
+    LIQUID_GLASS,
+    FROSTED,
+}
+
+@Serializable
+enum class VisualThemePalette {
+    SEA_SALT,
+    SAKURA_MIST,
+    AURORA,
+    MIDNIGHT,
+}
+
+@Serializable
 data class DisplaySetting(
     val userAvatar: Avatar = Avatar.Dummy,
     val userNickname: String = "",
@@ -685,6 +700,9 @@ data class DisplaySetting(
     val enableGlassDrawer: Boolean = false,
     val enableDrawerCardTransform: Boolean = false,
     val enableGlassCardsAndBubbles: Boolean = false,
+    val bubbleMaterialStyle: UiMaterialStyle = UiMaterialStyle.LIQUID_GLASS,
+    val inputMaterialStyle: UiMaterialStyle = UiMaterialStyle.LIQUID_GLASS,
+    val visualThemePalette: VisualThemePalette = VisualThemePalette.SEA_SALT,
     val chatFontFamily: ChatFontFamily = ChatFontFamily.DEFAULT,
     val enableVolumeKeyScroll: Boolean = false,
     val volumeKeyScrollRatio: Float = 1.0f,

@@ -88,6 +88,7 @@ import me.rerere.ai.provider.Model
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessageAnnotation
 import me.rerere.ai.ui.UIMessagePart
+import me.rerere.rikkahub.data.datastore.UiMaterialStyle
 import me.rerere.ai.ui.isEmptyUIMessage
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.File02
@@ -726,10 +727,10 @@ private fun BubbleSurface(
     content: @Composable () -> Unit,
 ) {
     val hasImage = imagePath.isNotBlank() && java.io.File(imagePath).exists()
-    val glassStyleEnabled = LocalDisplaySettings.current.enableGlassCardsAndBubbles
+    val materialStyle = LocalDisplaySettings.current.bubbleMaterialStyle
     val bubbleShape = RoundedCornerShape(cornerRadius)
 
-    if (glassStyleEnabled) {
+    if (materialStyle == UiMaterialStyle.LIQUID_GLASS) {
         // Glass mode replaces the original bubble instead of decorating it.
         // This avoids the opaque bubble + glass layer "double bubble" effect.
         Box(
@@ -740,6 +741,23 @@ private fun BubbleSurface(
                 .border(
                     width = 1.dp,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.10f),
+                    shape = bubbleShape,
+                )
+                .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
+        ) {
+            Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 9.dp)) {
+                content()
+            }
+        }
+    } else if (materialStyle == UiMaterialStyle.FROSTED) {
+        Box(
+            modifier = Modifier
+                .animateContentSize()
+                .clip(bubbleShape)
+                .background(MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.84f))
+                .border(
+                    width = 1.dp,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.07f),
                     shape = bubbleShape,
                 )
                 .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)

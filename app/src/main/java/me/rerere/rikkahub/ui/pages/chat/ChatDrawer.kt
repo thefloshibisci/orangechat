@@ -95,6 +95,7 @@ import me.rerere.hugeicons.stroke.Zap
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.Screen
 import me.rerere.rikkahub.data.datastore.Settings
+import me.rerere.rikkahub.data.datastore.UiMaterialStyle
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.model.Folder
@@ -357,7 +358,7 @@ fun ChatDrawerContent(
                 conversationJobs = conversationJobs.keys,
                 listState = conversationListState,
                 drawerItemAlpha = settings.displaySetting.drawerItemAlpha,
-                glassStyleEnabled = settings.displaySetting.enableGlassCardsAndBubbles,
+                glassStyleEnabled = settings.displaySetting.bubbleMaterialStyle == UiMaterialStyle.LIQUID_GLASS,
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f),
