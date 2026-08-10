@@ -19,7 +19,6 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LargeFlexibleTopAppBar
 import androidx.compose.material3.ListItem
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
@@ -33,7 +32,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -42,7 +40,6 @@ import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 import me.rerere.rikkahub.Screen
 import me.rerere.rikkahub.ui.components.nav.BackButton
 import me.rerere.rikkahub.ui.context.LocalNavController
@@ -62,43 +59,6 @@ fun WorkflowsScreen(vm: WorkflowsViewModel = koinViewModel()) {
     val workflows by vm.workflows.collectAsStateWithLifecycle()
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
     var showHowItWorks by remember { mutableStateOf(false) }
-    var showImport by remember { mutableStateOf(false) }
-    var importText by remember { mutableStateOf("") }
-    var importError by remember { mutableStateOf<String?>(null) }
-    val scope = rememberCoroutineScope()
-
-    if (showImport) {
-        AlertDialog(
-            onDismissRequest = { showImport = false },
-            title = { Text("导入工作流") },
-            text = {
-                androidx.compose.foundation.layout.Column {
-                    Text("粘贴从另一条工作流导出的 JSON。导入后默认关闭，确认无误再打开。")
-                    OutlinedTextField(
-                        value = importText,
-                        onValueChange = { importText = it; importError = null },
-                        label = { Text("工作流 JSON") },
-                        minLines = 6,
-                        maxLines = 12,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    importError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    scope.launch {
-                        vm.importJson(importText).onSuccess { id ->
-                            showImport = false
-                            importText = ""
-                            nav.navigate(Screen.WorkflowDetail(id))
-                        }.onFailure { importError = it.message ?: "导入失败" }
-                    }
-                }) { Text("导入") }
-            },
-            dismissButton = { TextButton(onClick = { showImport = false }) { Text("取消") } },
-        )
-    }
 
     if (showHowItWorks) {
         AlertDialog(
@@ -122,9 +82,6 @@ fun WorkflowsScreen(vm: WorkflowsViewModel = koinViewModel()) {
             LargeFlexibleTopAppBar(
                 title = { Text("工作流") },
                 navigationIcon = { BackButton() },
-                actions = {
-                    TextButton(onClick = { showImport = true }) { Text("导入") }
-                },
                 scrollBehavior = scrollBehavior,
                 colors = CustomColors.topBarColors,
             )
