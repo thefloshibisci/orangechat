@@ -71,6 +71,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
@@ -517,12 +518,24 @@ fun ChatInput(
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .then(
+                        if (inputMaterialStyle != UiMaterialStyle.ORIGINAL) {
+                            Modifier.shadow(
+                                elevation = 7.dp,
+                                shape = MaterialTheme.shapes.largeIncreased,
+                                ambientColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.08f),
+                                spotColor = Color.Black.copy(alpha = 0.10f),
+                            )
+                        } else Modifier
+                    )
                     .clip(MaterialTheme.shapes.largeIncreased)
                     .then(
                         if (inputMaterialStyle == UiMaterialStyle.LIQUID_GLASS) {
                             Modifier.hazeEffect(
                                 state = hazeState,
-                                style = HazeMaterials.ultraThin(containerColor = hazeTintColor),
+                                style = HazeMaterials.ultraThin(
+                                    containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.62f),
+                                ),
                             )
                         } else if (settings.displaySetting.enableBlurEffect) Modifier.hazeEffect(
                             state = hazeState,
@@ -534,9 +547,11 @@ fun ChatInput(
                         if (inputMaterialStyle != UiMaterialStyle.ORIGINAL) {
                             Modifier.border(
                                 1.dp,
-                                MaterialTheme.colorScheme.onSurface.copy(
-                                    alpha = if (inputMaterialStyle == UiMaterialStyle.LIQUID_GLASS) 0.10f else 0.06f
-                                ),
+                                if (inputMaterialStyle == UiMaterialStyle.LIQUID_GLASS) {
+                                    Color.White.copy(alpha = 0.50f)
+                                } else {
+                                    Color.White.copy(alpha = 0.34f)
+                                },
                                 MaterialTheme.shapes.largeIncreased,
                             )
                         } else Modifier
@@ -547,7 +562,7 @@ fun ChatInput(
                 color = if (inputBgBitmap != null) Color.Transparent
                     else if (inputMaterialStyle == UiMaterialStyle.LIQUID_GLASS) Color.Transparent
                     else if (inputMaterialStyle == UiMaterialStyle.FROSTED) {
-                        MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.88f)
+                        MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.74f)
                     }
                     else if (settings.displaySetting.enableBlurEffect) Color.Transparent
                     else settings.displaySetting.inputFieldColor?.let { it.toComposeColor() } ?: hazeTintColor,

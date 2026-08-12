@@ -195,12 +195,12 @@ fun ChatDrawerContent(
     }
     val windowWidth = currentWindowDpSize().width
     val drawerWidth = if (glassDrawerEnabled) {
-        (windowWidth * 0.78f).coerceAtMost(340.dp)
+        (windowWidth * 0.74f).coerceAtMost(330.dp)
     } else {
         300.dp
     }
-    val glassTint = MaterialTheme.colorScheme.surface.copy(alpha = 0.78f)
-    val glassBorder = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)
+    val glassTint = MaterialTheme.colorScheme.surface.copy(alpha = 0.66f)
+    val glassBorder = Color.White.copy(alpha = 0.48f)
 
     ModalDrawerSheet(
         modifier = Modifier
@@ -209,10 +209,10 @@ fun ChatDrawerContent(
                 if (glassDrawerEnabled) {
                     Modifier
                         .shadow(
-                            elevation = 28.dp,
+                            elevation = 18.dp,
                             shape = drawerShape,
-                            ambientColor = Color.Black.copy(alpha = 0.22f),
-                            spotColor = Color.Black.copy(alpha = 0.28f),
+                            ambientColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.08f),
+                            spotColor = Color.Black.copy(alpha = 0.14f),
                         )
                         .clip(drawerShape)
                         .hazeEffect(
@@ -259,9 +259,9 @@ fun ChatDrawerContent(
                         .background(
                             Brush.linearGradient(
                                 colors = listOf(
-                                    Color.White.copy(alpha = 0.10f),
+                                    Color.White.copy(alpha = 0.22f),
                                     Color.Transparent,
-                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.035f),
+                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.045f),
                                 )
                             )
                         )

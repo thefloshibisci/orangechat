@@ -658,6 +658,7 @@ enum class UiMaterialStyle {
 
 @Serializable
 enum class VisualThemePalette {
+    ORIGINAL,
     SEA_SALT,
     SAKURA_MIST,
     AURORA,

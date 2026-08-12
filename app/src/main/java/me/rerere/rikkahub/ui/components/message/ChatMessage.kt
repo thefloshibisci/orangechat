@@ -55,9 +55,11 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -736,11 +738,25 @@ private fun BubbleSurface(
         Box(
             modifier = Modifier
                 .animateContentSize()
+                .shadow(
+                    elevation = 5.dp,
+                    shape = bubbleShape,
+                    ambientColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.08f),
+                    spotColor = Color.Black.copy(alpha = 0.10f),
+                )
                 .clip(bubbleShape)
-                .background(color.copy(alpha = minOf(bubbleAlpha, 0.30f)))
+                .background(
+                    Brush.verticalGradient(
+                        colors = listOf(
+                            Color.White.copy(alpha = 0.34f),
+                            color.copy(alpha = minOf(bubbleAlpha, 0.20f)),
+                            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.16f),
+                        )
+                    )
+                )
                 .border(
-                    width = 1.dp,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.10f),
+                    width = 0.8.dp,
+                    color = Color.White.copy(alpha = 0.54f),
                     shape = bubbleShape,
                 )
                 .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
@@ -753,11 +769,17 @@ private fun BubbleSurface(
         Box(
             modifier = Modifier
                 .animateContentSize()
+                .shadow(
+                    elevation = 4.dp,
+                    shape = bubbleShape,
+                    ambientColor = Color.Transparent,
+                    spotColor = Color.Black.copy(alpha = 0.08f),
+                )
                 .clip(bubbleShape)
-                .background(MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.84f))
+                .background(MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.72f))
                 .border(
-                    width = 1.dp,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.07f),
+                    width = 0.8.dp,
+                    color = Color.White.copy(alpha = 0.38f),
                     shape = bubbleShape,
                 )
                 .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)

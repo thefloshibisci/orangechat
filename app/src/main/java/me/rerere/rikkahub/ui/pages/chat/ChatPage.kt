@@ -230,7 +230,7 @@ fun ChatPage(id: Uuid, text: String?, files: List<Uri>, nodeId: Uuid? = null, au
 
             ModalNavigationDrawer(
                 drawerState = drawerState,
-                scrimColor = Color.Black.copy(alpha = 0.10f),
+                scrimColor = Color.Black.copy(alpha = 0.06f),
                 drawerContent = {
                     ChatDrawerContent(
                         navController = navController,
@@ -248,16 +248,16 @@ fun ChatPage(id: Uuid, text: String?, files: List<Uri>, nodeId: Uuid? = null, au
                             // Rotate around the vertical axis instead of simply
                             // tilting the page in 2D. The left edge acts like a
                             // hinge so the conversation visually faces the drawer.
-                            translationX = 92.dp.toPx() * drawerProgress
-                            scaleX = 1f - (0.055f * drawerProgress)
-                            scaleY = 1f - (0.055f * drawerProgress)
-                            rotationY = -6.5f * drawerProgress
+                            translationX = 108.dp.toPx() * drawerProgress
+                            scaleX = 1f - (0.075f * drawerProgress)
+                            scaleY = 1f - (0.075f * drawerProgress)
+                            rotationY = -10.5f * drawerProgress
                             rotationZ = 0f
-                            cameraDistance = 26f * density
+                            cameraDistance = 22f * density
                             transformOrigin = TransformOrigin(0f, 0.5f)
                             shape = chatCardShape
                             clip = drawerProgress > 0.001f
-                            shadowElevation = 20.dp.toPx() * drawerProgress
+                            shadowElevation = 18.dp.toPx() * drawerProgress
                         }
                 ) {
                     ChatPageContent(

@@ -95,12 +95,21 @@ fun RikkahubTheme(
     ) {
         var scheme = colorSchemeConverted
         scheme = when (settings.displaySetting.visualThemePalette) {
+            VisualThemePalette.ORIGINAL -> scheme
             VisualThemePalette.SEA_SALT -> scheme.copy(
-                primary = Color(0xFF397D82),
-                secondary = Color(0xFF5F7D80),
-                tertiary = Color(0xFF6D7891),
-                primaryContainer = Color(0xFFC5ECEE),
-                secondaryContainer = Color(0xFFD7E8E8),
+                primary = if (darkTheme) Color(0xFF9ACFD1) else Color(0xFF4F858A),
+                onPrimary = if (darkTheme) Color(0xFF003739) else Color.White,
+                primaryContainer = if (darkTheme) Color(0xFF215054) else Color(0xFFD9EEEE),
+                onPrimaryContainer = if (darkTheme) Color(0xFFB7EAEB) else Color(0xFF173F42),
+                secondary = if (darkTheme) Color(0xFFB1CCCA) else Color(0xFF627C7B),
+                secondaryContainer = if (darkTheme) Color(0xFF334B4A) else Color(0xFFDDE9E8),
+                tertiary = if (darkTheme) Color(0xFFAEC8DF) else Color(0xFF607A91),
+                background = if (darkTheme) Color(0xFF101919) else Color(0xFFF5F9F9),
+                surface = if (darkTheme) Color(0xFF101919) else Color(0xFFF8FBFB),
+                surfaceContainerLow = if (darkTheme) Color(0xFF172222) else Color(0xFFF1F6F6),
+                surfaceContainer = if (darkTheme) Color(0xFF1B2727) else Color(0xFFEBF2F2),
+                surfaceContainerHigh = if (darkTheme) Color(0xFF243030) else Color(0xFFE4EDED),
+                surfaceContainerHighest = if (darkTheme) Color(0xFF2D3939) else Color(0xFFDDE7E7),
             )
             VisualThemePalette.SAKURA_MIST -> scheme.copy(
                 primary = Color(0xFFA75E78),

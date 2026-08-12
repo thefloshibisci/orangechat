@@ -121,8 +121,12 @@ fun SettingDisplayCodeInteractionPage(vm: SettingVM = koinViewModel()) {
                     modifier = Modifier.padding(horizontal = 8.dp),
                     title = { Text("主题配色（单选）") },
                 ) {
-                    VisualThemePalette.entries.forEach { palette ->
+                    listOf(
+                        VisualThemePalette.ORIGINAL,
+                        VisualThemePalette.SEA_SALT,
+                    ).forEach { palette ->
                         val title = when (palette) {
+                            VisualThemePalette.ORIGINAL -> "原始配色"
                             VisualThemePalette.SEA_SALT -> "海盐"
                             VisualThemePalette.SAKURA_MIST -> "樱雾"
                             VisualThemePalette.AURORA -> "极光"
