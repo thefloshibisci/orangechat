@@ -5,7 +5,7 @@
  */
 
 package me.rerere.rikkahub.ui.components.message
- 
+
 import android.content.Intent
 import android.media.MediaPlayer
 import androidx.compose.animation.AnimatedVisibility
@@ -18,6 +18,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -54,9 +55,11 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -87,6 +90,7 @@ import me.rerere.ai.provider.Model
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessageAnnotation
 import me.rerere.ai.ui.UIMessagePart
+import me.rerere.rikkahub.data.datastore.UiMaterialStyle
 import me.rerere.ai.ui.isEmptyUIMessage
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.File02
@@ -122,7 +126,7 @@ import me.rerere.rikkahub.utils.splitIntoBubbleSegments
 import me.rerere.rikkahub.utils.urlDecode
 import java.util.Locale
 import kotlin.time.Duration.Companion.milliseconds
- 
+
 @Composable
 fun ChatMessage(
     node: MessageNode,
@@ -208,7 +212,7 @@ fun ChatMessage(
                 onToolAnswer = onToolAnswer,
                 onUserMessageClick = if (message.role == MessageRole.USER) onEdit else null,
             )
- 
+
             message.translation?.let { translation ->
                 CollapsibleTranslationText(
                     content = translation,
@@ -216,13 +220,13 @@ fun ChatMessage(
                 )
             }
         }
- 
+
         val showActions = if (lastMessage) {
             !loading
         } else {
             message.parts.isEmptyUIMessage().not()
         }
- 
+
         AnimatedVisibility(
             visible = showActions,
             enter = slideInVertically { it / 2 } + fadeIn(),
@@ -244,7 +248,7 @@ fun ChatMessage(
                 )
             }
         }
- 
+
         ProvideTextStyle(textStyle) {
             ChatMessageNerdLine(message = message)
         }
@@ -281,7 +285,7 @@ fun ChatMessage(
             }
         )
     }
- 
+
     if (showSelectCopySheet) {
         ChatMessageCopySheet(
             message = message,
@@ -291,7 +295,6 @@ fun ChatMessage(
         )
     }
 }
- 
 @OptIn(FlowPreview::class)
 @Composable
 private fun MessagePartsBlock(
@@ -307,13 +310,13 @@ private fun MessagePartsBlock(
 ) {
     val context = LocalContext.current
     val contentColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.65f)
- 
+
     // 消息输出HapticFeedback
     val hapticFeedback = LocalHapticFeedback.current
     val displaySettings = LocalDisplaySettings.current
     val bubbleAlpha = 1f - displaySettings.chatBubbleTransparency / 100f
     val partsState by rememberUpdatedState(parts)
- 
+
     val handleClickCitation: (String) -> Unit = remember {
         handler@{ citationId ->
             partsState.forEach { part ->
@@ -343,7 +346,7 @@ private fun MessagePartsBlock(
                 }
             }
     }
- 
+
     // Render parts in original order (group thinking/tool as chain-of-thought)
     val groupedParts = remember(parts) { parts.groupMessageParts() }
     groupedParts.fastForEach { block ->
@@ -367,7 +370,7 @@ private fun MessagePartsBlock(
                                     )
                                 }
                             }
- 
+
                             is ThinkingStep.ToolStep -> {
                                 key(step.tool.toolCallId.ifBlank { step.hashCode().toString() }) {
                                     ChatMessageToolStep(
@@ -383,7 +386,7 @@ private fun MessagePartsBlock(
                     }
                 }
             }
- 
+
             is MessagePartBlock.ContentBlock -> key(block.index) {
                 when (val part = block.part) {
                     is UIMessagePart.Text -> {
@@ -391,7 +394,7 @@ private fun MessagePartsBlock(
                         val displayText = remember(part.text) {
                             part.text.replace(Regex("\\[zip:[^\\]]+\\]", RegexOption.IGNORE_CASE), "")
                         }
-                        
+
                         SelectionContainer {
                             Column {
                                 if (role == MessageRole.USER) {
@@ -520,11 +523,11 @@ private fun MessagePartsBlock(
                                         )
                                     }
                                 }
-                                
+
                             }
                         }
                     }
- 
+
                     is UIMessagePart.Video -> {
                         Surface(
                             tonalElevation = 2.dp,
@@ -547,18 +550,18 @@ private fun MessagePartsBlock(
                             }
                         }
                     }
- 
+
                     is UIMessagePart.Audio -> {
                         AudioPlayerBubble(url = part.url)
                     }
- 
+
                     is UIMessagePart.VoiceMessage -> {
                         VoiceMessageBubble(
                             voiceMessage = part,
                             isUser = role == MessageRole.USER,
                         )
                     }
- 
+
                     is UIMessagePart.Image -> {
                         val isImageLoading =
                             part.url.isBlank() || part.url.matches(Regex("^data:image/[^;]*;base64,\\s*$"))
@@ -580,7 +583,7 @@ private fun MessagePartsBlock(
                             )
                         }
                     }
- 
+
                     is UIMessagePart.Document -> {
                         Surface(
                             tonalElevation = 2.dp,
@@ -613,7 +616,7 @@ private fun MessagePartsBlock(
                                                 modifier = Modifier.size(20.dp)
                                             )
                                         }
- 
+
                                         "application/pdf" -> {
                                             Icon(
                                                 painter = painterResource(R.drawable.pdf),
@@ -621,7 +624,7 @@ private fun MessagePartsBlock(
                                                 modifier = Modifier.size(20.dp)
                                             )
                                         }
- 
+
                                         else -> {
                                             Icon(
                                                 imageVector = HugeIcons.File02,
@@ -630,7 +633,7 @@ private fun MessagePartsBlock(
                                             )
                                         }
                                     }
- 
+
                                     Text(
                                         text = part.fileName,
                                         maxLines = 1,
@@ -641,7 +644,7 @@ private fun MessagePartsBlock(
                             }
                         }
                     }
- 
+
                     else -> {
                         // Skip unknown part types (e.g., deprecated ToolCall, ToolResult, Search)
                     }
@@ -649,7 +652,7 @@ private fun MessagePartsBlock(
             }
         }
     }
- 
+
     // Annotations (always rendered at the end)
     if (annotations.isNotEmpty()) {
         Column(
@@ -706,7 +709,7 @@ private fun MessagePartsBlock(
             }
         }
     }
- 
+
     // 工作区文件 chip: assistant 消息下方展示被 workspace_write_file/
     // workspace_edit_file 写入/编辑的文件, 点击可导出/分享。
     // 仅在归属工作区的 assistant 消息中渲染, 不影响用户消息和其它布局。
@@ -714,7 +717,7 @@ private fun MessagePartsBlock(
         EditedFilesList(parts = parts, assistant = assistant)
     }
 }
- 
+
 @Composable
 private fun BubbleSurface(
     imagePath: String,
@@ -726,11 +729,70 @@ private fun BubbleSurface(
     content: @Composable () -> Unit,
 ) {
     val hasImage = imagePath.isNotBlank() && java.io.File(imagePath).exists()
-    if (hasImage) {
+    val materialStyle = LocalDisplaySettings.current.bubbleMaterialStyle
+    val bubbleShape = RoundedCornerShape(cornerRadius)
+
+    if (materialStyle == UiMaterialStyle.LIQUID_GLASS) {
+        // Glass mode replaces the original bubble instead of decorating it.
+        // This avoids the opaque bubble + glass layer "double bubble" effect.
         Box(
             modifier = Modifier
                 .animateContentSize()
-                .clip(RoundedCornerShape(cornerRadius))
+                .shadow(
+                    elevation = 5.dp,
+                    shape = bubbleShape,
+                    ambientColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.08f),
+                    spotColor = Color.Black.copy(alpha = 0.10f),
+                )
+                .clip(bubbleShape)
+                .background(
+                    Brush.verticalGradient(
+                        colors = listOf(
+                            Color.White.copy(alpha = 0.34f),
+                            color.copy(alpha = minOf(bubbleAlpha, 0.20f)),
+                            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.16f),
+                        )
+                    )
+                )
+                .border(
+                    width = 0.8.dp,
+                    color = Color.White.copy(alpha = 0.54f),
+                    shape = bubbleShape,
+                )
+                .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
+        ) {
+            Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 9.dp)) {
+                content()
+            }
+        }
+    } else if (materialStyle == UiMaterialStyle.FROSTED) {
+        Box(
+            modifier = Modifier
+                .animateContentSize()
+                .shadow(
+                    elevation = 4.dp,
+                    shape = bubbleShape,
+                    ambientColor = Color.Transparent,
+                    spotColor = Color.Black.copy(alpha = 0.08f),
+                )
+                .clip(bubbleShape)
+                .background(MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.72f))
+                .border(
+                    width = 0.8.dp,
+                    color = Color.White.copy(alpha = 0.38f),
+                    shape = bubbleShape,
+                )
+                .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
+        ) {
+            Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 9.dp)) {
+                content()
+            }
+        }
+    } else if (hasImage) {
+        Box(
+            modifier = Modifier
+                .animateContentSize()
+                .clip(bubbleShape)
                 .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
         ) {
             AsyncImage(
@@ -751,7 +813,7 @@ private fun BubbleSurface(
     } else {
         Surface(
             modifier = Modifier.animateContentSize(),
-            shape = RoundedCornerShape(cornerRadius),
+            shape = bubbleShape,
             color = color.copy(alpha = bubbleAlpha),
             onClick = onClick ?: {},
         ) {
@@ -759,7 +821,6 @@ private fun BubbleSurface(
         }
     }
 }
- 
 @Composable
 @Suppress("UnusedCrossTarget")
 internal fun AudioPlayerBubble(url: String) {
@@ -769,22 +830,22 @@ internal fun AudioPlayerBubble(url: String) {
     var currentMs by remember { mutableIntStateOf(0) }
     var mediaPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
     var isPrepared by remember { mutableStateOf(false) }
- 
+
     // Generate pseudo-random waveform bar heights (deterministic per url)
     val waveformBars = remember(url) {
         val rnd = java.util.Random(url.hashCode().toLong())
         List(40) { 0.15f + rnd.nextFloat() * 0.85f }
     }
- 
+
     val progress = if (durationMs > 0) currentMs.toFloat() / durationMs else 0f
- 
+
     DisposableEffect(Unit) {
         onDispose {
             mediaPlayer?.release()
             mediaPlayer = null
         }
     }
- 
+
     // Progress ticker
     LaunchedEffect(isPlaying) {
         while (isPlaying) {
@@ -796,7 +857,7 @@ internal fun AudioPlayerBubble(url: String) {
             kotlinx.coroutines.delay(50)
         }
     }
- 
+
     // Animate waveform bars when playing
     val animatedBars = remember { mutableStateOf(waveformBars) }
     LaunchedEffect(isPlaying, progress) {
@@ -817,10 +878,10 @@ internal fun AudioPlayerBubble(url: String) {
             animatedBars.value = waveformBars
         }
     }
- 
+
     val activeColor = MaterialTheme.colorScheme.primary
     val inactiveColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.25f)
- 
+
     Row(
         modifier = Modifier
             .clip(RoundedCornerShape(18.dp))
@@ -872,9 +933,9 @@ internal fun AudioPlayerBubble(url: String) {
                 modifier = Modifier.size(22.dp)
             )
         }
- 
+
         Spacer(modifier = Modifier.width(8.dp))
- 
+
         // Waveform bars
         Canvas(
             modifier = Modifier
@@ -887,7 +948,7 @@ internal fun AudioPlayerBubble(url: String) {
             val barWidth = 2.5f
             val gap = (totalWidth - barWidth * barCount) / (barCount - 1).coerceAtLeast(1)
             val playedBarCount = (progress * barCount).toInt()
- 
+
             animatedBars.value.forEachIndexed { index, barRatio ->
                 val barHeight = size.height * barRatio.coerceIn(0.15f, 1f)
                 val x = index * (barWidth + gap)
@@ -900,9 +961,9 @@ internal fun AudioPlayerBubble(url: String) {
                 )
             }
         }
- 
+
         Spacer(modifier = Modifier.width(6.dp))
- 
+
         // Duration text
         val displaySec = if (isPlaying || currentMs > 0) {
             val remaining = (durationMs - currentMs) / 1000
@@ -920,7 +981,7 @@ internal fun AudioPlayerBubble(url: String) {
         )
     }
 }
- 
+
 @Composable
 internal fun VoiceMessageBubble(
     voiceMessage: UIMessagePart.VoiceMessage,
@@ -929,16 +990,16 @@ internal fun VoiceMessageBubble(
     val context = LocalContext.current
     var isPlaying by remember { mutableStateOf(false) }
     var mediaPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
- 
+
     val durationSec = (voiceMessage.duration / 1000).coerceAtLeast(1)
- 
+
     DisposableEffect(voiceMessage.url) {
         onDispose {
             mediaPlayer?.release()
             mediaPlayer = null
         }
     }
- 
+
     LaunchedEffect(isPlaying) {
         while (isPlaying) {
             mediaPlayer?.let {
@@ -949,7 +1010,7 @@ internal fun VoiceMessageBubble(
             kotlinx.coroutines.delay(50)
         }
     }
- 
+
     Surface(
         shape = RoundedCornerShape(16.dp),
         color = if (isUser) MaterialTheme.colorScheme.secondaryContainer
@@ -1036,4 +1097,3 @@ internal fun VoiceMessageBubble(
         }
     }
 }
- 

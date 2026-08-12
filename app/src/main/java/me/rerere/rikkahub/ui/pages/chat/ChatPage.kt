@@ -8,9 +8,14 @@ package me.rerere.rikkahub.ui.pages.chat
 
 import android.net.Uri
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.AlertDialog
@@ -39,7 +44,9 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
@@ -48,6 +55,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.dokar.sonner.ToastType
 import dev.chrisbanes.haze.rememberHazeState
+import dev.chrisbanes.haze.HazeState
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import me.rerere.ai.provider.Model
@@ -103,6 +111,7 @@ fun ChatPage(id: Uuid, text: String?, files: List<Uri>, nodeId: Uuid? = null, au
     val errors by vm.errors.collectAsStateWithLifecycle()
 
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
+    val hazeState = rememberHazeState()
     val softwareKeyboardController = LocalSoftwareKeyboardController.current
 
     // Handle back press when drawer is open
@@ -176,7 +185,8 @@ fun ChatPage(id: Uuid, text: String?, files: List<Uri>, nodeId: Uuid? = null, au
                         navController = navController,
                         current = conversation,
                         vm = vm,
-                        settings = setting
+                        settings = setting,
+                        hazeState = hazeState,
                     )
                 }
             ) {
@@ -195,6 +205,7 @@ fun ChatPage(id: Uuid, text: String?, files: List<Uri>, nodeId: Uuid? = null, au
                     bigScreen = true,
                     autoStartVoice = autoStartVoice,
                     errors = errors,
+                    hazeState = hazeState,
                     onDismissError = { vm.dismissError(it) },
                     onClearAllErrors = { vm.clearAllErrors() },
                 )
@@ -202,35 +213,73 @@ fun ChatPage(id: Uuid, text: String?, files: List<Uri>, nodeId: Uuid? = null, au
         }
 
         else -> {
+            // Liquid-glass drawer motion: the conversation stays visible behind the
+            // drawer, then gently shifts, scales and tilts like a physical card.
+            val drawerProgress by animateFloatAsState(
+                targetValue = if (
+                    setting.displaySetting.enableDrawerCardTransform &&
+                    drawerState.targetValue == DrawerValue.Open
+                ) 1f else 0f,
+                animationSpec = spring(
+                    dampingRatio = Spring.DampingRatioNoBouncy,
+                    stiffness = Spring.StiffnessMediumLow,
+                ),
+                label = "ChatDrawerProgress",
+            )
+            val chatCardShape = RoundedCornerShape(28.dp)
+
             ModalNavigationDrawer(
                 drawerState = drawerState,
+                scrimColor = Color.Black.copy(alpha = 0.06f),
                 drawerContent = {
                     ChatDrawerContent(
                         navController = navController,
                         current = conversation,
                         vm = vm,
-                        settings = setting
+                        settings = setting,
+                        hazeState = hazeState,
                     )
                 }
             ) {
-                ChatPageContent(
-                    inputState = inputState,
-                    loadingJob = loadingJob,
-                    processingStatus = processingStatus,
-                    setting = setting,
-                    conversation = conversation,
-                    drawerState = drawerState,
-                    navController = navController,
-                    vm = vm,
-                    chatListState = chatListState,
-                    enableWebSearch = enableWebSearch,
-                    currentChatModel = currentChatModel,
-                    bigScreen = false,
-                    autoStartVoice = autoStartVoice,
-                    errors = errors,
-                    onDismissError = { vm.dismissError(it) },
-                    onClearAllErrors = { vm.clearAllErrors() },
-                )
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .graphicsLayer {
+                            // Rotate around the vertical axis instead of simply
+                            // tilting the page in 2D. The left edge acts like a
+                            // hinge so the conversation visually faces the drawer.
+                            translationX = 108.dp.toPx() * drawerProgress
+                            scaleX = 1f - (0.075f * drawerProgress)
+                            scaleY = 1f - (0.075f * drawerProgress)
+                            rotationY = -10.5f * drawerProgress
+                            rotationZ = 0f
+                            cameraDistance = 22f * density
+                            transformOrigin = TransformOrigin(0f, 0.5f)
+                            shape = chatCardShape
+                            clip = drawerProgress > 0.001f
+                            shadowElevation = 18.dp.toPx() * drawerProgress
+                        }
+                ) {
+                    ChatPageContent(
+                        inputState = inputState,
+                        loadingJob = loadingJob,
+                        processingStatus = processingStatus,
+                        setting = setting,
+                        conversation = conversation,
+                        drawerState = drawerState,
+                        navController = navController,
+                        vm = vm,
+                        chatListState = chatListState,
+                        enableWebSearch = enableWebSearch,
+                        currentChatModel = currentChatModel,
+                        bigScreen = false,
+                        autoStartVoice = autoStartVoice,
+                        errors = errors,
+                        hazeState = hazeState,
+                        onDismissError = { vm.dismissError(it) },
+                        onClearAllErrors = { vm.clearAllErrors() },
+                    )
+                }
             }
             BackHandler(drawerState.isOpen) {
                 scope.launch { drawerState.close() }
@@ -255,14 +304,13 @@ private fun ChatPageContent(
     currentChatModel: Model?,
     autoStartVoice: Boolean = false,
     errors: List<ChatError>,
+    hazeState: HazeState,
     onDismissError: (Uuid) -> Unit,
     onClearAllErrors: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
     val toaster = LocalToaster.current
     var previewMode by rememberSaveable { mutableStateOf(false) }
-    val hazeState = rememberHazeState()
-
     TTSAutoPlay(vm = vm, setting = setting, conversation = conversation)
 
     Surface(
@@ -336,6 +384,18 @@ private fun ChatPageContent(
                             }
                         }
                         inputState.clearInput()
+                    },
+                    onStickerSend = { markdown ->
+                        if (currentChatModel == null) {
+                            toaster.show("请先选择模型", type = ToastType.Error)
+                            return@ChatInput
+                        }
+                        vm.handleMessageSend(
+                            listOf(UIMessagePart.Text(markdown))
+                        )
+                        scope.launch {
+                            chatListState.requestScrollToItem(conversation.currentMessages.size + 5)
+                        }
                     },
                     onVoiceMessage = { url, duration, transcript ->
                         if (currentChatModel == null) {

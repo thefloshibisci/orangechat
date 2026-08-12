@@ -16,6 +16,7 @@ import me.rerere.hugeicons.stroke.Delete01
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -86,6 +87,7 @@ fun ColumnScope.ConversationList(
     listState: LazyListState,
     modifier: Modifier = Modifier,
     drawerItemAlpha: Float = 1f,
+    glassStyleEnabled: Boolean = false,
     onClick: (Conversation) -> Unit = {},
     onDelete: (Conversation) -> Unit = {},
     onRegenerateTitle: (Conversation) -> Unit = {},
@@ -120,7 +122,7 @@ fun ColumnScope.ConversationList(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(16.dp),
-                    shape = RoundedCornerShape(8.dp),
+                    shape = RoundedCornerShape(if (glassStyleEnabled) 18.dp else 8.dp),
                     color = MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = drawerItemAlpha)
                 ) {
                     Text(
@@ -148,6 +150,7 @@ fun ColumnScope.ConversationList(
                     DateHeaderItem(
                         label = item.label,
                         drawerItemAlpha = drawerItemAlpha,
+                        glassStyleEnabled = glassStyleEnabled,
                         modifier = Modifier.animateItem()
                     )
                 }
@@ -155,6 +158,7 @@ fun ColumnScope.ConversationList(
                 is ConversationListItem.PinnedHeader -> {
                     PinnedHeader(
                         drawerItemAlpha = drawerItemAlpha,
+                        glassStyleEnabled = glassStyleEnabled,
                         modifier = Modifier.animateItem()
                     )
                 }
@@ -171,6 +175,7 @@ fun ColumnScope.ConversationList(
                         onMoveToAssistant = onMoveToAssistant,
                         onMoveToFolder = onMoveToFolder,
                         drawerItemAlpha = drawerItemAlpha,
+                        glassStyleEnabled = glassStyleEnabled,
                         modifier = Modifier.animateItem()
                     )
                 }
@@ -187,12 +192,26 @@ fun ColumnScope.ConversationList(
 private fun DateHeaderItem(
     label: String,
     drawerItemAlpha: Float = 1f,
+    glassStyleEnabled: Boolean = false,
     modifier: Modifier = Modifier
 ) {
+    val headerShape = RoundedCornerShape(14.dp)
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = drawerItemAlpha))
+            .then(if (glassStyleEnabled) Modifier.clip(headerShape) else Modifier)
+            .background(
+                MaterialTheme.colorScheme.surfaceContainerLow.copy(
+                    alpha = if (glassStyleEnabled) 0.48f * drawerItemAlpha else drawerItemAlpha
+                )
+            )
+            .then(
+                if (glassStyleEnabled) Modifier.border(
+                    1.dp,
+                    MaterialTheme.colorScheme.onSurface.copy(alpha = 0.055f * drawerItemAlpha),
+                    headerShape,
+                ) else Modifier
+            )
             .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -208,12 +227,26 @@ private fun DateHeaderItem(
 @Composable
 private fun PinnedHeader(
     drawerItemAlpha: Float = 1f,
+    glassStyleEnabled: Boolean = false,
     modifier: Modifier = Modifier
 ) {
+    val headerShape = RoundedCornerShape(14.dp)
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = drawerItemAlpha))
+            .then(if (glassStyleEnabled) Modifier.clip(headerShape) else Modifier)
+            .background(
+                MaterialTheme.colorScheme.surfaceContainerLow.copy(
+                    alpha = if (glassStyleEnabled) 0.48f * drawerItemAlpha else drawerItemAlpha
+                )
+            )
+            .then(
+                if (glassStyleEnabled) Modifier.border(
+                    1.dp,
+                    MaterialTheme.colorScheme.onSurface.copy(alpha = 0.055f * drawerItemAlpha),
+                    headerShape,
+                ) else Modifier
+            )
             .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -240,6 +273,7 @@ private fun ConversationItem(
     loading: Boolean,
     modifier: Modifier = Modifier,
     drawerItemAlpha: Float = 1f,
+    glassStyleEnabled: Boolean = false,
     onDelete: (Conversation) -> Unit = {},
     onRegenerateTitle: (Conversation) -> Unit = {},
     onPin: (Conversation) -> Unit = {},
@@ -248,17 +282,27 @@ private fun ConversationItem(
     onClick: (Conversation) -> Unit
 ) {
     val interactionSource = remember { MutableInteractionSource() }
-    val backgroundColor = if (selected) {
+    val backgroundColor = if (glassStyleEnabled && selected) {
+        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.58f * drawerItemAlpha)
+    } else if (glassStyleEnabled) {
+        MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.34f * drawerItemAlpha)
+    } else if (selected) {
         MaterialTheme.colorScheme.surfaceColorAtElevation(8.dp).copy(alpha = drawerItemAlpha)
     } else {
         Color.Transparent
+    }
+    val itemShape = if (glassStyleEnabled) RoundedCornerShape(17.dp) else RoundedCornerShape(50f)
+    val borderColor = if (selected) {
+        MaterialTheme.colorScheme.primary.copy(alpha = 0.26f * drawerItemAlpha)
+    } else {
+        MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f * drawerItemAlpha)
     }
     var showDropdownMenu by remember {
         mutableStateOf(false)
     }
     Box(
         modifier = modifier
-            .clip(RoundedCornerShape(50f))
+            .clip(itemShape)
             .combinedClickable(
                 interactionSource = interactionSource,
                 indication = LocalIndication.current,
@@ -267,7 +311,8 @@ private fun ConversationItem(
                     showDropdownMenu = true
                 }
             )
-            .background(backgroundColor),
+            .background(backgroundColor)
+            .then(if (glassStyleEnabled) Modifier.border(1.dp, borderColor, itemShape) else Modifier),
     ) {
         Row(
             modifier = Modifier
