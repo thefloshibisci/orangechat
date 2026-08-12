@@ -704,6 +704,8 @@ data class DisplaySetting(
     val bubbleMaterialStyle: UiMaterialStyle = UiMaterialStyle.LIQUID_GLASS,
     val inputMaterialStyle: UiMaterialStyle = UiMaterialStyle.LIQUID_GLASS,
     val visualThemePalette: VisualThemePalette = VisualThemePalette.SEA_SALT,
+    // 显示在聊天侧边栏“插件”页中的快捷插件 ID
+    val drawerPluginShortcutIds: Set<String> = emptySet(),
     val chatFontFamily: ChatFontFamily = ChatFontFamily.DEFAULT,
     val enableVolumeKeyScroll: Boolean = false,
     val volumeKeyScrollRatio: Float = 1.0f,

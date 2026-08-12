@@ -32,6 +32,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -100,6 +101,8 @@ import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.model.Folder
 import me.rerere.rikkahub.data.repository.ConversationRepository
+import me.rerere.rikkahub.plugin.manager.PluginManager
+import me.rerere.rikkahub.plugin.model.PluginInfo
 import me.rerere.rikkahub.ui.components.ai.AssistantPicker
 import me.rerere.rikkahub.ui.components.ui.BackupReminderCard
 import me.rerere.rikkahub.ui.components.ui.Greeting
@@ -133,6 +136,13 @@ fun ChatDrawerContent(
     val toaster = LocalToaster.current
     val isPlayStore = rememberIsPlayStoreVersion()
     val repo = koinInject<ConversationRepository>()
+    val pluginManager = koinInject<PluginManager>()
+    val plugins by pluginManager.plugins.collectAsStateWithLifecycle()
+    val pagePlugins = plugins.filter { plugin ->
+        plugin.isEnabled && plugin.loadError == null && with(plugin.manifest) {
+            ui != null || customPageWebView != null || customPage != null
+        }
+    }
 
     val activity = context as ComponentActivity
     val drawerVm: ChatDrawerVM = koinViewModel(viewModelStoreOwner = activity)
@@ -186,6 +196,8 @@ fun ChatDrawerContent(
 
     // Menu popup 状态
     var showMenuPopup by remember { mutableStateOf(false) }
+    var drawerSection by remember { mutableStateOf(DrawerSection.CHATS) }
+    var showPluginShortcutSheet by remember { mutableStateOf(false) }
 
     val glassDrawerEnabled = settings.displaySetting.enableGlassDrawer
     val drawerShape = if (glassDrawerEnabled) {
@@ -343,53 +355,60 @@ fun ChatDrawerContent(
                 drawerItemAlpha = settings.displaySetting.drawerItemAlpha,
             )
 
-            FolderBar(
-                folders = folders,
-                selectedFolderId = selectedFolderId,
-                onSelect = { drawerVm.selectFolder(it) },
-                onCreate = { showCreateFolderDialog = true },
-                onRename = { folderToRename = it },
-                onDelete = { folderToDelete = it },
+            DrawerSectionSwitcher(
+                selected = drawerSection,
+                onSelected = { drawerSection = it },
+                onManagePlugins = { showPluginShortcutSheet = true },
             )
 
-            ConversationList(
-                current = current,
-                conversations = conversations,
-                conversationJobs = conversationJobs.keys,
-                listState = conversationListState,
-                drawerItemAlpha = settings.displaySetting.drawerItemAlpha,
-                glassStyleEnabled = settings.displaySetting.bubbleMaterialStyle == UiMaterialStyle.LIQUID_GLASS,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f),
-                onClick = {
-                    navigateToChatPage(navController, it.id)
-                },
-                onRegenerateTitle = {
-                    vm.generateTitle(it, true)
-                },
-                onDelete = {
-                    vm.deleteConversation(it)
-                    // Refresh the conversation list to immediately remove the deleted item
-                    // This fixes the issue where deleted conversations sometimes remain visible
-                    // until manually clicked (issue #747)
-                    conversations.refresh()
-                    if (it.id == current.id) {
-                        navigateToChatPage(navController)
+            if (drawerSection == DrawerSection.CHATS) {
+                FolderBar(
+                    folders = folders,
+                    selectedFolderId = selectedFolderId,
+                    onSelect = { drawerVm.selectFolder(it) },
+                    onCreate = { showCreateFolderDialog = true },
+                    onRename = { folderToRename = it },
+                    onDelete = { folderToDelete = it },
+                )
+
+                ConversationList(
+                    current = current,
+                    conversations = conversations,
+                    conversationJobs = conversationJobs.keys,
+                    listState = conversationListState,
+                    drawerItemAlpha = settings.displaySetting.drawerItemAlpha,
+                    glassStyleEnabled = settings.displaySetting.bubbleMaterialStyle == UiMaterialStyle.LIQUID_GLASS,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    onClick = { navigateToChatPage(navController, it.id) },
+                    onRegenerateTitle = { vm.generateTitle(it, true) },
+                    onDelete = {
+                        vm.deleteConversation(it)
+                        conversations.refresh()
+                        if (it.id == current.id) navigateToChatPage(navController)
+                    },
+                    onPin = { vm.updatePinnedStatus(it) },
+                    onMoveToAssistant = {
+                        conversationToMove = it
+                        showMoveToAssistantSheet = true
+                    },
+                    onMoveToFolder = {
+                        conversationToMoveFolder = it
+                        showMoveToFolderSheet = true
                     }
-                },
-                onPin = {
-                    vm.updatePinnedStatus(it)
-                },
-                onMoveToAssistant = {
-                    conversationToMove = it
-                    showMoveToAssistantSheet = true
-                },
-                onMoveToFolder = {
-                    conversationToMoveFolder = it
-                    showMoveToFolderSheet = true
-                }
-            )
+                )
+            } else {
+                DrawerPluginShortcuts(
+                    plugins = pagePlugins.filter {
+                        it.manifest.id in settings.displaySetting.drawerPluginShortcutIds
+                    },
+                    drawerItemAlpha = settings.displaySetting.drawerItemAlpha,
+                    modifier = Modifier.fillMaxWidth().weight(1f),
+                    onManage = { showPluginShortcutSheet = true },
+                    onOpen = { plugin -> openPluginPage(navController, plugin) },
+                )
+            }
 
             // 助手选择器
             AssistantPicker(
@@ -527,6 +546,23 @@ fun ChatDrawerContent(
             }
         }
         }
+    }
+
+    if (showPluginShortcutSheet) {
+        PluginShortcutPickerSheet(
+            plugins = pagePlugins,
+            selectedIds = settings.displaySetting.drawerPluginShortcutIds,
+            onDismiss = { showPluginShortcutSheet = false },
+            onSelectionChange = { selectedIds ->
+                vm.updateSettings(
+                    settings.copy(
+                        displaySetting = settings.displaySetting.copy(
+                            drawerPluginShortcutIds = selectedIds
+                        )
+                    )
+                )
+            },
+        )
     }
 
     // 昵称编辑对话框
@@ -1056,5 +1092,228 @@ private fun AssistantItem(
                 }
             }
         }
+    }
+}
+
+private enum class DrawerSection {
+    CHATS,
+    PLUGINS,
+}
+
+@Composable
+private fun DrawerSectionSwitcher(
+    selected: DrawerSection,
+    onSelected: (DrawerSection) -> Unit,
+    onManagePlugins: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        DrawerSectionButton(
+            label = "聊天",
+            selected = selected == DrawerSection.CHATS,
+            onClick = { onSelected(DrawerSection.CHATS) },
+        )
+        DrawerSectionButton(
+            label = "插件",
+            selected = selected == DrawerSection.PLUGINS,
+            onClick = { onSelected(DrawerSection.PLUGINS) },
+        )
+        Spacer(Modifier.weight(1f))
+        if (selected == DrawerSection.PLUGINS) {
+            TextButton(onClick = onManagePlugins) {
+                Text("管理")
+            }
+        }
+    }
+}
+
+@Composable
+private fun DrawerSectionButton(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(18.dp),
+        color = if (selected) {
+            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.72f)
+        } else {
+            Color.Transparent
+        },
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.titleMedium,
+            color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer
+            else MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp),
+        )
+    }
+}
+
+@Composable
+private fun DrawerPluginShortcuts(
+    plugins: List<PluginInfo>,
+    drawerItemAlpha: Float,
+    modifier: Modifier = Modifier,
+    onManage: () -> Unit,
+    onOpen: (PluginInfo) -> Unit,
+) {
+    if (plugins.isEmpty()) {
+        Column(
+            modifier = modifier.padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+        ) {
+            Text("还没有快捷插件", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "选择带管理页面的插件，它们就会出现在这里。",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 6.dp, bottom = 10.dp),
+            )
+            TextButton(onClick = onManage) { Text("选择插件") }
+        }
+        return
+    }
+
+    LazyColumn(
+        modifier = modifier,
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        items(plugins, key = { it.manifest.id }) { plugin ->
+            Surface(
+                onClick = { onOpen(plugin) },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .alpha(drawerItemAlpha),
+                shape = RoundedCornerShape(18.dp),
+                color = MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.78f),
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Text(
+                        text = plugin.manifest.icon.ifBlank { "🧩" },
+                        style = MaterialTheme.typography.headlineSmall,
+                    )
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            plugin.manifest.name,
+                            style = MaterialTheme.typography.titleMedium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            plugin.manifest.description,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    Icon(HugeIcons.Sparkles, contentDescription = "打开")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PluginShortcutPickerSheet(
+    plugins: List<PluginInfo>,
+    selectedIds: Set<String>,
+    onDismiss: () -> Unit,
+    onSelectionChange: (Set<String>) -> Unit,
+) {
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp, vertical = 8.dp),
+        ) {
+            Text("侧边栏快捷插件", style = MaterialTheme.typography.titleLarge)
+            Text(
+                "这里只显示已启用并且带管理页面的插件。",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 4.dp, bottom = 12.dp),
+            )
+
+            if (plugins.isEmpty()) {
+                Text(
+                    "当前没有符合条件的插件",
+                    modifier = Modifier.padding(vertical = 28.dp),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                LazyColumn(modifier = Modifier.heightIn(max = 430.dp)) {
+                    items(plugins, key = { it.manifest.id }) { plugin ->
+                        val checked = plugin.manifest.id in selectedIds
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    onSelectionChange(
+                                        if (checked) selectedIds - plugin.manifest.id
+                                        else selectedIds + plugin.manifest.id
+                                    )
+                                }
+                                .padding(vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                plugin.manifest.icon.ifBlank { "🧩" },
+                                style = MaterialTheme.typography.titleLarge,
+                                modifier = Modifier.padding(horizontal = 8.dp),
+                            )
+                            Column(Modifier.weight(1f)) {
+                                Text(plugin.manifest.name, style = MaterialTheme.typography.titleMedium)
+                                Text(
+                                    plugin.manifest.description,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                            Checkbox(
+                                checked = checked,
+                                onCheckedChange = {
+                                    onSelectionChange(
+                                        if (checked) selectedIds - plugin.manifest.id
+                                        else selectedIds + plugin.manifest.id
+                                    )
+                                },
+                            )
+                        }
+                    }
+                }
+            }
+            TextButton(
+                onClick = onDismiss,
+                modifier = Modifier.align(Alignment.End).padding(vertical = 8.dp),
+            ) { Text("完成") }
+        }
+    }
+}
+
+private fun openPluginPage(navigator: Navigator, plugin: PluginInfo) {
+    val manifest = plugin.manifest
+    when {
+        manifest.ui != null -> navigator.navigate(Screen.PluginDeclarativeUI(manifest.id))
+        manifest.customPageWebView != null -> navigator.navigate(
+            Screen.PluginWebView(manifest.id, manifest.customPageWebView.entry)
+        )
+        manifest.customPage == "memory_bank" -> navigator.navigate(Screen.MemoryBank)
+        else -> navigator.navigate(Screen.PluginDetail(manifest.id))
     }
 }
