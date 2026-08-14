@@ -18,6 +18,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.content.MediaType
@@ -70,6 +71,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
@@ -107,6 +109,7 @@ import me.rerere.hugeicons.stroke.Zap
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.ai.mcp.McpManager
 import me.rerere.rikkahub.data.datastore.Settings
+import me.rerere.rikkahub.data.datastore.UiMaterialStyle
 import me.rerere.rikkahub.data.datastore.getCurrentAssistant
 import me.rerere.rikkahub.data.datastore.getCurrentChatModel
 import me.rerere.rikkahub.data.datastore.getQuickMessagesOfAssistant
@@ -499,6 +502,8 @@ fun ChatInput(
         )
     }
 
+    val inputMaterialStyle = settings.displaySetting.inputMaterialStyle
+
     Surface(
         color = Color.Transparent,
     ) {
@@ -513,18 +518,52 @@ fun ChatInput(
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .then(
+                        if (inputMaterialStyle != UiMaterialStyle.ORIGINAL) {
+                            Modifier.shadow(
+                                elevation = 7.dp,
+                                shape = MaterialTheme.shapes.largeIncreased,
+                                ambientColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.08f),
+                                spotColor = Color.Black.copy(alpha = 0.10f),
+                            )
+                        } else Modifier
+                    )
                     .clip(MaterialTheme.shapes.largeIncreased)
                     .then(
-                        if (settings.displaySetting.enableBlurEffect) Modifier.hazeEffect(
+                        if (inputMaterialStyle == UiMaterialStyle.LIQUID_GLASS) {
+                            Modifier.hazeEffect(
+                                state = hazeState,
+                                style = HazeMaterials.ultraThin(
+                                    containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.62f),
+                                ),
+                            )
+                        } else if (settings.displaySetting.enableBlurEffect) Modifier.hazeEffect(
                             state = hazeState,
                             style = HazeMaterials.ultraThin(containerColor = hazeTintColor)
                         )
                         else Modifier
+                    )
+                    .then(
+                        if (inputMaterialStyle != UiMaterialStyle.ORIGINAL) {
+                            Modifier.border(
+                                1.dp,
+                                if (inputMaterialStyle == UiMaterialStyle.LIQUID_GLASS) {
+                                    Color.White.copy(alpha = 0.50f)
+                                } else {
+                                    Color.White.copy(alpha = 0.34f)
+                                },
+                                MaterialTheme.shapes.largeIncreased,
+                            )
+                        } else Modifier
                     ),
                 shape = MaterialTheme.shapes.largeIncreased,
                 tonalElevation = 0.dp,
                 // When background image is set, make surface transparent so image is visible
                 color = if (inputBgBitmap != null) Color.Transparent
+                    else if (inputMaterialStyle == UiMaterialStyle.LIQUID_GLASS) Color.Transparent
+                    else if (inputMaterialStyle == UiMaterialStyle.FROSTED) {
+                        MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.74f)
+                    }
                     else if (settings.displaySetting.enableBlurEffect) Color.Transparent
                     else settings.displaySetting.inputFieldColor?.let { it.toComposeColor() } ?: hazeTintColor,
             ) {

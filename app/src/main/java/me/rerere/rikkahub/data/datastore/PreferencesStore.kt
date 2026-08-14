@@ -650,6 +650,22 @@ enum class ChatFontFamily {
 }
 
 @Serializable
+enum class UiMaterialStyle {
+    ORIGINAL,
+    LIQUID_GLASS,
+    FROSTED,
+}
+
+@Serializable
+enum class VisualThemePalette {
+    ORIGINAL,
+    SEA_SALT,
+    SAKURA_MIST,
+    AURORA,
+    MIDNIGHT,
+}
+
+@Serializable
 data class DisplaySetting(
     val userAvatar: Avatar = Avatar.Dummy,
     val userNickname: String = "",
@@ -681,6 +697,15 @@ data class DisplaySetting(
     val enableAutoScroll: Boolean = true,
     val enableLatexRendering: Boolean = true,
     val enableBlurEffect: Boolean = false,
+    // 可独立启用的水玻璃界面效果，默认关闭以保持原有体验
+    val enableGlassDrawer: Boolean = false,
+    val enableDrawerCardTransform: Boolean = false,
+    val enableGlassCardsAndBubbles: Boolean = false,
+    val bubbleMaterialStyle: UiMaterialStyle = UiMaterialStyle.LIQUID_GLASS,
+    val inputMaterialStyle: UiMaterialStyle = UiMaterialStyle.LIQUID_GLASS,
+    val visualThemePalette: VisualThemePalette = VisualThemePalette.SEA_SALT,
+    // 显示在聊天侧边栏“插件”页中的快捷插件 ID
+    val drawerPluginShortcutIds: Set<String> = emptySet(),
     val chatFontFamily: ChatFontFamily = ChatFontFamily.DEFAULT,
     val enableVolumeKeyScroll: Boolean = false,
     val volumeKeyScrollRatio: Float = 1.0f,

@@ -1,3 +1,9 @@
+/*
+ * 橘瓣 OrangeChat
+ * 衍生自 RikkaHub (https://github.com/rikkahub/rikkahub)，原作者 RE
+ * 本项目基于 GNU AGPL v3 开源，详见根目录 LICENSE 文件
+ */
+
 package me.rerere.rikkahub.ui.components.ai
 
 import androidx.compose.foundation.layout.Arrangement
@@ -68,6 +74,7 @@ internal fun StickerPickerSheet(
     LaunchedEffect(retryKey) {
         loading = true
         errorMessage = null
+
         pluginLoader.callTool(
             pluginId = STICKER_PLUGIN_ID,
             toolName = "list_stickers",
@@ -77,19 +84,17 @@ internal fun StickerPickerSheet(
                 val root = result as? JsonObject
                 val error = root?.get("error")?.jsonPrimitive?.contentOrNull
                 val data = root?.get("data") as? JsonObject
+
                 if (data == null) {
                     errorMessage = error ?: "没有读取到表情包，请检查插件是否已启用并完成配置"
                 } else {
                     stickers = data.flatMap { (category, value) ->
                         value.jsonArray.mapNotNull { element ->
                             val item = element.jsonObject
-                            val name = item["name"]?.jsonPrimitive?.contentOrNull
-                                ?: return@mapNotNull null
-                            val url = item["url"]?.jsonPrimitive?.contentOrNull
-                                ?: return@mapNotNull null
+                            val name = item["name"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+                            val url = item["url"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
                             StickerItem(
-                                id = item["id"]?.jsonPrimitive?.contentOrNull
-                                    ?: "$category-$name-$url",
+                                id = item["id"]?.jsonPrimitive?.contentOrNull ?: "$category-$name-$url",
                                 name = name,
                                 url = url,
                                 category = category,
@@ -106,7 +111,10 @@ internal fun StickerPickerSheet(
         )
     }
 
-    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+    ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -118,67 +126,84 @@ internal fun StickerPickerSheet(
                 style = MaterialTheme.typography.titleLarge,
                 modifier = Modifier.padding(bottom = 12.dp),
             )
+
             when {
-                loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator()
+                loading -> {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        CircularProgressIndicator()
+                    }
                 }
 
-                errorMessage != null -> Column(
-                    modifier = Modifier.fillMaxSize(),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.Center,
-                ) {
-                    Text(
-                        text = errorMessage.orEmpty(),
-                        textAlign = TextAlign.Center,
-                        color = MaterialTheme.colorScheme.error,
-                    )
-                    TextButton(onClick = { retryKey++ }) { Text("重新加载") }
+                errorMessage != null -> {
+                    Column(
+                        modifier = Modifier.fillMaxSize(),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center,
+                    ) {
+                        Text(
+                            text = errorMessage.orEmpty(),
+                            textAlign = TextAlign.Center,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                        TextButton(onClick = { retryKey++ }) {
+                            Text("重新加载")
+                        }
+                    }
                 }
 
-                stickers.isEmpty() -> Box(
-                    Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text("表情包库还是空的，请先在插件页面上传表情包")
+                stickers.isEmpty() -> {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text("表情包库还是空的，请先在插件页面上传表情包")
+                    }
                 }
 
-                else -> LazyVerticalGrid(
-                    columns = GridCells.Fixed(3),
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(bottom = 24.dp),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    items(stickers, key = { "${it.category}-${it.id}" }) { sticker ->
-                        Surface(
-                            onClick = {
-                                val safeName = sticker.name.replace("]", "")
-                                onStickerSelected("![$safeName](${sticker.url})")
-                            },
-                            shape = RoundedCornerShape(12.dp),
-                            color = MaterialTheme.colorScheme.surfaceContainer,
-                        ) {
-                            Column(
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                modifier = Modifier.padding(8.dp),
+                else -> {
+                    LazyVerticalGrid(
+                        columns = GridCells.Fixed(3),
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(bottom = 24.dp),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        items(
+                            items = stickers,
+                            key = { "${it.category}-${it.id}" },
+                        ) { sticker ->
+                            Surface(
+                                onClick = {
+                                    val safeName = sticker.name.replace("]", "")
+                                    onStickerSelected("![$safeName](${sticker.url})")
+                                },
+                                shape = RoundedCornerShape(12.dp),
+                                color = MaterialTheme.colorScheme.surfaceContainer,
                             ) {
-                                AsyncImage(
-                                    model = sticker.url,
-                                    contentDescription = sticker.name,
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .aspectRatio(1f)
-                                        .clip(RoundedCornerShape(8.dp)),
-                                    contentScale = ContentScale.Fit,
-                                )
-                                Text(
-                                    text = sticker.name,
-                                    style = MaterialTheme.typography.labelMedium,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    modifier = Modifier.padding(top = 6.dp),
-                                )
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    modifier = Modifier.padding(8.dp),
+                                ) {
+                                    AsyncImage(
+                                        model = sticker.url,
+                                        contentDescription = sticker.name,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .aspectRatio(1f)
+                                            .clip(RoundedCornerShape(8.dp)),
+                                        contentScale = ContentScale.Fit,
+                                    )
+                                    Text(
+                                        text = sticker.name,
+                                        style = MaterialTheme.typography.labelMedium,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.padding(top = 6.dp),
+                                    )
+                                }
                             }
                         }
                     }
