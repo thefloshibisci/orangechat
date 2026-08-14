@@ -12,13 +12,21 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.net.Uri
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
 import android.util.Base64
 import android.util.Log
+import android.graphics.Rect
+import android.view.PixelCopy
 import android.view.Gravity
 import android.view.KeyEvent
+import android.view.View
+import android.view.ViewGroup
 import android.view.WindowManager
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
@@ -27,6 +35,7 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.webkit.ValueCallback
 import android.widget.FrameLayout
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -67,9 +76,12 @@ import me.rerere.ai.ui.UIMessagePart
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.ArrowLeft01
 import me.rerere.rikkahub.data.datastore.SettingsStore
+import me.rerere.rikkahub.data.datastore.getCurrentAssistant
 import me.rerere.rikkahub.data.datastore.getCurrentChatModel
 import me.rerere.rikkahub.data.datastore.findModelById
 import me.rerere.rikkahub.data.datastore.findProvider
+import me.rerere.rikkahub.data.repository.ConversationRepository
+import me.rerere.rikkahub.service.ChatService
 import me.rerere.rikkahub.plugin.data.PluginDataStore
 import me.rerere.rikkahub.plugin.loader.PluginLoader
 import me.rerere.rikkahub.plugin.loader.LoadedPlugin
@@ -81,21 +93,30 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.koin.compose.koinInject
 import java.io.File
+import java.io.ByteArrayOutputStream
+import kotlin.uuid.Uuid
 
 private const val TAG = "PluginWebViewPage"
+private const val WATCH_AUTO_TRIGGER = "\u2063[orange-watch-auto]"
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PluginWebViewPage(
     pluginId: String,
     htmlEntryPath: String,
+    initialConversationId: String = "",
     pluginManager: PluginManager,
     onNavigateBack: () -> Unit
 ) {
     val context = LocalContext.current
     val pluginLoader = koinInject<PluginLoader>()
     val pluginRepository = koinInject<PluginRepository>()
+    val conversationRepository = koinInject<ConversationRepository>()
+    val settingsStore = koinInject<SettingsStore>()
+    val chatService = koinInject<ChatService>()
     var webView by remember { mutableStateOf<WebView?>(null) }
+    var customVideoView by remember { mutableStateOf<View?>(null) }
+    var customVideoCallback by remember { mutableStateOf<WebChromeClient.CustomViewCallback?>(null) }
     var pendingImageCallback by remember { mutableStateOf<String?>(null) }
     var pendingFileCallback by remember { mutableStateOf<String?>(null) }
     var pendingBinaryFileCallback by remember { mutableStateOf<String?>(null) }
@@ -475,6 +496,67 @@ fun PluginWebViewPage(
                                 pluginLoader = pluginLoader,
                                 pluginManager = pluginManager,
                                 pluginRepository = pluginRepository,
+                                conversationRepository = conversationRepository,
+                                settingsStore = settingsStore,
+                                chatService = chatService,
+                                initialConversationId = initialConversationId,
+                                isWatchFullscreen = { customVideoView != null },
+                                onCaptureWatchFrame = captureFrame@{ callbackId, left, top, width, height ->
+                                    val activity = context as? Activity
+                                    val targetWebView = webView
+                                    val fullscreenPlayer = customVideoView?.takeIf {
+                                        it.isShown && it.width > 0 && it.height > 0
+                                    }
+                                    val captureWidth = fullscreenPlayer?.width ?: width
+                                    val captureHeight = fullscreenPlayer?.height ?: height
+                                    if (activity == null || targetWebView == null || captureWidth <= 0 || captureHeight <= 0) {
+                                        targetWebView?.evaluateJavascript(
+                                            "window.__bridgeResult('$callbackId', {success:false,error:'无法读取播放器画面'});", null
+                                        )
+                                    } else {
+                                        val captureView = fullscreenPlayer ?: targetWebView
+                                        val location = IntArray(2).also { captureView.getLocationInWindow(it) }
+                                        val source = if (fullscreenPlayer != null) {
+                                            Rect(location[0], location[1], location[0] + captureWidth, location[1] + captureHeight)
+                                        } else {
+                                            Rect(location[0] + left, location[1] + top, location[0] + left + width, location[1] + top + height)
+                                        }
+                                        val outputWidth = captureWidth.coerceAtMost(1280)
+                                        val outputHeight = (captureHeight.toFloat() * outputWidth / captureWidth)
+                                            .toInt().coerceAtLeast(1).coerceAtMost(720)
+                                        val bitmap = Bitmap.createBitmap(outputWidth, outputHeight, Bitmap.Config.ARGB_8888)
+                                        fun returnBitmap(captured: Bitmap) {
+                                            val output = ByteArrayOutputStream()
+                                            // Preserve subtitles and small on-screen text. The plugin
+                                            // will compose selected frames into the final timeline, so
+                                            // avoid an aggressive first-stage JPEG loss here.
+                                            captured.compress(Bitmap.CompressFormat.JPEG, 88, output)
+                                            val frame = "data:image/jpeg;base64," + Base64.encodeToString(output.toByteArray(), Base64.NO_WRAP)
+                                            val result = JSONObject().put("success", true).put("frame", frame).toString()
+                                            targetWebView.post { targetWebView.evaluateJavascript("window.__bridgeResult('$callbackId', $result);", null) }
+                                        }
+                                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                                            PixelCopy.request(activity.window, source, bitmap, { copyResult ->
+                                                if (copyResult == PixelCopy.SUCCESS) returnBitmap(bitmap)
+                                                else {
+                                                    val fallback = Bitmap.createBitmap(outputWidth, outputHeight, Bitmap.Config.ARGB_8888)
+                                                    val canvas = Canvas(fallback)
+                                                    canvas.scale(outputWidth.toFloat() / captureWidth, outputHeight.toFloat() / captureHeight)
+                                                    if (fullscreenPlayer == null) canvas.translate(-left.toFloat(), -top.toFloat())
+                                                    captureView.draw(canvas)
+                                                    returnBitmap(fallback)
+                                                }
+                                            }, Handler(Looper.getMainLooper()))
+                                        } else {
+                                            val fallback = Bitmap.createBitmap(outputWidth, outputHeight, Bitmap.Config.ARGB_8888)
+                                            val canvas = Canvas(fallback)
+                                            canvas.scale(outputWidth.toFloat() / captureWidth, outputHeight.toFloat() / captureHeight)
+                                            if (fullscreenPlayer == null) canvas.translate(-left.toFloat(), -top.toFloat())
+                                            captureView.draw(canvas)
+                                            returnBitmap(fallback)
+                                        }
+                                    }
+                                },
                                 onPickImage = { callbackId ->
                                     pendingImageCallback = callbackId
                                     pickImageLauncher.launch(
@@ -737,6 +819,42 @@ fun PluginWebViewPage(
 
                             // 处理 HTML <input type="file"> 文件选择
                             webChromeClient = object : WebChromeClient() {
+                                override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
+                                    val activity = context as? Activity
+                                    if (activity == null || view == null) {
+                                        callback?.onCustomViewHidden()
+                                        return
+                                    }
+                                    customVideoView?.let {
+                                        callback?.onCustomViewHidden()
+                                        return
+                                    }
+                                    customVideoView = view
+                                    customVideoCallback = callback
+                                    activity.addContentView(
+                                        view,
+                                        ViewGroup.LayoutParams(
+                                            ViewGroup.LayoutParams.MATCH_PARENT,
+                                            ViewGroup.LayoutParams.MATCH_PARENT,
+                                        )
+                                    )
+                                    activity.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                                    activity.window.decorView.systemUiVisibility =
+                                        View.SYSTEM_UI_FLAG_FULLSCREEN or
+                                            View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+                                            View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                                }
+
+                                override fun onHideCustomView() {
+                                    val activity = context as? Activity
+                                    (customVideoView?.parent as? ViewGroup)?.removeView(customVideoView)
+                                    customVideoView = null
+                                    customVideoCallback?.onCustomViewHidden()
+                                    customVideoCallback = null
+                                    activity?.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+                                    activity?.window?.decorView?.systemUiVisibility = View.SYSTEM_UI_FLAG_VISIBLE
+                                }
+
                                 override fun onShowFileChooser(
                                     webView: WebView?,
                                     filePathCallback: ValueCallback<Array<Uri>>?,
@@ -811,6 +929,12 @@ private class PluginWebViewClient(
     private val pluginLoader: PluginLoader,
     private val pluginManager: PluginManager,
     private val pluginRepository: PluginRepository,
+    private val conversationRepository: ConversationRepository,
+    private val settingsStore: SettingsStore,
+    private val chatService: ChatService,
+    private val initialConversationId: String,
+    private val isWatchFullscreen: () -> Boolean,
+    private val onCaptureWatchFrame: (callbackId: String, left: Int, top: Int, width: Int, height: Int) -> Unit,
     private val onPickImage: (callbackId: String) -> Unit,
     private val onPickFile: (callbackId: String) -> Unit,
     private val onPickBinaryFile: (callbackId: String) -> Unit,
@@ -823,6 +947,7 @@ private class PluginWebViewClient(
     private val onHideOverlay: () -> Unit
 ) : WebViewClient() {
     private val json = Json { ignoreUnknownKeys = true }
+    private val watchFrameTransfers = mutableMapOf<String, StringBuilder>()
 
     override fun shouldOverrideUrlLoading(
         view: WebView?,
@@ -832,6 +957,9 @@ private class PluginWebViewClient(
         if (url.startsWith("bridge://")) {
             handleBridgeCall(view!!, url)
             return true
+        }
+        if (request?.isForMainFrame == false && request.url.host == "player.bilibili.com") {
+            return false
         }
         if (!url.startsWith("file://") && !url.startsWith("about:blank")) {
             // Open external URLs (e.g. Supabase download links) in system browser
@@ -857,6 +985,51 @@ private class PluginWebViewClient(
         val params = uri.queryParameterNames.associateWith { uri.getQueryParameter(it) ?: "" }
 
         when (method) {
+            "watchShowStatus" -> {
+                val callbackId = params["callbackId"].orEmpty()
+                val message = params["message"].orEmpty().take(80)
+                if (message.isNotBlank() && isWatchFullscreen()) {
+                    webView.post {
+                        Toast.makeText(webView.context.applicationContext, message, Toast.LENGTH_SHORT).show()
+                    }
+                }
+                webView.post { webView.evaluateJavascript("window.__bridgeResult('$callbackId', {success:true});", null) }
+            }
+
+            "watchAppearance" -> {
+                handleWatchBridge(webView, params) {
+                    val display = settingsStore.settingsFlow.first().displaySetting
+                    val color = display.watchControlColor ?: 0xFFFFFFFFL
+                    JSONObject()
+                        .put("success", true)
+                        .put("color", String.format("#%06X", color and 0xFFFFFF))
+                        .put("alpha", display.watchControlAlpha.coerceIn(0.05f, 1f).toDouble())
+                }
+            }
+
+            "watchFrameChunk" -> {
+                val callbackId = params["callbackId"].orEmpty()
+                val transferId = params["transferId"].orEmpty()
+                val chunk = params["chunk"].orEmpty()
+                val reset = params["reset"] == "true"
+                synchronized(watchFrameTransfers) {
+                    val builder = if (reset) StringBuilder().also { watchFrameTransfers[transferId] = it }
+                    else watchFrameTransfers.getOrPut(transferId) { StringBuilder() }
+                    builder.append(chunk)
+                }
+                webView.post { webView.evaluateJavascript("window.__bridgeResult('$callbackId', {success:true});", null) }
+            }
+
+            "watchCaptureFrame" -> {
+                onCaptureWatchFrame(
+                    params["callbackId"].orEmpty(),
+                    params["left"]?.toIntOrNull() ?: 0,
+                    params["top"]?.toIntOrNull() ?: 0,
+                    params["width"]?.toIntOrNull() ?: 0,
+                    params["height"]?.toIntOrNull() ?: 0
+                )
+            }
+
             "getPluginConfig" -> {
                 CoroutineScope(Dispatchers.IO).launch {
                     try {
@@ -1207,6 +1380,154 @@ private class PluginWebViewClient(
                 }
             }
 
+            "watchResolveConversation" -> {
+                handleWatchBridge(webView, params) {
+                    val requestedTitle = params["title"]?.trim().orEmpty()
+                    require(requestedTitle.isNotEmpty()) { "title is required" }
+                    val savedId = params["conversationId"]
+                        ?.takeIf { it.isNotBlank() }
+                        ?.let { runCatching { Uuid.parse(it) }.getOrNull() }
+                        ?: initialConversationId.takeIf { it.isNotBlank() }
+                            ?.let { runCatching { Uuid.parse(it) }.getOrNull() }
+                    val currentAssistant = settingsStore.settingsFlow.first().getCurrentAssistant()
+                    val conversation = savedId?.let { conversationRepository.getConversationById(it) }
+                        ?: conversationRepository.getConversationsOfAssistant(currentAssistant.id).first()
+                            .maxByOrNull { it.updateAt }
+                        ?: throw IllegalArgumentException("没有可用的聊天窗口，请先在聊天页发送一条消息")
+                    val conversationId = conversation.id
+                    chatService.initializeConversation(conversationId)
+                    val resolved = chatService.getConversationFlow(conversationId).value
+                    JSONObject()
+                        .put("success", true)
+                        .put("conversationId", conversationId.toString())
+                        .put("title", resolved.title)
+                        .put("displayName", currentAssistant.name.ifBlank { resolved.title })
+                        .put("messageCount", resolved.messageNodes.size)
+                }
+            }
+
+            "watchListConversations" -> {
+                handleWatchBridge(webView, params) {
+                    val currentAssistant = settingsStore.settingsFlow.first().getCurrentAssistant()
+                    val items = JSONArray()
+                    conversationRepository.getConversationsOfAssistant(currentAssistant.id).first()
+                        .sortedByDescending { it.updateAt }
+                        .forEach { conversation ->
+                            items.put(JSONObject()
+                                .put("id", conversation.id.toString())
+                                .put("title", conversation.title.ifBlank { "未命名聊天" })
+                                .put("messageCount", conversation.messageNodes.size)
+                                .put("updatedAt", conversation.updateAt.toString()))
+                        }
+                    JSONObject().put("success", true).put("conversations", items)
+                }
+            }
+
+            "watchCacheInfo" -> {
+                handleWatchBridge(webView, params) {
+                    val frameDir = File(webView.context.cacheDir, "watch_frames")
+                    val expireBefore = System.currentTimeMillis() - 24L * 60L * 60L * 1000L
+                    frameDir.listFiles()?.filter { it.isFile && it.lastModified() < expireBefore }
+                        ?.forEach { it.delete() }
+                    val files = frameDir.listFiles()?.filter { it.isFile }.orEmpty()
+                    JSONObject()
+                        .put("success", true)
+                        .put("count", files.size)
+                        .put("bytes", files.sumOf { it.length() })
+                }
+            }
+
+            "watchClearCache" -> {
+                handleWatchBridge(webView, params) {
+                    val frameDir = File(webView.context.cacheDir, "watch_frames")
+                    val deleted = frameDir.listFiles()?.count { it.isFile && it.delete() } ?: 0
+                    JSONObject().put("success", true).put("deleted", deleted)
+                }
+            }
+
+            "watchGetMessages" -> {
+                handleWatchBridge(webView, params) {
+                    val conversationId = parseConversationId(params["conversationId"])
+                    val startIndex = (params["startIndex"]?.toIntOrNull() ?: 0).coerceAtLeast(0)
+                    val stored = conversationRepository.getConversationById(conversationId)
+                        ?: throw IllegalArgumentException("conversation not found")
+                    chatService.initializeConversation(conversationId)
+                    val conversation = chatService.getConversationFlow(conversationId).value
+                        .takeIf { it.id == stored.id } ?: stored
+                    val messages = JSONArray()
+                    conversation.messageNodes.drop(startIndex).forEach { node ->
+                        val message = node.currentMessage
+                        if (message.role != MessageRole.USER && message.role != MessageRole.ASSISTANT) return@forEach
+                        val answerText = message.parts.filterIsInstance<UIMessagePart.Text>()
+                            .joinToString("\n") { it.text }
+                        val reasoningText = message.parts.filterIsInstance<UIMessagePart.Reasoning>()
+                            .joinToString("\n") { it.reasoning }
+                        val text = when {
+                            answerText.isNotBlank() -> answerText
+                            reasoningText.isNotBlank() -> reasoningText
+                            else -> ""
+                        }
+                        if (message.role == MessageRole.USER && text.startsWith(WATCH_AUTO_TRIGGER)) return@forEach
+                        if (text.isBlank()) return@forEach
+                        messages.put(
+                            JSONObject()
+                                .put("id", message.id.toString())
+                                .put("role", message.role.name.lowercase())
+                                .put("text", text)
+                                .put("createdAt", message.createdAt.toString())
+                        )
+                    }
+                    JSONObject()
+                        .put("success", true)
+                        .put("messageCount", conversation.messageNodes.size)
+                        .put("isGenerating", chatService.getGenerationJobStateFlow(conversationId).first() != null)
+                        .put("messages", messages)
+                }
+            }
+
+            "watchSendMessage" -> {
+                handleWatchBridge(webView, params) {
+                    val conversationId = parseConversationId(params["conversationId"])
+                    require(conversationRepository.getConversationById(conversationId) != null) {
+                        "conversation not found"
+                    }
+                    val visibleText = params["text"]?.trim().orEmpty()
+                    require(visibleText.isNotEmpty()) { "text is required" }
+                    val isAutomaticWatchMessage = visibleText.startsWith("\u2063[orange-watch-auto]")
+                    chatService.initializeConversation(conversationId)
+                    var attachedFrame = false
+                    val content = buildList<UIMessagePart> {
+                        add(UIMessagePart.Text(visibleText))
+                        val transferredFrame = params["frameTransferId"]?.takeIf { it.isNotBlank() }?.let { id ->
+                            synchronized(watchFrameTransfers) { watchFrameTransfers.remove(id)?.toString() }
+                        }
+                        (transferredFrame ?: params["frame"])?.takeIf { it.startsWith("data:image/") }?.let { frame ->
+                            val imageBytes = Base64.decode(frame.substringAfter("base64,"), Base64.DEFAULT)
+                            val frameDir = File(webView.context.cacheDir, "watch_frames").apply { mkdirs() }
+                            val frameFile = File(frameDir, "watch_${System.currentTimeMillis()}.jpg")
+                            frameFile.writeBytes(imageBytes)
+                            add(UIMessagePart.Image(Uri.fromFile(frameFile).toString()))
+                            attachedFrame = true
+                        }
+                    }
+                    if (isAutomaticWatchMessage) {
+                        require(attachedFrame) { "共看画面没有成功附加，请继续播放后重试" }
+                    }
+                    chatService.sendMessage(
+                        conversationId = conversationId,
+                        content = content,
+                        answer = true,
+                        transientSystemPrompt = params["hiddenContext"]?.takeIf { it.isNotBlank() },
+                        // The co-watch plugin already attaches the exact cropped video frame.
+                        // Calling take_screenshot again captures the chat/WebView instead and can
+                        // override the valid frame with stale UI text (for example old OCR tests).
+                        // Keep tools available as a fallback only when no frame was attached.
+                        enableTools = !attachedFrame,
+                    )
+                    JSONObject().put("success", true).put("status", "accepted")
+                }
+            }
+
             "notifyHook" -> {
                 val callbackId = params["callbackId"] ?: ""
                 val hookName = params["hookName"] ?: ""
@@ -1291,6 +1612,49 @@ private class PluginWebViewClient(
                     )
                 }
             }
+        }
+    }
+
+    private fun handleWatchBridge(
+        webView: WebView,
+        params: Map<String, String>,
+        block: suspend () -> JSONObject,
+    ) {
+        val callbackId = params["callbackId"].orEmpty()
+        if (!pluginInfo.manifest.permissions.contains("conversation_sync")) {
+            postBridgeJson(
+                webView,
+                callbackId,
+                JSONObject()
+                    .put("success", false)
+                    .put("error", "Permission denied: conversation_sync permission not declared"),
+            )
+            return
+        }
+        CoroutineScope(Dispatchers.IO).launch {
+            val result = runCatching { block() }.getOrElse { error ->
+                Log.e(TAG, "Conversation sync bridge failed", error)
+                JSONObject()
+                    .put("success", false)
+                    .put("error", error.message ?: "Unknown error")
+            }
+            postBridgeJson(webView, callbackId, result)
+        }
+    }
+
+    private fun parseConversationId(value: String?): Uuid =
+        value?.takeIf { it.isNotBlank() }
+            ?.let { runCatching { Uuid.parse(it) }.getOrNull() }
+            ?: throw IllegalArgumentException("invalid conversationId")
+
+    private fun postBridgeJson(webView: WebView, callbackId: String, value: JSONObject) {
+        val encoded = JSONObject.quote(value.toString())
+        val callback = JSONObject.quote(callbackId)
+        webView.post {
+            webView.evaluateJavascript(
+                "window.__bridgeResult($callback, JSON.parse($encoded));",
+                null,
+            )
         }
     }
 
@@ -1543,6 +1907,68 @@ private const val bridgeJavascript = """
         callAI: function(prompt, context) {
             return bridgeCall('callAI', {prompt: prompt, context: context || '{}'});
         },
+        resolveWatchConversation: function(title, conversationId) {
+            return bridgeCall('watchResolveConversation', {
+                title: title,
+                conversationId: conversationId || ''
+            });
+        },
+        getWatchMessages: function(conversationId, startIndex) {
+            return bridgeCall('watchGetMessages', {
+                conversationId: conversationId,
+                startIndex: startIndex || 0
+            });
+        },
+        listWatchConversations: function() {
+            return bridgeCall('watchListConversations', {});
+        },
+        getWatchCacheInfo: function() {
+            return bridgeCall('watchCacheInfo', {});
+        },
+        clearWatchCache: function() {
+            return bridgeCall('watchClearCache', {});
+        },
+        captureWatchFrame: function(left, top, width, height) {
+            return bridgeCall('watchCaptureFrame', {
+                left: Math.round(left || 0),
+                top: Math.round(top || 0),
+                width: Math.round(width || 0),
+                height: Math.round(height || 0)
+            });
+        },
+        showWatchStatus: function(message) {
+            return bridgeCall('watchShowStatus', {message: message || ''});
+        },
+        getWatchAppearance: function() {
+            return bridgeCall('watchAppearance', {});
+        },
+        uploadWatchFrame: async function(frame) {
+            if (!frame) return '';
+            var transferId = 'wf_' + Date.now() + '_' + Math.random().toString(36).slice(2);
+            var chunkSize = 24000;
+            for (var offset = 0; offset < frame.length; offset += chunkSize) {
+                await bridgeCall('watchFrameChunk', {
+                    transferId: transferId,
+                    chunk: frame.slice(offset, offset + chunkSize),
+                    reset: offset === 0
+                });
+            }
+            return transferId;
+        },
+        sendWatchMessage: function(conversationId, text, hiddenContext, frame) {
+            if (!frame) return bridgeCall('watchSendMessage', {
+                conversationId: conversationId, text: text, hiddenContext: hiddenContext || '', frame: ''
+            });
+            return this.uploadWatchFrame(frame).then(function(transferId) {
+                return bridgeCall('watchSendMessage', {
+                    conversationId: conversationId,
+                    text: text,
+                    hiddenContext: hiddenContext || '',
+                    frameTransferId: transferId
+                });
+            });
+        },
+        supportsWatchFrameFile: true,
         notifyHook: function(hookName, context) {
             return bridgeCall('notifyHook', {hookName: hookName, context: context || '{}'});
         },

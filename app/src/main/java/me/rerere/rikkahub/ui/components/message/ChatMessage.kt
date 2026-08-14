@@ -148,7 +148,21 @@ fun ChatMessage(
     onToolApproval: ((toolCallId: String, approved: Boolean, reason: String) -> Unit)? = null,
     onToolAnswer: ((toolCallId: String, answer: String) -> Unit)? = null,
 ) {
-    val message = node.messages[node.selectIndex]
+    val message = node.messages[node.selectIndex].let { original ->
+        if (original.role == MessageRole.USER && original.parts.any {
+                it is UIMessagePart.Text && it.text.startsWith("\u2063[orange-watch-auto]")
+            }
+        ) {
+            original.copy(
+                parts = original.parts.filterNot {
+                    it is UIMessagePart.Text && it.text.startsWith("\u2063[orange-watch-auto]")
+                }
+            )
+        } else {
+            original
+        }
+    }
+    if (message.parts.isEmptyUIMessage()) return
     val settings = LocalDisplaySettings.current
     val textStyle = LocalTextStyle.current.copy(
         fontSize = LocalTextStyle.current.fontSize * settings.fontSizeRatio,
