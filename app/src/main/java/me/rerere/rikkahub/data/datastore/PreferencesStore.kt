@@ -713,6 +713,8 @@ data class DisplaySetting(
     val chatBackgroundColor: Long? = null,
     val primaryColor: Long? = null,
     val inputFieldColor: Long? = null,
+    val watchControlColor: Long? = null,
+    val watchControlAlpha: Float = 0.18f,
     // 气泡背景图 & 圆角
     val userBubbleImagePath: String = "",
     val assistantBubbleImagePath: String = "",

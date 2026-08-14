@@ -17,14 +17,14 @@ import java.time.format.TextStyle
 import java.util.Locale
 import kotlin.time.toJavaInstant
 
-private const val TIME_GAP_THRESHOLD_SECONDS = 300L // 5 分钟
+private const val DEFAULT_TIME_GAP_THRESHOLD_SECONDS = 300L
 
 /**
  * 时间提醒注入转换器
  *
  * 首次用户消息仍会注入当时的时间。
  * 仅检查当前上下文里最新一条用户消息：当它在上一条 assistant 消息完成
- * 5 分钟或更久后发出时，额外注入精确到秒的时间间隔。
+ * 达到用户设置的触发间隔后，额外注入精确到秒的时间间隔。
  *
  * 只处理最新一次回复间隔，避免把历史中的每段长间隔重复注入，
  * 从而减少额外 token 消耗，也避免模型反复关注已经过去的等待时间。
@@ -35,11 +35,17 @@ object TimeReminderTransformer : InputMessageTransformer {
         messages: List<UIMessage>,
     ): List<UIMessage> {
         if (!ctx.assistant.enableTimeReminder) return messages
-        return applyTimeReminder(messages)
+        val thresholdSeconds = ctx.assistant.timeReminderIntervalMinutes
+            .coerceAtLeast(1)
+            .toLong() * 60L
+        return applyTimeReminder(messages, thresholdSeconds)
     }
 }
 
-internal fun applyTimeReminder(messages: List<UIMessage>): List<UIMessage> {
+internal fun applyTimeReminder(
+    messages: List<UIMessage>,
+    thresholdSeconds: Long = DEFAULT_TIME_GAP_THRESHOLD_SECONDS,
+): List<UIMessage> {
     val firstUserIndex = messages.indexOfFirst { it.role == MessageRole.USER }
     if (firstUserIndex == -1) return messages
 
@@ -60,7 +66,7 @@ internal fun applyTimeReminder(messages: List<UIMessage>): List<UIMessage> {
             val previousEndInstant = (previous.finishedAt ?: previous.createdAt).toInstant(tz)
             val gapSeconds = (latestUserInstant - previousEndInstant).inWholeSeconds
 
-            if (gapSeconds >= TIME_GAP_THRESHOLD_SECONDS) {
+            if (gapSeconds >= thresholdSeconds.coerceAtLeast(1L)) {
                 buildTimeReminderMessage(gapSeconds, latestUserInstant)
             } else {
                 null

@@ -157,6 +157,7 @@ fun ChatInput(
     onCancelClick: () -> Unit,
     onSendClick: () -> Unit,
     onLongSendClick: () -> Unit,
+    onStickerSend: (markdown: String) -> Unit,
     onVoiceMessage: ((url: String, duration: Long, transcript: String) -> Unit)? = null,
     autoStartVoice: Boolean = false,
 ) {
@@ -180,6 +181,7 @@ fun ChatInput(
     }
 
     var expand by remember { mutableStateOf(ExpandState.Collapsed) }
+    var showStickerPicker by remember { mutableStateOf(false) }
     var showInjectionSheet by remember { mutableStateOf(false) }
     var showCompressDialog by remember { mutableStateOf(false) }
     fun dismissExpand() {
@@ -487,6 +489,16 @@ fun ChatInput(
         } else null
     }
 
+    if (showStickerPicker) {
+        StickerPickerSheet(
+            onDismiss = { showStickerPicker = false },
+            onStickerSelected = { markdown ->
+                showStickerPicker = false
+                onStickerSend(markdown)
+            },
+        )
+    }
+
     Surface(
         color = Color.Transparent,
     ) {
@@ -604,6 +616,18 @@ fun ChatInput(
                                     )
                                 }
 
+                            }
+
+                            ActionIconButton(
+                                onClick = {
+                                    dismissExpand()
+                                    showStickerPicker = true
+                                },
+                            ) {
+                                Text(
+                                    text = "🙂",
+                                    style = MaterialTheme.typography.titleMedium,
+                                )
                             }
 
                             ActionIconButton(
