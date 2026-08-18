@@ -37,7 +37,9 @@ internal data class RecentContinuityTurn(
  * Select only the small amount of ordinary conversation that Xinchao's
  * short-lived continuity layer is allowed to receive. System prompts, tool
  * calls/results, reasoning, attachments and the full conversation archive are
- * intentionally excluded here rather than relying on model instructions.
+ * intentionally excluded here rather than relying on model instructions. A
+ * visible assistant reply may still contain reasoning or tool parts alongside
+ * its text; those internal parts are ignored without dropping the visible text.
  */
 internal fun selectRecentContinuityTurns(
     messages: List<UIMessage>,
@@ -48,7 +50,19 @@ internal fun selectRecentContinuityTurns(
     return messages.asSequence()
         .filter { it.role == MessageRole.USER || it.role == MessageRole.ASSISTANT }
         .mapNotNull { message ->
-            if (message.parts.any { it !is UIMessagePart.Text }) return@mapNotNull null
+            // A caption can depend on an attachment that the continuity layer
+            // deliberately does not receive, so omit the whole turn in that
+            // case. Reasoning and tool parts, however, are common companions to
+            // an ordinary assistant reply: discard those parts but keep the
+            // user-visible text.
+            if (message.parts.any { part ->
+                    part is UIMessagePart.Image ||
+                        part is UIMessagePart.Video ||
+                        part is UIMessagePart.Audio ||
+                        part is UIMessagePart.VoiceMessage ||
+                        part is UIMessagePart.Document
+                }
+            ) return@mapNotNull null
             val text = message.parts
                 .filterIsInstance<UIMessagePart.Text>()
                 .joinToString("\n") { it.text }
