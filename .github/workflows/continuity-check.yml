@@ -27,4 +27,6 @@ jobs:
           cache: gradle
 
       - name: Test recent continuity
-        run: ./gradlew :app:testDebugUnitTest --tests me.rerere.rikkahub.data.ai.mcp.RecentContinuityTest
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest --tests me.rerere.rikkahub.data.ai.mcp.RecentContinuityTest
