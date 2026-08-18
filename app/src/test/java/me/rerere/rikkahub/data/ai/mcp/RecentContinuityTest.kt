@@ -77,6 +77,46 @@ class RecentContinuityTest {
     }
 
     @Test
+    fun `keeps visible assistant text while omitting reasoning and tools`() {
+        val messages = listOf(
+            UIMessage(
+                role = MessageRole.ASSISTANT,
+                parts = listOf(
+                    UIMessagePart.Reasoning(reasoning = "private chain of thought"),
+                    UIMessagePart.Tool(
+                        toolCallId = "tool-1",
+                        toolName = "private_tool",
+                        input = "secret input",
+                        output = listOf(UIMessagePart.Text("secret output")),
+                    ),
+                    UIMessagePart.Text("这是用户真正看到的回答"),
+                ),
+            ),
+        )
+
+        val turns = selectRecentContinuityTurns(messages)
+
+        assertEquals(listOf("这是用户真正看到的回答"), turns.map { it.text })
+        assertFalse(turns.single().text.contains("private"))
+        assertFalse(turns.single().text.contains("secret"))
+    }
+
+    @Test
+    fun `drops caption when its attachment cannot be synchronized`() {
+        val messages = listOf(
+            UIMessage(
+                role = MessageRole.ASSISTANT,
+                parts = listOf(
+                    UIMessagePart.Text("这句话依赖一张图片"),
+                    UIMessagePart.Image("file:///private-photo.jpg"),
+                ),
+            ),
+        )
+
+        assertTrue(selectRecentContinuityTurns(messages).isEmpty())
+    }
+
+    @Test
     fun `extracts returned context and drops transport status`() {
         val result = parseRecentContinuityResult(
             listOf(
