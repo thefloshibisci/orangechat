@@ -44,3 +44,27 @@ jobs:
         run: |
           chmod +x gradlew
           ./gradlew :app:testDebugUnitTest --tests me.rerere.rikkahub.data.ai.mcp.RecentContinuityTest
+
+      - name: Prepare signed app build
+        env:
+          KEY_BASE64: ${{ secrets.KEY_BASE64 }}
+          SIGNING_CONFIG: ${{ secrets.SIGNING_CONFIG }}
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+        run: |
+          test -n "$KEY_BASE64"
+          test -n "$SIGNING_CONFIG"
+          test -n "$GOOGLE_SERVICES_JSON"
+          printf '%s' "$KEY_BASE64" | base64 --decode > app/app.key
+          printf '%s\n' "$SIGNING_CONFIG" > local.properties
+          printf '%s' "$GOOGLE_SERVICES_JSON" > app/google-services.json
+
+      - name: Build signed continuity APK
+        run: ./gradlew assembleRelease
+
+      - name: Upload continuity APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: orangechat-continuity-${{ github.sha }}
+          path: app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+          retention-days: 7
