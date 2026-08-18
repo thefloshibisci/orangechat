@@ -1,0 +1,30 @@
+name: Continuity Check
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - codex/haven-continuity
+
+permissions:
+  contents: read
+
+jobs:
+  unit-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - name: Test recent continuity
+        run: ./gradlew :app:testDebugUnitTest --tests me.rerere.rikkahub.data.ai.mcp.RecentContinuityTest

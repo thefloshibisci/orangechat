@@ -44,6 +44,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonObject
@@ -71,6 +72,7 @@ import me.rerere.rikkahub.RouteActivity
 import me.rerere.rikkahub.data.ai.GenerationChunk
 import me.rerere.rikkahub.data.ai.GenerationHandler
 import me.rerere.rikkahub.data.ai.mcp.McpManager
+import me.rerere.rikkahub.data.ai.mcp.recentContinuityPrompt
 import me.rerere.rikkahub.data.ai.tools.LocalTools
 import me.rerere.rikkahub.data.ai.tools.SystemTools
 import me.rerere.rikkahub.data.ai.tools.ToolNaming
@@ -855,7 +857,7 @@ class ChatService(
 
             // memory tool
             if (!model.abilities.contains(ModelAbility.TOOL)) {
-                if (settings.enableWebSearch || mcpManager.getAllAvailableTools().isNotEmpty()) {
+                if (settings.enableWebSearch || mcpManager.getAllAvailableTools(assistant).isNotEmpty()) {
                     addError(
                         IllegalStateException(context.getString(R.string.tools_warning)),
                         conversationId,
@@ -867,19 +869,39 @@ class ChatService(
             // check invalid messages
             checkInvalidMessages(conversationId)
             val conversation = getConversationFlow(conversationId).value
+            val messagesForGeneration = conversation.currentMessages.let {
+                if (messageRange != null) {
+                    it.subList(messageRange.start, messageRange.endInclusive + 1)
+                } else {
+                    it
+                }
+            }
+
+            // Continuity is an app-level transport concern, not a tool the model
+            // has to remember to call. Only sync at the start of an ordinary
+            // user turn; tool-approval continuations skip this path.
+            val recentCrossClientContext = if (messagesForGeneration.lastOrNull()?.role == MessageRole.USER) {
+                withTimeoutOrNull(5_000L) {
+                    runCatching {
+                        mcpManager.syncRecentContinuity(
+                            assistant = assistant,
+                            conversationId = conversationId.toString(),
+                            messages = messagesForGeneration,
+                        )
+                    }.onFailure {
+                        Log.w(TAG, "Recent cross-client continuity sync failed", it)
+                    }.getOrNull()
+                }
+            } else {
+                null
+            }
 
             // start generating
             generationHandler.generateText(
                 settings = settings,
                 model = model,
                 processingStatus = session.processingStatus,
-                messages = conversation.currentMessages.let {
-                    if (messageRange != null) {
-                        it.subList(messageRange.start, messageRange.endInclusive + 1)
-                    } else {
-                        it
-                    }
-                },
+                messages = messagesForGeneration,
                 assistant = assistant,
                 conversationSystemPrompt = listOfNotNull(
                     conversation.customSystemPrompt?.takeIf { it.isNotBlank() },
@@ -907,6 +929,7 @@ class ChatService(
                 pluginPromptInjections = buildList {
                     addAll(pluginToolProvider.getPluginPromptInjections())
                     settings.displaySetting.buildAnniversaryPrompt()?.let(::add)
+                    recentCrossClientContext?.let { add(recentContinuityPrompt(it)) }
                 },
                 conversationId = conversationId.toString(),
             ).onCompletion {
@@ -953,6 +976,23 @@ class ChatService(
                 val latest = getConversationFlow(conversationId).value
                 saveConversation(conversationId, latest)
                 latest
+            }
+
+            // Publish the completed assistant turn as well, so another client
+            // opened immediately after this reply does not miss the last line.
+            appScope.launch {
+                withTimeoutOrNull(5_000L) {
+                    runCatching {
+                        mcpManager.syncRecentContinuity(
+                            assistant = assistant,
+                            conversationId = conversationId.toString(),
+                            messages = finalConversation.currentMessages,
+                            returnContext = false,
+                        )
+                    }.onFailure {
+                        Log.w(TAG, "Post-reply continuity sync failed", it)
+                    }
+                }
             }
 
             // 自动唤起网易云音乐：扫描刚完成的 assistant 文本中的 orpheus:// scheme

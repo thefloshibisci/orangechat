@@ -109,7 +109,13 @@ public class StreamableHttpClientTransport(
         onResumptionToken: ((String) -> Unit)? = null,
     ) {
         check(initialized.load()) { "Transport is not started" }
-        Log.d(TAG, "Client sending message via POST to $url: ${McpJson.encodeToString(message)}")
+        val jsonBody = McpJson.encodeToString(message)
+        val logBody = if (CONTINUITY_TOOL_PATTERN.containsMatchIn(jsonBody)) {
+            "[bounded conversation text omitted]"
+        } else {
+            jsonBody
+        }
+        Log.d(TAG, "Client sending message via POST to $url: $logBody")
 
         // If we have a resumption token, reconnect the SSE stream with it
         resumptionToken?.let { token ->
@@ -121,7 +127,6 @@ public class StreamableHttpClientTransport(
             return
         }
 
-        val jsonBody = McpJson.encodeToString(message)
         val response = client.post(url) {
             applyCommonHeaders(this)
             headers.append(HttpHeaders.Accept, "${ContentType.Application.Json}, ${ContentType.Text.EventStream}")
@@ -373,3 +378,6 @@ public class StreamableHttpClientTransport(
         }
     }
 }
+
+private val CONTINUITY_TOOL_PATTERN =
+    Regex("\"name\"\\s*:\\s*\"xinchao_continuity_sync\"")
