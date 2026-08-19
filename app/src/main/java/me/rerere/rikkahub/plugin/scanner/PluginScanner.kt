@@ -8,6 +8,7 @@ package me.rerere.rikkahub.plugin.scanner
 
 import android.content.Context
 import android.net.Uri
+import android.os.Environment
 import kotlinx.serialization.json.Json
 import me.rerere.rikkahub.data.security.SecurityAuditRepository
 import me.rerere.rikkahub.plugin.model.PluginInfo
@@ -51,6 +52,7 @@ class PluginScanner(
      */
     fun scanPlugins(): List<PluginInfo> {
         val dir = ensurePluginsDir()
+        migrateLegacyPlugins(dir)
         if (!dir.exists() || !dir.isDirectory) {
             return emptyList()
         }
@@ -58,6 +60,30 @@ class PluginScanner(
         return dir.listFiles { file -> file.isDirectory }
             ?.mapNotNull { pluginDir -> loadPluginInfo(pluginDir) }
             ?: emptyList()
+    }
+
+    /**
+     * 将旧版公共存储目录中的插件复制到应用私有目录。
+     *
+     * 迁移只补齐私有目录中不存在的插件，不覆盖用户已经导入或升级的新版本；
+     * 旧目录也会保留，避免迁移失败或回退旧版应用时造成数据丢失。
+     */
+    private fun migrateLegacyPlugins(destinationRoot: File) {
+        runCatching {
+            val legacyRoot = File(Environment.getExternalStorageDirectory(), LEGACY_PLUGINS_DIR)
+            if (!legacyRoot.isDirectory || legacyRoot.canonicalPath == destinationRoot.canonicalPath) {
+                return@runCatching
+            }
+
+            legacyRoot.listFiles { file -> file.isDirectory }
+                ?.filter { legacyPluginDir -> File(legacyPluginDir, MANIFEST_FILE).isFile }
+                ?.forEach { legacyPluginDir ->
+                    val destination = File(destinationRoot, legacyPluginDir.name)
+                    if (!destination.exists()) {
+                        installPluginDirectory(legacyPluginDir, destination)
+                    }
+                }
+        }
     }
 
     /**
