@@ -558,19 +558,6 @@ fun ChatDrawerContent(
                 DrawerAction(
                     modifier = Modifier.weight(1f),
                     icon = {
-                        Icon(HugeIcons.TransactionHistory, "纪念日")
-                    },
-                    label = {
-                        Text("纪念日")
-                    },
-                    onClick = {
-                        navController.navigate(Screen.Anniversary)
-                    },
-                )
-
-                DrawerAction(
-                    modifier = Modifier.weight(1f),
-                    icon = {
                         Icon(HugeIcons.Settings03, null)
                     },
                     label = { Text(stringResource(R.string.settings)) },
