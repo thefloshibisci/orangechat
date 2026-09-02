@@ -12,12 +12,10 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.content.MediaType
@@ -72,7 +70,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
@@ -86,6 +83,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.FileProvider
 import androidx.core.net.toUri
+import coil3.compose.AsyncImage
 import com.dokar.sonner.ToastType
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.hazeEffect
@@ -481,10 +479,8 @@ fun ChatInput(
 
     // Load input background image
     val inputBgPath = settings.displaySetting.inputBackgroundPath
-    val inputBgBitmap = remember(inputBgPath) {
-        if (inputBgPath.isNotBlank() && File(inputBgPath).exists()) {
-            android.graphics.BitmapFactory.decodeFile(inputBgPath)?.asImageBitmap()
-        } else null
+    val inputBgModel = remember(inputBgPath) {
+        inputBgPath.takeIf { it.isNotBlank() && File(it).isFile }
     }
 
     Surface(
@@ -512,16 +508,16 @@ fun ChatInput(
                 shape = MaterialTheme.shapes.largeIncreased,
                 tonalElevation = 0.dp,
                 // When background image is set, make surface transparent so image is visible
-                color = if (inputBgBitmap != null) Color.Transparent
+                color = if (inputBgModel != null) Color.Transparent
                     else if (settings.displaySetting.enableBlurEffect) Color.Transparent
                     else settings.displaySetting.inputFieldColor?.let { it.toComposeColor() } ?: hazeTintColor,
             ) {
                 // Use Box so background image can match parent size
                 Box {
                     // Background image inside input area (matches content size exactly)
-                    if (inputBgBitmap != null) {
-                        Image(
-                            bitmap = inputBgBitmap,
+                    if (inputBgModel != null) {
+                        AsyncImage(
+                            model = inputBgModel,
                             contentDescription = null,
                             modifier = Modifier
                                 .matchParentSize()
@@ -718,7 +714,6 @@ fun ChatInput(
             // Expanded content
             Box(
                 modifier = Modifier
-                    .animateContentSize()
                     .fillMaxWidth()
             ) {
                 BackHandler(

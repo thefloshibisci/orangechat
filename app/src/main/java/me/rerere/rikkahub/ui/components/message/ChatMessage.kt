@@ -228,9 +228,7 @@ fun ChatMessage(
             enter = slideInVertically { it / 2 } + fadeIn(),
             exit = slideOutVertically { it / 2 } + fadeOut()
         ) {
-            Column(
-                modifier = Modifier.animateContentSize()
-            ) {
+            Column {
                 ChatMessageActionButtons(
                     message = message,
                     onRegenerate = onRegenerate,
@@ -482,8 +480,6 @@ private fun MessagePartsBlock(
                                                             visual = true,
                                                         ),
                                                         onClickCitation = handleClickCitation,
-                                                        modifier = Modifier
-                                                            .animateContentSize()
                                                     )
                                                 }
                                             }
@@ -515,8 +511,6 @@ private fun MessagePartsBlock(
                                                 visual = true,
                                             ),
                                             onClickCitation = handleClickCitation,
-                                            modifier = Modifier
-                                                .animateContentSize()
                                         )
                                     }
                                 }
@@ -725,11 +719,12 @@ private fun BubbleSurface(
     onClick: (() -> Unit)? = null,
     content: @Composable () -> Unit,
 ) {
-    val hasImage = imagePath.isNotBlank() && java.io.File(imagePath).exists()
+    val hasImage = remember(imagePath) {
+        imagePath.isNotBlank() && java.io.File(imagePath).isFile
+    }
     if (hasImage) {
         Box(
             modifier = Modifier
-                .animateContentSize()
                 .clip(RoundedCornerShape(cornerRadius))
                 .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
         ) {
@@ -750,10 +745,11 @@ private fun BubbleSurface(
         }
     } else {
         Surface(
-            modifier = Modifier.animateContentSize(),
+            modifier = Modifier.then(
+                if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier
+            ),
             shape = RoundedCornerShape(cornerRadius),
             color = color.copy(alpha = bubbleAlpha),
-            onClick = onClick ?: {},
         ) {
             Column(modifier = Modifier.padding(8.dp)) { content() }
         }
