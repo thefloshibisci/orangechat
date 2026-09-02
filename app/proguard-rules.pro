@@ -29,6 +29,7 @@
 # jsch 可选依赖（PageantConnector/JUnixSocketFactory）在 Android 上不存在，忽略即可
 -dontwarn com.sun.jna.**
 -dontwarn org.newsclub.net.unix.**
+-dontwarn org.ietf.jgss.**
 -dontwarn com.google.re2j.**
 -dontobfuscate
 
