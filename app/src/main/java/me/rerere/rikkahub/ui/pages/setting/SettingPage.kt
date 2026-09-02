@@ -109,7 +109,7 @@ fun SettingPage(vm: SettingVM = koinViewModel()) {
     val filesManager: FilesManager = koinInject()
     val settingsBackground = settings.displaySetting.settingsBackgroundPath
         .takeIf { it.isNotBlank() && File(it).exists() }
-    val settingsUiAlpha = settings.displaySetting.settingsUiAlpha.coerceIn(0.25f, 1f)
+    val settingsUiAlpha = (settings.displaySetting.interfaceSurfaceOpacity / 100f).coerceIn(0.25f, 1f)
     val settingsCardColors = ListItemDefaults.colors(
         containerColor = MaterialTheme.colorScheme.surfaceBright.copy(alpha = settingsUiAlpha)
     )
