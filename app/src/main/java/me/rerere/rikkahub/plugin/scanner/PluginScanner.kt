@@ -26,8 +26,7 @@ class PluginScanner(
     private val auditRepo: SecurityAuditRepository? = null,
 ) {
     companion object {
-        const val PLUGINS_DIR = "plugins"
-        const val LEGACY_PLUGINS_DIR = "Orangechat/plugins"
+        const val PLUGINS_DIR = "Orangechat/plugins"
         const val MANIFEST_FILE = "manifest.json"
     }
 
@@ -37,10 +36,11 @@ class PluginScanner(
     }
 
     /**
-     * 获取插件根目录。插件是应用私有数据，使用无需存储权限且受分区存储支持的目录。
+     * 获取插件根目录
+     * 使用内部存储根目录 /storage/emulated/0/Orangechat/plugins/
      */
     val pluginsDir: File
-        get() = File(context.filesDir, PLUGINS_DIR).apply { mkdirs() }
+        get() = File(Environment.getExternalStorageDirectory(), PLUGINS_DIR).apply { mkdirs() }
 
     /**
      * 确保插件目录存在
@@ -52,7 +52,6 @@ class PluginScanner(
      */
     fun scanPlugins(): List<PluginInfo> {
         val dir = ensurePluginsDir()
-        migrateLegacyPlugins(dir)
         if (!dir.exists() || !dir.isDirectory) {
             return emptyList()
         }
@@ -60,30 +59,6 @@ class PluginScanner(
         return dir.listFiles { file -> file.isDirectory }
             ?.mapNotNull { pluginDir -> loadPluginInfo(pluginDir) }
             ?: emptyList()
-    }
-
-    /**
-     * 将旧版公共存储目录中的插件复制到应用私有目录。
-     *
-     * 迁移只补齐私有目录中不存在的插件，不覆盖用户已经导入或升级的新版本；
-     * 旧目录也会保留，避免迁移失败或回退旧版应用时造成数据丢失。
-     */
-    private fun migrateLegacyPlugins(destinationRoot: File) {
-        runCatching {
-            val legacyRoot = File(Environment.getExternalStorageDirectory(), LEGACY_PLUGINS_DIR)
-            if (!legacyRoot.isDirectory || legacyRoot.canonicalPath == destinationRoot.canonicalPath) {
-                return@runCatching
-            }
-
-            legacyRoot.listFiles { file -> file.isDirectory }
-                ?.filter { legacyPluginDir -> File(legacyPluginDir, MANIFEST_FILE).isFile }
-                ?.forEach { legacyPluginDir ->
-                    val destination = File(destinationRoot, legacyPluginDir.name)
-                    if (!destination.exists()) {
-                        installPluginDirectory(legacyPluginDir, destination)
-                    }
-                }
-        }
     }
 
     /**
@@ -180,6 +155,12 @@ class PluginScanner(
      */
     suspend fun completeImport(manifest: PluginManifest, tempDir: File): Result<PluginInfo> {
         return try {
+            val existingPlugins = scanPlugins()
+            if (existingPlugins.any { it.manifest.id == manifest.id }) {
+                tempDir.deleteRecursively()
+                return Result.failure(IllegalArgumentException("插件 ${manifest.id} 已存在"))
+            }
+
             val manifestFile = findManifest(tempDir)
                 ?: run {
                     tempDir.deleteRecursively()
@@ -193,7 +174,10 @@ class PluginScanner(
             }
 
             val pluginDir = File(pluginsDir, manifest.id)
-            installPluginDirectory(manifestFile.parentFile, pluginDir)
+            if (pluginDir.exists()) {
+                pluginDir.deleteRecursively()
+            }
+            manifestFile.parentFile?.copyRecursively(pluginDir, overwrite = true)
             tempDir.deleteRecursively()
 
             // 写入完整性校验和
@@ -243,7 +227,16 @@ class PluginScanner(
             val content = manifestFile.readText()
             val manifest = json.decodeFromString(PluginManifest.serializer(), content)
 
-            // 5. 验证入口文件
+            // 5. 检查ID是否重复
+            val existingPlugins = scanPlugins()
+            if (existingPlugins.any { it.manifest.id == manifest.id }) {
+                // 清理临时文件
+                tempFile.delete()
+                tempDir.deleteRecursively()
+                return Result.failure(IllegalArgumentException("插件 ${manifest.id} 已存在"))
+            }
+
+            // 6. 验证入口文件
             val entryFile = File(manifestFile.parentFile, manifest.entry)
             if (!entryFile.exists()) {
                 tempFile.delete()
@@ -251,11 +244,14 @@ class PluginScanner(
                 return Result.failure(IllegalArgumentException("找不到入口文件: ${manifest.entry}"))
             }
 
-            // 6. 安全安装；同 ID 插件视为升级，失败时恢复旧版
+            // 7. 移动到插件目录
             val pluginDir = File(pluginsDir, manifest.id)
-            installPluginDirectory(manifestFile.parentFile, pluginDir)
+            if (pluginDir.exists()) {
+                pluginDir.deleteRecursively()
+            }
+            manifestFile.parentFile?.copyRecursively(pluginDir, overwrite = true)
 
-            // 7. 清理临时文件
+            // 8. 清理临时文件
             tempFile.delete()
             tempDir.deleteRecursively()
 
@@ -292,16 +288,10 @@ class PluginScanner(
      */
     private fun unzip(zipFile: File, destDir: File) {
         destDir.mkdirs()
-        val canonicalDest = destDir.canonicalFile
         ZipInputStream(zipFile.inputStream().buffered()).use { zis ->
             var entry: java.util.zip.ZipEntry? = zis.nextEntry
             while (entry != null) {
-                val normalizedName = entry.name.replace('\\', '/').trimStart('/')
-                require(normalizedName.isNotBlank()) { "ZIP 包含空文件名" }
-                val file = File(canonicalDest, normalizedName).canonicalFile
-                require(file.toPath().startsWith(canonicalDest.toPath())) {
-                    "ZIP 包含非法路径: ${entry.name}"
-                }
+                val file = File(destDir, entry.name)
                 if (entry.isDirectory) {
                     file.mkdirs()
                 } else {
@@ -312,31 +302,6 @@ class PluginScanner(
                 }
                 entry = zis.nextEntry
             }
-        }
-    }
-
-    /**
-     * 原子式安装或升级插件。只替换目标插件目录，不影响其他插件；复制失败时恢复旧版。
-     */
-    private fun installPluginDirectory(sourceDir: File?, pluginDir: File) {
-        require(sourceDir != null && sourceDir.isDirectory) { "插件源目录无效" }
-        val stagingDir = File(pluginsDir, ".${pluginDir.name}.installing")
-        val backupDir = File(pluginsDir, ".${pluginDir.name}.backup")
-        stagingDir.deleteRecursively()
-        backupDir.deleteRecursively()
-        try {
-            check(sourceDir.copyRecursively(stagingDir, overwrite = true)) { "复制插件文件失败" }
-            if (pluginDir.exists()) {
-                check(pluginDir.renameTo(backupDir)) { "无法备份旧版插件" }
-            }
-            check(stagingDir.renameTo(pluginDir)) { "无法启用新版插件" }
-            backupDir.deleteRecursively()
-        } catch (error: Throwable) {
-            stagingDir.deleteRecursively()
-            if (!pluginDir.exists() && backupDir.exists()) {
-                backupDir.renameTo(pluginDir)
-            }
-            throw error
         }
     }
 

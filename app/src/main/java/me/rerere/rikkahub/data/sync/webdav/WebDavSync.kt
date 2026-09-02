@@ -348,7 +348,10 @@ class WebDavSync(
                                 } catch (e: Exception) {
                                     Log.e(TAG, "restoreFromBackupFile: Failed to restore plugin settings", e)
                                 }
-                            } else if (includePlugins && isPluginBackupEntry(zipEntry.name)) {
+                            } else if (includePlugins &&
+                                config.items.contains(WebDavConfig.BackupItem.FILES) &&
+                                zipEntry.name.startsWith("${PluginScanner.PLUGINS_DIR}/")
+                            ) {
                                 restorePluginEntry(zipIn, zipEntry.name)
                             } else {
                                 Log.i(TAG, "restoreFromBackupFile: Skipping entry ${zipEntry.name}")
@@ -396,24 +399,14 @@ class WebDavSync(
     }
 
     private fun restorePluginEntry(zipIn: ZipInputStream, entryName: String) {
-        val normalizedEntry = entryName.replace('\\', '/').trimStart('/')
-        val relativePath = when {
-            normalizedEntry.startsWith("${PluginScanner.LEGACY_PLUGINS_DIR}/") ->
-                normalizedEntry.removePrefix("${PluginScanner.LEGACY_PLUGINS_DIR}/")
-            normalizedEntry.startsWith("${PluginScanner.PLUGINS_DIR}/") ->
-                normalizedEntry.removePrefix("${PluginScanner.PLUGINS_DIR}/")
-            else -> ""
-        }
+        val relativePath = entryName.substringAfter("${PluginScanner.PLUGINS_DIR}/")
         if (relativePath.isBlank()) {
             Log.w(TAG, "restoreFromBackupFile: Invalid plugin entry $entryName")
             return
         }
 
-        val pluginsRoot = PluginScanner(context).pluginsDir.apply { mkdirs() }.canonicalFile
-        val targetFile = File(pluginsRoot, relativePath).canonicalFile
-        if (!targetFile.toPath().startsWith(pluginsRoot.toPath())) {
-            throw Exception("Invalid plugin path: $entryName")
-        }
+        val pluginsRoot = PluginScanner(context).pluginsDir.apply { mkdirs() }
+        val targetFile = File(pluginsRoot, relativePath)
         targetFile.parentFile?.mkdirs()
 
         try {
@@ -425,12 +418,6 @@ class WebDavSync(
             Log.e(TAG, "restoreFromBackupFile: Failed to restore plugin file $entryName", e)
             throw Exception("Failed to restore plugin file $entryName: ${e.message}")
         }
-    }
-
-    private fun isPluginBackupEntry(entryName: String): Boolean {
-        val normalized = entryName.replace('\\', '/').trimStart('/')
-        return normalized.startsWith("${PluginScanner.PLUGINS_DIR}/") ||
-            normalized.startsWith("${PluginScanner.LEGACY_PLUGINS_DIR}/")
     }
 
     private fun restoreSkillEntry(zipIn: ZipInputStream, entryName: String) {

@@ -649,7 +649,7 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 }
 
                 // 执行生成，支持工具调用
-                var (finalMessages, hasToolCalls, hasJumpFlag) = generateWithTools(
+                val (finalMessages, hasToolCalls, hasJumpFlag) = generateWithTools(
                     conversationId = conversationId,
                     providerImpl = providerImpl,
                     providerSetting = providerSetting,
@@ -660,65 +660,6 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                     assistant = assistant,
                     settings = settings
                 )
-
-                // 部分 thinking 模型会结束在 Reasoning/Tool 上而没有 Text 正文。
-                // 追加一次禁用工具和推理的收尾生成，确保得到真正可发送的最终消息，
-                // 同时不把内部思考内容直接暴露给用户。
-                val generatedAssistant = finalMessages.lastOrNull { it.role == MessageRole.ASSISTANT }
-                val generatedText = generatedAssistant?.parts
-                    ?.filterIsInstance<UIMessagePart.Text>()
-                    ?.joinToString("\n") { it.text }
-                    ?.trim().orEmpty()
-                val hasReasoning = generatedAssistant?.parts
-                    ?.filterIsInstance<UIMessagePart.Reasoning>()
-                    ?.any { it.reasoning.isNotBlank() } == true
-                if (generatedText.isBlank() && hasReasoning) {
-                    Log.w(TAG, "Thinking response has no final text; requesting a final user-visible message")
-                    val finalizePrompt = UIMessage(
-                        role = MessageRole.USER,
-                        parts = listOf(UIMessagePart.Text(
-                            "请根据你刚才的判断，只输出最终要发给用户的一条自然消息。" +
-                                "不要输出思考过程、标签或工具调用；如果确实不想发消息，只输出 [PASS]。"
-                        )),
-                    )
-                    var finalized = mergeAdjacentSameRoleMessages(finalMessages + finalizePrompt)
-                    providerImpl.streamText(
-                        providerSetting = providerSetting,
-                        messages = finalized,
-                        params = params.copy(tools = emptyList(), reasoningLevel = ReasoningLevel.OFF),
-                    ).collect { chunk ->
-                        finalized = finalized.handleMessageChunk(chunk = chunk, model = model)
-                        finalized.lastOrNull { it.role == MessageRole.ASSISTANT }?.let { message ->
-                            updateOrAppendAiMessage(conversationId, message)
-                        }
-                    }
-                    finalized.lastOrNull { it.role == MessageRole.ASSISTANT }?.let { message ->
-                        val now = kotlin.time.Clock.System.now()
-                        val originalReasoning = generatedAssistant?.parts
-                            ?.filterIsInstance<UIMessagePart.Reasoning>()
-                            ?.map { if (it.finishedAt == null) it.copy(finishedAt = now) else it }
-                            .orEmpty()
-                        val finalVisibleParts = message.parts.filterNot { it is UIMessagePart.Reasoning }
-                        // 沿用原 thinking 消息的 id，把思考链与最终正文合在同一条气泡中。
-                        val completed = message.copy(
-                            id = generatedAssistant?.id ?: message.id,
-                            parts = originalReasoning + finalVisibleParts,
-                        )
-                        updateOrAppendAiMessage(conversationId, completed)
-                        if (message.id != completed.id) {
-                            val session = chatService.getOrCreateSession(conversationId)
-                            session.saveMutex.withLock {
-                                val conv = chatService.getConversationFlow(conversationId).value
-                                val cleaned = conv.copy(messageNodes = conv.messageNodes.filterNot { node ->
-                                    node.messages.any { it.id == message.id }
-                                })
-                                chatService.updateConversation(conversationId, cleaned)
-                                chatService.saveConversation(conversationId, cleaned)
-                            }
-                        }
-                        finalMessages = finalized.dropLast(1) + completed
-                    }
-                }
 
                 // 提取AI消息
                 val aiMessage = finalMessages.lastOrNull() ?: UIMessage(

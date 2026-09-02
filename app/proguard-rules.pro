@@ -25,7 +25,7 @@
 
 # keep jlatexmath
 -keep class org.scilab.forge.jlatexmath.** {*;}
--keep class com.jcraft.jsch.** { *; }
+
 -dontwarn com.google.re2j.**
 -dontobfuscate
 

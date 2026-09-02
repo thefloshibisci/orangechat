@@ -53,7 +53,6 @@ import me.rerere.hugeicons.stroke.Image02
 import me.rerere.hugeicons.stroke.MusicNote03
 import me.rerere.hugeicons.stroke.Package
 import me.rerere.hugeicons.stroke.Package01
-import me.rerere.hugeicons.stroke.Tv01
 import me.rerere.hugeicons.stroke.Video01
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.Screen
@@ -98,7 +97,6 @@ internal fun FilesPicker(
     val providers = LocalProviders.current
     val mcpServers = LocalMcpServers.current
     val provider = currentChatModel?.findProvider(providers = providers)
-    val navController = LocalNavController.current
 
     Column(
         modifier = Modifier
@@ -121,17 +119,6 @@ internal fun FilesPicker(
             }
 
             FilePickButton(onClick = onPickFile)
-
-            WatchTogetherButton(onClick = {
-                onDismiss()
-                navController.navigate(
-                    Screen.PluginWebView(
-                        pluginId = "com.orangechat.plugin.orange-watch",
-                        entryPath = "ui/index.html",
-                        conversationId = conversation.id.toString(),
-                    )
-                )
-            })
         }
 
         HorizontalDivider(
@@ -334,17 +321,6 @@ fun FilePickButton(onClick: () -> Unit = {}) {
         Icon(HugeIcons.Files02, null)
     }, text = {
         Text(stringResource(R.string.upload_file))
-    }) {
-        onClick()
-    }
-}
-
-@Composable
-fun WatchTogetherButton(onClick: () -> Unit = {}) {
-    BigIconTextButton(icon = {
-        Icon(HugeIcons.Tv01, null)
-    }, text = {
-        Text("共看")
     }) {
         onClick()
     }

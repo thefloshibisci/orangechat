@@ -396,13 +396,7 @@ class ChatService(
 
     // ---- 发送消息 ----
 
-    fun sendMessage(
-        conversationId: Uuid,
-        content: List<UIMessagePart>,
-        answer: Boolean = true,
-        transientSystemPrompt: String? = null,
-        enableTools: Boolean = true,
-    ) {
+    fun sendMessage(conversationId: Uuid, content: List<UIMessagePart>, answer: Boolean = true) {
         if (content.isEmptyInputMessage()) return
 
         val session = getOrCreateSession(conversationId)
@@ -503,11 +497,7 @@ class ChatService(
 
                 // 开始补全
                 if (answer) {
-                    handleMessageComplete(
-                        conversationId = conversationId,
-                        transientSystemPrompt = transientSystemPrompt,
-                        enableTools = enableTools,
-                    )
+                    handleMessageComplete(conversationId)
                 }
 
                 _generationDoneFlow.emit(conversationId)
@@ -823,9 +813,7 @@ class ChatService(
 
     private suspend fun handleMessageComplete(
         conversationId: Uuid,
-        messageRange: ClosedRange<Int>? = null,
-        transientSystemPrompt: String? = null,
-        enableTools: Boolean = true,
+        messageRange: ClosedRange<Int>? = null
     ) {
         val settings = settingsStore.settingsFlow.first()
         val initialConversation = getConversationFlow(conversationId).value
@@ -875,10 +863,7 @@ class ChatService(
                     }
                 },
                 assistant = assistant,
-                conversationSystemPrompt = listOfNotNull(
-                    conversation.customSystemPrompt?.takeIf { it.isNotBlank() },
-                    transientSystemPrompt?.takeIf { it.isNotBlank() },
-                ).joinToString("\n\n").ifBlank { null },
+                conversationSystemPrompt = conversation.customSystemPrompt,
                 workspaceCwd = conversation.workspaceCwd,
                 memories = if (assistant.useGlobalMemory) {
                     memoryRepository.getGlobalMemories()
@@ -892,7 +877,6 @@ class ChatService(
                 },
                 outputTransformers = outputTransformers,
                 tools = buildList {
-                    if (!enableTools) return@buildList
                     if (settings.enableWebSearch) {
                         addAll(createSearchTools(settings))
                     }

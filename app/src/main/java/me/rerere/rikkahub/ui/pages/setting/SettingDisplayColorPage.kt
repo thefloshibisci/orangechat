@@ -22,7 +22,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.Slider
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -64,7 +63,6 @@ fun SettingDisplayColorPage(vm: SettingVM = koinViewModel()) {
     var showChatBackgroundColorPicker by remember { mutableStateOf(false) }
     var showPrimaryColorPicker by remember { mutableStateOf(false) }
     var showInputFieldColorPicker by remember { mutableStateOf(false) }
-    var showWatchControlColorPicker by remember { mutableStateOf(false) }
 
     if (showChatTextColorPicker) {
         ColorPickerDialog(
@@ -128,14 +126,6 @@ fun SettingDisplayColorPage(vm: SettingVM = koinViewModel()) {
             defaultColor = MaterialTheme.colorScheme.surfaceContainerLowest,
             onConfirm = { updateDisplaySetting(displaySetting.copy(inputFieldColor = it)) },
             onDismiss = { showInputFieldColorPicker = false }
-        )
-    }
-    if (showWatchControlColorPicker) {
-        ColorPickerDialog(
-            initialColor = displaySetting.watchControlColor,
-            defaultColor = Color.White,
-            onConfirm = { updateDisplaySetting(displaySetting.copy(watchControlColor = it)) },
-            onDismiss = { showWatchControlColorPicker = false }
         )
     }
 
@@ -313,29 +303,6 @@ fun SettingDisplayColorPage(vm: SettingVM = koinViewModel()) {
                                 TextButton(onClick = { showInputFieldColorPicker = true }) { Text("自定义") }
                                 if (displaySetting.inputFieldColor != null) {
                                     TextButton(onClick = { updateDisplaySetting(displaySetting.copy(inputFieldColor = null)) }) { Text("重置") }
-                                }
-                            }
-                        },
-                    )
-                    item(
-                        headlineContent = { Text("共看控件颜色") },
-                        supportingContent = {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text("不透明度 ${(displaySetting.watchControlAlpha * 100).toInt()}%")
-                                Slider(
-                                    value = displaySetting.watchControlAlpha,
-                                    onValueChange = { updateDisplaySetting(displaySetting.copy(watchControlAlpha = it)) },
-                                    valueRange = 0.05f..1f,
-                                    modifier = Modifier.weight(1f).padding(start = 8.dp)
-                                )
-                            }
-                        },
-                        trailingContent = {
-                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Box(Modifier.size(16.dp).background(displaySetting.watchControlColor?.let { it.toComposeColor() } ?: Color.White, CircleShape))
-                                TextButton(onClick = { showWatchControlColorPicker = true }) { Text("自定义") }
-                                if (displaySetting.watchControlColor != null) {
-                                    TextButton(onClick = { updateDisplaySetting(displaySetting.copy(watchControlColor = null)) }) { Text("重置") }
                                 }
                             }
                         },
