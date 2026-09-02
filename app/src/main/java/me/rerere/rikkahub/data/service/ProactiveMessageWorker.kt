@@ -8,16 +8,20 @@ package me.rerere.rikkahub.data.service
 
 import android.app.AlarmManager
 import android.content.Context
+import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.PowerManager
 import android.util.Log
 import androidx.work.CoroutineWorker
-import androidx.work.Data
+import androidx.work.ForegroundInfo
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import androidx.work.ExistingWorkPolicy
+import androidx.core.app.NotificationCompat
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
+import me.rerere.rikkahub.CHAT_LIVE_UPDATE_NOTIFICATION_CHANNEL_ID
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import java.util.concurrent.TimeUnit
 import kotlin.random.Random
@@ -35,7 +39,11 @@ class ProactiveMessageWorker(
         private const val TAG = "ProactiveMessageWorker"
         private const val UNIQUE_WORK_NAME = "proactive_message_work"
 
-        fun scheduleNext(context: Context, setting: me.rerere.rikkahub.data.datastore.ProactiveMessageSetting) {
+        fun scheduleNext(
+            context: Context,
+            setting: me.rerere.rikkahub.data.datastore.ProactiveMessageSetting,
+            delayMinutesOverride: Int? = null,
+        ) {
             if (!setting.enabled) {
                 cancel(context)
                 return
@@ -43,7 +51,8 @@ class ProactiveMessageWorker(
 
             val minMinutes = setting.minIntervalMinutes.coerceAtLeast(1)
             val maxMinutes = setting.maxIntervalMinutes.coerceAtLeast(minMinutes)
-            val delayMinutes = Random.nextInt(minMinutes, maxMinutes + 1)
+            val delayMinutes = delayMinutesOverride?.coerceAtLeast(1)
+                ?: Random.nextInt(minMinutes, maxMinutes + 1)
 
             val workRequest = OneTimeWorkRequestBuilder<ProactiveMessageWorker>()
                 .setInitialDelay(delayMinutes.toLong(), TimeUnit.MINUTES)
@@ -103,18 +112,15 @@ class ProactiveMessageWorker(
             return Result.success()
         }
 
-        // Acquire a wake lock for the duration of the work
-        val powerManager = applicationContext.getSystemService(Context.POWER_SERVICE) as PowerManager
-        val wakeLock = powerManager.newWakeLock(
-            PowerManager.PARTIAL_WAKE_LOCK,
-            "ProactiveMessage::WorkerWakeLock"
-        )
-        wakeLock.acquire(5 * 60 * 1000L) // 5 minutes max
-
         try {
-            // Delegate to the existing trigger service logic
-            // Start the foreground service which handles the actual AI generation
+            // Promote the Worker before handing off generation. On Huawei/HarmonyOS a background
+            // Worker calling startForegroundService directly may be deferred until the app opens;
+            // a foreground Worker makes this an allowed foreground-to-foreground transition.
+            setForeground(createForegroundInfo())
+            // The foreground Worker performs a reliable handoff to the generation service, which
+            // owns the generation-long WakeLock.
             val serviceIntent = android.content.Intent(applicationContext, ProactiveMessageTriggerService::class.java)
+                .putExtra(ProactiveMessageService.EXTRA_TRIGGER_SOURCE, "work_manager")
             
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 applicationContext.startForegroundService(serviceIntent)
@@ -122,19 +128,36 @@ class ProactiveMessageWorker(
                 applicationContext.startService(serviceIntent)
             }
 
-            // Schedule the next trigger via WorkManager
-            scheduleNext(applicationContext, proactiveSetting)
+            // Keep WorkManager's foreground ownership alive during the service handoff instead of
+            // ending the Worker in the same scheduling tick.
+            delay(1_000)
 
+            // 不在当前 Worker 运行期间用 ExistingWorkPolicy.REPLACE 替换自己。
+            // TriggerService 会在生成流程的 finally 中统一安排下一次触发。
             return Result.success()
         } catch (e: Exception) {
             Log.e(TAG, "ProactiveMessageWorker failed", e)
-            // Schedule next even on failure
-            scheduleNext(applicationContext, proactiveSetting)
+            // Let WorkManager own retry/backoff. Scheduling a new unique Worker here and also
+            // returning retry would create two competing recovery paths.
             return Result.retry()
-        } finally {
-            if (wakeLock.isHeld) {
-                wakeLock.release()
-            }
         }
+    }
+
+    private fun createForegroundInfo(): ForegroundInfo {
+        val notification = NotificationCompat.Builder(
+            applicationContext,
+            CHAT_LIVE_UPDATE_NOTIFICATION_CHANNEL_ID,
+        )
+            .setContentTitle("主动消息后台检查中")
+            .setSmallIcon(me.rerere.rikkahub.R.drawable.small_icon)
+            .setPriority(NotificationCompat.PRIORITY_MIN)
+            .setSilent(true)
+            .setOngoing(true)
+            .build()
+        return ForegroundInfo(
+            20003,
+            notification,
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
+        )
     }
 }

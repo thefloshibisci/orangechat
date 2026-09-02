@@ -250,22 +250,16 @@ private fun AssistantMemoryContent(
             item(
                 headlineContent = { Text(stringResource(R.string.assistant_page_time_reminder)) },
                 supportingContent = {
-                    Text(
-                        text = stringResource(R.string.assistant_page_time_reminder_desc),
-                    )
+                    Text(stringResource(R.string.assistant_page_time_reminder_desc))
                 },
                 trailingContent = {
                     Switch(
                         checked = assistant.enableTimeReminder,
-                        onCheckedChange = {
-                            onUpdateAssistant(
-                                assistant.copy(
-                                    enableTimeReminder = it
-                                )
-                            )
-                        }
+                        onCheckedChange = { enabled ->
+                            onUpdateAssistant(assistant.copy(enableTimeReminder = enabled))
+                        },
                     )
-                }
+                },
             )
             item(
                 headlineContent = { Text("触发间隔") },
@@ -274,13 +268,9 @@ private fun AssistantMemoryContent(
                     OutlinedTextField(
                         value = assistant.timeReminderIntervalMinutes.toString(),
                         onValueChange = { text ->
-                            text.toIntOrNull()
-                                ?.coerceIn(1, 1440)
-                                ?.let { minutes ->
-                                    onUpdateAssistant(
-                                        assistant.copy(timeReminderIntervalMinutes = minutes)
-                                    )
-                                }
+                            text.toIntOrNull()?.coerceIn(1, 1440)?.let { minutes ->
+                                onUpdateAssistant(assistant.copy(timeReminderIntervalMinutes = minutes))
+                            }
                         },
                         enabled = assistant.enableTimeReminder,
                         suffix = { Text("分钟") },
@@ -288,7 +278,7 @@ private fun AssistantMemoryContent(
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         modifier = Modifier.width(120.dp),
                     )
-                }
+                },
             )
             item(
                 headlineContent = { Text("外置记忆库") },

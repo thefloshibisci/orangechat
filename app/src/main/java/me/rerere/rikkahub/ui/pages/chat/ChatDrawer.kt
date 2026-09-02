@@ -430,13 +430,14 @@ fun ChatDrawerContent(
             )
 
             Row(
-                horizontalArrangement = Arrangement.SpaceAround,
+                horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 8.dp)
             ) {
                 DrawerAction(
+                    modifier = Modifier.weight(1f),
                     icon = {
                         Icon(
                             imageVector = HugeIcons.LookTop,
@@ -453,7 +454,10 @@ fun ChatDrawerContent(
                     materialMode = settings.displaySetting.materialMode,
                 )
 
-                Box {
+                Box(
+                    modifier = Modifier.weight(1f),
+                    contentAlignment = Alignment.Center,
+                ) {
                     DrawerAction(
                         icon = {
                             Icon(HugeIcons.Sparkles, "Menu")
@@ -508,6 +512,7 @@ fun ChatDrawerContent(
                 }
 
                 DrawerAction(
+                    modifier = Modifier.weight(1f),
                     icon = {
                         Icon(HugeIcons.InLove, stringResource(R.string.favorite_page_title))
                     },
@@ -522,6 +527,7 @@ fun ChatDrawerContent(
                 )
 
                 DrawerAction(
+                    modifier = Modifier.weight(1f),
                     icon = {
                         Icon(HugeIcons.ChartColumn, "统计数据")
                     },
@@ -549,9 +555,21 @@ fun ChatDrawerContent(
                     materialMode = settings.displaySetting.materialMode,
                 )
 
-                Spacer(Modifier.weight(1f))
+                DrawerAction(
+                    modifier = Modifier.weight(1f),
+                    icon = {
+                        Icon(HugeIcons.TransactionHistory, "纪念日")
+                    },
+                    label = {
+                        Text("纪念日")
+                    },
+                    onClick = {
+                        navController.navigate(Screen.Anniversary)
+                    },
+                )
 
                 DrawerAction(
+                    modifier = Modifier.weight(1f),
                     icon = {
                         Icon(HugeIcons.Settings03, null)
                     },
@@ -1044,17 +1062,28 @@ private fun DrawerAction(
         drawerItemAlpha = drawerItemAlpha,
         materialMode = materialMode,
     ) {
-        Tooltip(
-            tooltip = {
-                label()
-            }
+        Surface(
+            modifier = Modifier
+                .size(40.dp)
+                .clip(CircleShape)
+                .clickable(onClick = onClick),
+            color = MaterialTheme.colorScheme.primaryContainer,
+            shape = CircleShape,
+            contentColor = MaterialTheme.colorScheme.onSurface,
         ) {
-            Box(
-                modifier = Modifier
-                    .padding(10.dp)
-                    .size(20.dp),
+            Tooltip(
+                tooltip = {
+                    label()
+                }
             ) {
-                icon()
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Box(Modifier.size(20.dp)) {
+                        icon()
+                    }
+                }
             }
         }
     }

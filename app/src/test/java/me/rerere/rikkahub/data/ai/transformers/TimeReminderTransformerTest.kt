@@ -1,4 +1,4 @@
-﻿/*
+/*
  * 橘瓣 OrangeChat
  * 衍生自 RikkaHub (https://github.com/rikkahub/rikkahub)，原作者 RE
  * 本项目基于 GNU AGPL v3 开源，详见根目录 LICENSE 文件
@@ -6,110 +6,102 @@
 
 package me.rerere.rikkahub.data.ai.transformers
 
+import kotlin.time.Instant
 import kotlinx.datetime.LocalDateTime
 import me.rerere.ai.core.MessageRole
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class TimeReminderTransformerTest {
-
-    private fun userMessage(text: String, createdAt: LocalDateTime) = UIMessage(
-        role = MessageRole.USER,
+    private fun message(role: MessageRole, text: String, createdAt: LocalDateTime) = UIMessage(
+        role = role,
         parts = listOf(UIMessagePart.Text(text)),
         createdAt = createdAt,
+        finishedAt = createdAt,
     )
 
-    private fun getMessageText(msg: UIMessage): String =
-        msg.parts.filterIsInstance<UIMessagePart.Text>().joinToString("") { it.text }
+    private fun text(message: UIMessage): String = message.parts
+        .filterIsInstance<UIMessagePart.Text>()
+        .joinToString("") { it.text }
 
     @Test
-    fun `single message should not inject time reminder`() {
-        val messages = listOf(userMessage("Hello", LocalDateTime(2026, 2, 22, 10, 0, 0)))
-        val result = applyTimeReminder(messages)
-        assertEquals(1, result.size)
+    fun `empty messages remain empty`() {
+        assertTrue(
+            applyExtraTimeContext(
+                emptyList(),
+                currentTimeEnabled = false,
+                replyIntervalEnabled = false,
+            ).isEmpty(),
+        )
     }
 
     @Test
-    fun `gap less than 1 hour should not inject`() {
+    fun `current time switch injects exact time without reply interval`() {
         val messages = listOf(
-            userMessage("Hello", LocalDateTime(2026, 2, 22, 10, 0, 0)),
-            userMessage("World", LocalDateTime(2026, 2, 22, 10, 30, 0)), // 30 分钟
+            message(MessageRole.USER, "Hello", LocalDateTime(2026, 8, 25, 10, 0)),
         )
-        val result = applyTimeReminder(messages)
+        val result = applyExtraTimeContext(
+            messages,
+            currentTimeEnabled = true,
+            replyIntervalEnabled = false,
+            currentInstant = Instant.parse("2026-08-25T01:05:00Z"),
+        )
         assertEquals(2, result.size)
+        assertTrue(text(result[0]).contains("<time_context>"))
+        assertFalse(text(result[0]).contains("<reply_interval>"))
+        assertEquals("Hello", text(result[1]))
     }
 
     @Test
-    fun `gap exactly 1 hour should not inject`() {
+    fun `time disabled injects nothing`() {
         val messages = listOf(
-            userMessage("Hello", LocalDateTime(2026, 2, 22, 10, 0, 0)),
-            userMessage("World", LocalDateTime(2026, 2, 22, 11, 0, 0)), // 恰好 1 小时
+            message(MessageRole.USER, "现在几点", LocalDateTime(2026, 8, 25, 10, 0)),
         )
-        val result = applyTimeReminder(messages)
-        assertEquals(2, result.size)
+        val result = applyExtraTimeContext(
+            messages,
+            currentTimeEnabled = false,
+            replyIntervalEnabled = false,
+        )
+        assertEquals(messages, result)
+        assertFalse(result.any { text(it).contains("<time_") })
     }
 
     @Test
-    fun `gap more than 1 hour should inject time reminder before second message`() {
+    fun `reply interval works independently from current time`() {
         val messages = listOf(
-            userMessage("Hello", LocalDateTime(2026, 2, 22, 10, 0, 0)),
-            userMessage("World", LocalDateTime(2026, 2, 22, 12, 0, 0)), // 2 小时
+            message(MessageRole.ASSISTANT, "去忙吧", LocalDateTime(2026, 8, 25, 8, 0)),
+            message(MessageRole.USER, "回来啦", LocalDateTime(2026, 8, 25, 10, 0)),
         )
-        val result = applyTimeReminder(messages)
+        val result = applyExtraTimeContext(
+            messages,
+            currentTimeEnabled = false,
+            replyIntervalEnabled = true,
+            thresholdSeconds = 3600,
+        )
         assertEquals(3, result.size)
-        // 注入消息在原第二条之前
-        val injected = getMessageText(result[1])
-        assertTrue(injected.contains("<time_reminder>"))
-        assertTrue(injected.contains("since last message"))
-        assertEquals("World", getMessageText(result[2]))
+        assertEquals(1, result.count { text(it).contains("<reply_interval>") })
+        assertTrue(result.any { text(it).contains("2小时0分0秒") })
+        assertFalse(result.any { text(it).contains("<time_context>") })
     }
 
     @Test
-    fun `injected message should contain day of week and gap in hours`() {
+    fun `short reply gap does not add interval marker`() {
         val messages = listOf(
-            userMessage("Hello", LocalDateTime(2026, 2, 22, 10, 0, 0)),
-            userMessage("World", LocalDateTime(2026, 2, 22, 12, 0, 0)), // 2 小时
+            message(MessageRole.ASSISTANT, "一会儿见", LocalDateTime(2026, 8, 25, 8, 0)),
+            message(MessageRole.USER, "好", LocalDateTime(2026, 8, 25, 8, 5)),
         )
-        val result = applyTimeReminder(messages)
-        val injected = getMessageText(result[1])
-        // 星期几和时间之间有逗号分隔
-        assertTrue(injected.contains(","))
-        assertTrue(injected.contains("2 h since last message"))
-    }
-
-    @Test
-    fun `gap in days should format correctly`() {
-        val messages = listOf(
-            userMessage("Hello", LocalDateTime(2026, 2, 20, 10, 0, 0)),
-            userMessage("World", LocalDateTime(2026, 2, 22, 10, 0, 0)), // 2 天
+        val result = applyExtraTimeContext(
+            messages,
+            currentTimeEnabled = true,
+            replyIntervalEnabled = true,
+            thresholdSeconds = 3600,
+            currentInstant = Instant.parse("2026-08-25T01:05:00Z"),
         )
-        val result = applyTimeReminder(messages)
-        val injected = getMessageText(result[1])
-        assertTrue(injected.contains("2 d since last message"))
-    }
-
-    @Test
-    fun `multiple large gaps should inject multiple reminders`() {
-        val messages = listOf(
-            userMessage("Msg 1", LocalDateTime(2026, 2, 20, 10, 0, 0)),
-            userMessage("Msg 2", LocalDateTime(2026, 2, 21, 10, 0, 0)), // 1 天
-            userMessage("Msg 3", LocalDateTime(2026, 2, 22, 10, 0, 0)), // 1 天
-        )
-        val result = applyTimeReminder(messages)
-        assertEquals(5, result.size) // 3 条原始 + 2 条注入
-        assertTrue(getMessageText(result[0]) == "Msg 1")
-        assertTrue(getMessageText(result[1]).contains("<time_reminder>"))
-        assertTrue(getMessageText(result[2]) == "Msg 2")
-        assertTrue(getMessageText(result[3]).contains("<time_reminder>"))
-        assertTrue(getMessageText(result[4]) == "Msg 3")
-    }
-
-    @Test
-    fun `empty messages should return empty`() {
-        val result = applyTimeReminder(emptyList())
-        assertEquals(0, result.size)
+        assertEquals(3, result.size)
+        assertFalse(result.any { text(it).contains("<reply_interval>") })
     }
 }

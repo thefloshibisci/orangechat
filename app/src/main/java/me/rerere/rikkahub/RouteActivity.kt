@@ -145,6 +145,7 @@ import me.rerere.rikkahub.ui.pages.setting.SettingDisplayNotificationPage
 import me.rerere.rikkahub.ui.pages.setting.SettingDisplayPage
 import me.rerere.rikkahub.ui.pages.setting.SettingDisplayThemePage
 import me.rerere.rikkahub.ui.pages.setting.SettingDisplayTransparencyPage
+import me.rerere.rikkahub.ui.pages.setting.SettingExtraInjectionPage
 import me.rerere.rikkahub.ui.pages.setting.SettingThemePage
 import me.rerere.rikkahub.ui.pages.setting.SettingDonatePage
 import me.rerere.rikkahub.ui.pages.setting.SettingFilesPage
@@ -169,6 +170,7 @@ import me.rerere.rikkahub.ui.components.ui.EmojiPickerPage
 import me.rerere.rikkahub.ui.pages.share.handler.ShareHandlerPage
 import me.rerere.rikkahub.ui.pages.anniversary.AnniversaryPage
 import me.rerere.rikkahub.ui.pages.stats.StatsPage
+import me.rerere.rikkahub.ui.pages.anniversary.AnniversaryPage
 import me.rerere.rikkahub.ui.pages.translator.TranslatorPage
 import me.rerere.rikkahub.ui.pages.voice.IncomingCallPage
 import me.rerere.rikkahub.ui.pages.voice.VoiceCallPage
@@ -702,6 +704,10 @@ class RouteActivity : ComponentActivity() {
                                 SettingProactiveMessagePage()
                             }
 
+                            entry<Screen.SettingExtraInjection> {
+                                SettingExtraInjectionPage()
+                            }
+
                             entry<Screen.SettingWeixinBot> {
                                 SettingWeixinBotPage()
                             }
@@ -774,7 +780,6 @@ class RouteActivity : ComponentActivity() {
                                 PluginWebViewPage(
                                     pluginId = key.pluginId,
                                     htmlEntryPath = key.entryPath,
-                                    initialConversationId = key.conversationId,
                                     pluginManager = pluginManager,
                                     onNavigateBack = { backStack.removeLastOrNull() }
                                 )
@@ -1085,6 +1090,9 @@ sealed interface Screen : NavKey {
     data object SettingProactiveMessage : Screen
 
     @Serializable
+    data object SettingExtraInjection : Screen
+
+    @Serializable
     data object SettingWeixinBot : Screen
 
     @Serializable
@@ -1109,7 +1117,7 @@ sealed interface Screen : NavKey {
     data class PluginFolder(val folderId: String) : Screen
 
     @Serializable
-    data class PluginWebView(val pluginId: String, val entryPath: String, val conversationId: String = "") : Screen
+    data class PluginWebView(val pluginId: String, val entryPath: String) : Screen
 
     @Serializable
     data class PluginDeclarativeUI(val pluginId: String) : Screen

@@ -630,15 +630,16 @@ fun ChatInput(
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 4.dp),
+                                .padding(horizontal = 2.dp),
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            horizontalArrangement = Arrangement.spacedBy(2.dp),
                         ) {
                             Row(
                                 modifier = Modifier
                                     .weight(1f)
                                     .horizontalScroll(rememberScrollState()),
-                                horizontalArrangement = Arrangement.spacedBy(2.dp)
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(0.dp)
                             ) {
                                 // Model Picker
                                 ModelSelector(
@@ -650,7 +651,7 @@ fun ChatInput(
                                     },
                                     type = ModelType.CHAT,
                                     onlyIcon = true,
-                                    modifier = Modifier,
+                                    modifier = Modifier.size(40.dp),
                                 )
 
                                 // Search
@@ -674,6 +675,7 @@ fun ChatInput(
                                     },
                                     onUpdateSearchService = onUpdateSearchService,
                                     model = chatModel,
+                                    modifier = Modifier.size(40.dp),
                                 )
 
                                 // Reasoning
@@ -685,126 +687,127 @@ fun ChatInput(
                                             onUpdateAssistant(assistant.copy(reasoningLevel = it))
                                         },
                                         onlyIcon = true,
+                                        modifier = Modifier.size(40.dp),
                                     )
                                 }
 
                             }
 
                             ActionIconButton(
-                                onClick = {
-                                    dismissExpand()
-                                    showStickerPicker = true
-                                },
-                            ) {
-                                Text(
-                                    text = "🙂",
-                                    style = MaterialTheme.typography.titleMedium,
-                                )
+                                    onClick = {
+                                        dismissExpand()
+                                        showStickerPicker = true
+                                    },
+                                ) {
+                                    Text(
+                                        text = "🙂",
+                                        style = MaterialTheme.typography.titleMedium,
+                                    )
                             }
 
                             ActionIconButton(
-                                onClick = {
-                                    expandToggle(ExpandState.Files)
-                                }) {
-                                Icon(
-                                    imageVector = if (expand == ExpandState.Files) HugeIcons.Cancel01 else HugeIcons.Add01,
-                                    contentDescription = stringResource(R.string.more_options)
-                                )
+                                    onClick = {
+                                        expandToggle(ExpandState.Files)
+                                    }) {
+                                    Icon(
+                                        imageVector = if (expand == ExpandState.Files) HugeIcons.Cancel01 else HugeIcons.Add01,
+                                        contentDescription = stringResource(R.string.more_options)
+                                    )
                             }
 
-                            // Voice button: click to record, click again to stop and send
-                            // 通话进行中禁用, 避免两路麦克风冲突
+                                // Voice button: click to record, click again to stop and send
+                                // 通话进行中禁用, 避免两路麦克风冲突
                             if ((asrState.isAvailable || asrState.isRecording) && !isVoiceCallActive) {
-                                ActionIconButton(
-                                    onClick = {
-                                        when (asrState.status) {
-                                            ASRStatus.Listening -> {
-                                                asr.stop()
-                                            }
-                                            ASRStatus.Idle, ASRStatus.Error -> {
-                                                if (!asrPermission.allRequiredPermissionsGranted) {
-                                                    asrPermission.requestPermissions()
-                                                } else {
-                                                    voiceMessageMode = true
-                                                    asr.start { transcript ->
-                                                        // Ignore transcript in voice message mode
+                                    ActionIconButton(
+                                        onClick = {
+                                            when (asrState.status) {
+                                                ASRStatus.Listening -> {
+                                                    asr.stop()
+                                                }
+                                                ASRStatus.Idle, ASRStatus.Error -> {
+                                                    if (!asrPermission.allRequiredPermissionsGranted) {
+                                                        asrPermission.requestPermissions()
+                                                    } else {
+                                                        voiceMessageMode = true
+                                                        asr.start { transcript ->
+                                                            // Ignore transcript in voice message mode
+                                                        }
                                                     }
                                                 }
+                                                ASRStatus.Connecting, ASRStatus.Stopping -> {}
                                             }
-                                            ASRStatus.Connecting, ASRStatus.Stopping -> {}
+                                        }
+                                    ) {
+                                        if (asrState.isRecording) {
+                                            androidx.compose.material3.CircularProgressIndicator(
+                                                modifier = Modifier.size(18.dp),
+                                                strokeWidth = 2.dp,
+                                                color = MaterialTheme.colorScheme.error,
+                                            )
+                                        } else {
+                                            Icon(
+                                                imageVector = HugeIcons.Voice,
+                                                contentDescription = "Voice",
+                                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                modifier = Modifier.size(18.dp)
+                                            )
                                         }
                                     }
-                                ) {
-                                    if (asrState.isRecording) {
-                                        androidx.compose.material3.CircularProgressIndicator(
-                                            modifier = Modifier.size(18.dp),
-                                            strokeWidth = 2.dp,
-                                            color = MaterialTheme.colorScheme.error,
-                                        )
-                                    } else {
-                                        Icon(
-                                            imageVector = HugeIcons.Voice,
-                                            contentDescription = "Voice",
-                                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                    }
-                                }
                             }
 
                             AnimatedVisibility(
-                                visible = !asrState.isRecording,
-                                enter = fadeIn() + scaleIn(),
-                                exit = fadeOut() + scaleOut(),
-                            ) {
-                                Box(
-                                    contentAlignment = Alignment.Center,
-                                    modifier = Modifier
-                                        .size(30.dp)
-                                        .clip(CircleShape)
-                                        .combinedClickable(
-                                            enabled = loading || !state.isEmpty(),
-                                            onClick = {
-                                                dismissExpand()
-                                                sendMessage()
-                                            }, onLongClick = {
-                                                dismissExpand()
-                                                sendMessageWithoutAnswer()
-                                            }
-                                        )
+                                    visible = !asrState.isRecording,
+                                    enter = fadeIn() + scaleIn(),
+                                    exit = fadeOut() + scaleOut(),
                                 ) {
-                                    val containerColor = when {
-                                        loading -> MaterialTheme.colorScheme.errorContainer
-                                        state.isEmpty() -> MaterialTheme.colorScheme.surfaceContainerHigh
-                                        else -> MaterialTheme.colorScheme.primary
+                                    Box(
+                                        contentAlignment = Alignment.Center,
+                                        modifier = Modifier
+                                            .size(30.dp)
+                                            .clip(CircleShape)
+                                            .combinedClickable(
+                                                enabled = loading || !state.isEmpty(),
+                                                onClick = {
+                                                    dismissExpand()
+                                                    sendMessage()
+                                                }, onLongClick = {
+                                                    dismissExpand()
+                                                    sendMessageWithoutAnswer()
+                                                }
+                                            )
+                                    ) {
+                                        val containerColor = when {
+                                            loading -> MaterialTheme.colorScheme.errorContainer
+                                            state.isEmpty() -> MaterialTheme.colorScheme.surfaceContainerHigh
+                                            else -> MaterialTheme.colorScheme.primary
+                                        }
+                                        val contentColor = when {
+                                            loading -> MaterialTheme.colorScheme.onErrorContainer
+                                            state.isEmpty() -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+                                            else -> MaterialTheme.colorScheme.onPrimary
+                                        }
+                                        Surface(
+                                            modifier = Modifier.fillMaxSize(),
+                                            shape = CircleShape,
+                                            color = containerColor,
+                                            content = {})
+                                        if (loading) {
+                                            KeepScreenOn()
+                                            Icon(
+                                                imageVector = HugeIcons.Cancel01,
+                                                contentDescription = stringResource(R.string.stop),
+                                                tint = contentColor,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                        } else {
+                                            Icon(
+                                                imageVector = HugeIcons.ArrowUp02,
+                                                contentDescription = stringResource(R.string.send),
+                                                tint = contentColor,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                        }
                                     }
-                                    val contentColor = when {
-                                        loading -> MaterialTheme.colorScheme.onErrorContainer
-                                        state.isEmpty() -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
-                                        else -> MaterialTheme.colorScheme.onPrimary
-                                    }
-                                    Surface(
-                                        modifier = Modifier.fillMaxSize(),
-                                        shape = CircleShape,
-                                        color = containerColor,
-                                        content = {})
-                                    if (loading) {
-                                        KeepScreenOn()
-                                        Icon(
-                                            imageVector = HugeIcons.Cancel01,
-                                            contentDescription = stringResource(R.string.stop),
-                                            tint = contentColor,
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                    } else {
-                                        Icon(
-                                            imageVector = HugeIcons.ArrowUp02,
-                                            contentDescription = stringResource(R.string.send),
-                                            tint = contentColor,
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                    }
-                                }
                             }
                         }
                     }
