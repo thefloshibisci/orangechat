@@ -30,6 +30,8 @@
 -dontwarn com.sun.jna.**
 -dontwarn org.newsclub.net.unix.**
 -dontwarn org.ietf.jgss.**
+-dontwarn org.apache.logging.log4j.**
+-dontwarn org.slf4j.**
 -dontwarn com.google.re2j.**
 -dontobfuscate
 
