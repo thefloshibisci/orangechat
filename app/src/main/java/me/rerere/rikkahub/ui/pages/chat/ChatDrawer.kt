@@ -535,6 +535,20 @@ fun ChatDrawerContent(
                     materialMode = settings.displaySetting.materialMode,
                 )
 
+                DrawerAction(
+                    icon = {
+                        Icon(HugeIcons.TransactionHistory, "纪念日")
+                    },
+                    label = {
+                        Text("纪念日")
+                    },
+                    onClick = {
+                        navController.navigate(Screen.Anniversary)
+                    },
+                    drawerItemAlpha = settings.displaySetting.drawerItemAlpha,
+                    materialMode = settings.displaySetting.materialMode,
+                )
+
                 Spacer(Modifier.weight(1f))
 
                 DrawerAction(

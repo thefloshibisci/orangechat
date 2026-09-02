@@ -167,6 +167,7 @@ import me.rerere.rikkahub.plugin.webview.PluginWebViewPage
 import me.rerere.rikkahub.ui.pages.memory.MemoryBankPage
 import me.rerere.rikkahub.ui.components.ui.EmojiPickerPage
 import me.rerere.rikkahub.ui.pages.share.handler.ShareHandlerPage
+import me.rerere.rikkahub.ui.pages.anniversary.AnniversaryPage
 import me.rerere.rikkahub.ui.pages.stats.StatsPage
 import me.rerere.rikkahub.ui.pages.translator.TranslatorPage
 import me.rerere.rikkahub.ui.pages.voice.IncomingCallPage
@@ -685,6 +686,10 @@ class RouteActivity : ComponentActivity() {
                                 StatsPage()
                             }
 
+                            entry<Screen.Anniversary> {
+                                AnniversaryPage()
+                            }
+
                             entry<Screen.SettingSystemTools> {
                                 SettingSystemToolsPage()
                             }
@@ -1066,6 +1071,9 @@ sealed interface Screen : NavKey {
 
     @Serializable
     data object Stats : Screen
+
+    @Serializable
+    data object Anniversary : Screen
 
     @Serializable
     data object SettingSystemTools : Screen

@@ -66,11 +66,11 @@ jobs:
           fi
 
       - name: Build APK
-        run: ./gradlew assembleDebug
+        run: ./gradlew assembleRelease
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: OrangeChat-personal-debug
-          path: app/build/outputs/apk/debug/*.apk
+          name: OrangeChat-personal
+          path: app/build/outputs/apk/release/*.apk
           if-no-files-found: error

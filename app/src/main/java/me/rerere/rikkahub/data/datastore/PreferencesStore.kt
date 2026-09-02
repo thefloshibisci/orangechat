@@ -662,6 +662,16 @@ enum class DisplayMaterialMode {
 }
 
 @Serializable
+data class AnniversaryEntry(
+    val id: String,
+    val title: String,
+    /** ISO-8601 local date, for example 2023-05-20. */
+    val startDate: String,
+    /** true 表示未来倒数日；false 表示从开始日累计天数。 */
+    val countdown: Boolean = false,
+)
+
+@Serializable
 data class DisplaySetting(
     val userAvatar: Avatar = Avatar.Dummy,
     val userNickname: String = "",
@@ -732,6 +742,10 @@ data class DisplaySetting(
     // 共看控件颜色与不透明度（PluginWebView 共看功能）
     val watchControlColor: Long? = null,
     val watchControlAlpha: Float = 0.18f,
+    // 纪念日：完全保存在本机；最多选择一个条目精简注入给 AI
+    val anniversaries: List<AnniversaryEntry> = emptyList(),
+    val anniversaryAiInjectionEnabled: Boolean = false,
+    val anniversaryAiInjectionId: String? = null,
     // 颜色自定义
     val chatTextColor: Long? = null,
     val globalTextColor: Long? = null,
