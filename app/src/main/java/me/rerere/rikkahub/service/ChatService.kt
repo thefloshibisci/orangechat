@@ -397,7 +397,13 @@ class ChatService(
 
     // ---- 发送消息 ----
 
-    fun sendMessage(conversationId: Uuid, content: List<UIMessagePart>, answer: Boolean = true) {
+    fun sendMessage(
+        conversationId: Uuid,
+        content: List<UIMessagePart>,
+        answer: Boolean = true,
+        transientSystemPrompt: String? = null,
+        enableTools: Boolean = true,
+    ) {
         if (content.isEmptyInputMessage()) return
 
         val session = getOrCreateSession(conversationId)
@@ -495,7 +501,11 @@ class ChatService(
 
                 // 开始补全
                 if (answer) {
-                    handleMessageComplete(conversationId)
+                    handleMessageComplete(
+                        conversationId = conversationId,
+                        transientSystemPrompt = transientSystemPrompt,
+                        enableTools = enableTools,
+                    )
                 }
 
                 _generationDoneFlow.emit(conversationId)
@@ -817,7 +827,9 @@ class ChatService(
 
     private suspend fun handleMessageComplete(
         conversationId: Uuid,
-        messageRange: ClosedRange<Int>? = null
+        messageRange: ClosedRange<Int>? = null,
+        transientSystemPrompt: String? = null,
+        enableTools: Boolean = true,
     ) {
         val settings = settingsStore.settingsFlow.first()
         val initialConversation = getConversationFlow(conversationId).value
@@ -867,7 +879,10 @@ class ChatService(
                     }
                 },
                 assistant = assistant,
-                conversationSystemPrompt = conversation.customSystemPrompt,
+                conversationSystemPrompt = listOfNotNull(
+                    conversation.customSystemPrompt?.takeIf { it.isNotBlank() },
+                    transientSystemPrompt?.takeIf { it.isNotBlank() },
+                ).joinToString("\n\n").ifBlank { null },
                 workspaceCwd = conversation.workspaceCwd,
                 memories = if (assistant.useGlobalMemory) {
                     memoryRepository.getGlobalMemories()
@@ -880,13 +895,13 @@ class ChatService(
                     add(workspaceReminderTransformer)
                 },
                 outputTransformers = outputTransformers,
-                tools = buildAvailableTools(
+                tools = if (enableTools) buildAvailableTools(
                     settings = settings,
                     assistant = assistant,
                     conversationId = conversationId,
                     conversation = conversation,
                     allowAppUsage = true,
-                ),
+                ) else emptyList(),
                 pluginPromptInjections = buildList {
                     addAll(pluginToolProvider.getPluginPromptInjections())
                     settings.displaySetting.buildAnniversaryPrompt()?.let(::add)

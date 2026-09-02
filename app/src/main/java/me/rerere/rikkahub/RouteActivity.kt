@@ -780,6 +780,7 @@ class RouteActivity : ComponentActivity() {
                                 PluginWebViewPage(
                                     pluginId = key.pluginId,
                                     htmlEntryPath = key.entryPath,
+                                    initialConversationId = key.conversationId,
                                     pluginManager = pluginManager,
                                     onNavigateBack = { backStack.removeLastOrNull() }
                                 )
@@ -1117,7 +1118,7 @@ sealed interface Screen : NavKey {
     data class PluginFolder(val folderId: String) : Screen
 
     @Serializable
-    data class PluginWebView(val pluginId: String, val entryPath: String) : Screen
+    data class PluginWebView(val pluginId: String, val entryPath: String, val conversationId: String = "") : Screen
 
     @Serializable
     data class PluginDeclarativeUI(val pluginId: String) : Screen
