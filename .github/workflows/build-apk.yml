@@ -42,21 +42,28 @@ jobs:
       - name: Allow Gradle to run
         run: chmod +x gradlew
 
-      - name: Restore shared debug signing key
+      - name: Restore signing key
         env:
+          KEY_BASE64: ${{ secrets.KEY_BASE64 }}
+          SIGNING_CONFIG: ${{ secrets.SIGNING_CONFIG }}
           ANDROID_DEBUG_KEYSTORE_BASE64: ${{ secrets.ANDROID_DEBUG_KEYSTORE_BASE64 }}
         run: |
-          if [ -n "$ANDROID_DEBUG_KEYSTORE_BASE64" ]; then
+          if [ -n "$KEY_BASE64" ] && [ -n "$SIGNING_CONFIG" ]; then
+            # 仓库原有签名（与 Release 构建一致），debug 构建也会自动套用 release signingConfig
+            echo "$KEY_BASE64" | base64 -d > app/app.key
+            echo "$SIGNING_CONFIG" > local.properties
+            echo "Signing with repository keystore (app.key + local.properties)"
+          elif [ -n "$ANDROID_DEBUG_KEYSTORE_BASE64" ]; then
             printf '%s' "$ANDROID_DEBUG_KEYSTORE_BASE64" | base64 --decode > app/debug.keystore
+            echo "Signing with ANDROID_DEBUG_KEYSTORE_BASE64"
           elif [ -f app/debug.keystore ]; then
             echo "Using committed app/debug.keystore"
           else
-            echo "No secret / committed keystore found; generating a local debug keystore." >&2
+            echo "No signing config found; generating a local debug keystore." >&2
             keytool -genkeypair -keystore app/debug.keystore -storepass android -keypass android \
               -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 \
               -dname "CN=Android Debug,O=Android,C=US"
           fi
-          keytool -list -keystore app/debug.keystore -storepass android -alias androiddebugkey
 
       - name: Build APK
         run: ./gradlew assembleDebug
