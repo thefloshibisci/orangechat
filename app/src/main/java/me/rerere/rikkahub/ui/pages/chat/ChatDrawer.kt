@@ -430,11 +430,11 @@ fun ChatDrawerContent(
             )
 
             Row(
-                horizontalArrangement = Arrangement.SpaceBetween,
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 8.dp)
+                    .padding(horizontal = 4.dp, vertical = 4.dp)
             ) {
                 DrawerAction(
                     modifier = Modifier.weight(1f),
@@ -444,12 +444,8 @@ fun ChatDrawerContent(
                             contentDescription = stringResource(R.string.assistant_page_title)
                         )
                     },
-                    label = {
-                        Text(stringResource(R.string.assistant_page_title))
-                    },
-                    onClick = {
-                        navController.navigate(Screen.Assistant)
-                    },
+                    label = { Text(stringResource(R.string.assistant_page_title)) },
+                    onClick = { navController.navigate(Screen.Assistant) },
                     drawerItemAlpha = settings.displaySetting.drawerItemAlpha,
                     materialMode = settings.displaySetting.materialMode,
                 )
@@ -459,15 +455,9 @@ fun ChatDrawerContent(
                     contentAlignment = Alignment.Center,
                 ) {
                     DrawerAction(
-                        icon = {
-                            Icon(HugeIcons.Sparkles, "Menu")
-                        },
-                        label = {
-                            Text(stringResource(R.string.menu))
-                        },
-                        onClick = {
-                            showMenuPopup = true
-                        },
+                        icon = { Icon(HugeIcons.Sparkles, "Menu") },
+                        label = { Text(stringResource(R.string.menu)) },
+                        onClick = { showMenuPopup = true },
                         drawerItemAlpha = settings.displaySetting.drawerItemAlpha,
                         materialMode = settings.displaySetting.materialMode,
                     )
@@ -516,54 +506,35 @@ fun ChatDrawerContent(
                     icon = {
                         Icon(HugeIcons.InLove, stringResource(R.string.favorite_page_title))
                     },
-                    label = {
-                        Text(stringResource(R.string.favorite_page_title))
-                    },
-                    onClick = {
-                        navController.navigate(Screen.Favorite)
-                    },
+                    label = { Text(stringResource(R.string.favorite_page_title)) },
+                    onClick = { navController.navigate(Screen.Favorite) },
                     drawerItemAlpha = settings.displaySetting.drawerItemAlpha,
                     materialMode = settings.displaySetting.materialMode,
                 )
 
                 DrawerAction(
                     modifier = Modifier.weight(1f),
-                    icon = {
-                        Icon(HugeIcons.ChartColumn, "统计数据")
-                    },
-                    label = {
-                        Text("统计数据")
-                    },
-                    onClick = {
-                        navController.navigate(Screen.Stats)
-                    },
-                    drawerItemAlpha = settings.displaySetting.drawerItemAlpha,
-                    materialMode = settings.displaySetting.materialMode,
-                )
-
-                DrawerAction(
-                    icon = {
-                        Icon(HugeIcons.TransactionHistory, "纪念日")
-                    },
-                    label = {
-                        Text("纪念日")
-                    },
-                    onClick = {
-                        navController.navigate(Screen.Anniversary)
-                    },
+                    icon = { Icon(HugeIcons.ChartColumn, "统计数据") },
+                    label = { Text("统计数据") },
+                    onClick = { navController.navigate(Screen.Stats) },
                     drawerItemAlpha = settings.displaySetting.drawerItemAlpha,
                     materialMode = settings.displaySetting.materialMode,
                 )
 
                 DrawerAction(
                     modifier = Modifier.weight(1f),
-                    icon = {
-                        Icon(HugeIcons.Settings03, null)
-                    },
+                    icon = { Icon(HugeIcons.TransactionHistory, "纪念日") },
+                    label = { Text("纪念日") },
+                    onClick = { navController.navigate(Screen.Anniversary) },
+                    drawerItemAlpha = settings.displaySetting.drawerItemAlpha,
+                    materialMode = settings.displaySetting.materialMode,
+                )
+
+                DrawerAction(
+                    modifier = Modifier.weight(1f),
+                    icon = { Icon(HugeIcons.Settings03, null) },
                     label = { Text(stringResource(R.string.settings)) },
-                    onClick = {
-                        navController.navigate(Screen.Setting)
-                    },
+                    onClick = { navController.navigate(Screen.Setting) },
                     drawerItemAlpha = settings.displaySetting.drawerItemAlpha,
                     materialMode = settings.displaySetting.materialMode,
                 )
@@ -1041,28 +1012,19 @@ private fun DrawerAction(
     drawerItemAlpha: Float,
     materialMode: DisplayMaterialMode,
 ) {
-    DrawerItemSurface(
-        onClick = onClick,
+    Box(
         modifier = modifier,
-        color = MaterialTheme.colorScheme.primaryContainer,
-        shape = CircleShape,
-        drawerItemAlpha = drawerItemAlpha,
-        materialMode = materialMode,
+        contentAlignment = Alignment.Center,
     ) {
-        Surface(
-            modifier = Modifier
-                .size(40.dp)
-                .clip(CircleShape)
-                .clickable(onClick = onClick),
+        DrawerItemSurface(
+            onClick = onClick,
+            modifier = Modifier.size(40.dp),
             color = MaterialTheme.colorScheme.primaryContainer,
             shape = CircleShape,
-            contentColor = MaterialTheme.colorScheme.onSurface,
+            drawerItemAlpha = drawerItemAlpha,
+            materialMode = materialMode,
         ) {
-            Tooltip(
-                tooltip = {
-                    label()
-                }
-            ) {
+            Tooltip(tooltip = { label() }) {
                 Box(
                     modifier = Modifier.fillMaxSize(),
                     contentAlignment = Alignment.Center,
