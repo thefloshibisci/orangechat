@@ -41,6 +41,7 @@ import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -348,31 +349,34 @@ private fun AssistantPromptContent(
                         UiState.Error(it)
                     }
                 }
-                preview.onError {
-                    Text(
-                        text = it.message ?: it.javaClass.name,
-                        color = MaterialTheme.colorScheme.error
-                    )
-                }
-                preview.onSuccess {
-                    it.fastForEach { message ->
-                        Surface(
-                            shape = MaterialTheme.shapes.medium,
-                            color = if (message.role == MessageRole.USER)
-                                MaterialTheme.colorScheme.primaryContainer
-                            else
-                                MaterialTheme.colorScheme.surfaceContainerHigh,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 4.dp),
-                        ) {
-                            Text(
-                                text = message.parts.filterIsInstance<UIMessagePart.Text>().joinToString("") { it.text },
-                                style = MaterialTheme.typography.bodyMedium,
-                                modifier = Modifier.padding(12.dp),
-                            )
+                when (val p = preview) {
+                    is UiState.Error -> {
+                        Text(
+                            text = p.throwable.message ?: p.throwable.javaClass.name,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
+                    is UiState.Success -> {
+                        p.data.fastForEach { message ->
+                            Surface(
+                                shape = MaterialTheme.shapes.medium,
+                                color = if (message.role == MessageRole.USER)
+                                    MaterialTheme.colorScheme.primaryContainer
+                                else
+                                    MaterialTheme.colorScheme.surfaceContainerHigh,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 4.dp),
+                            ) {
+                                Text(
+                                    text = message.parts.filterIsInstance<UIMessagePart.Text>().joinToString("") { it.text },
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    modifier = Modifier.padding(12.dp),
+                                )
+                            }
                         }
                     }
+                    else -> {}
                 }
             }
         }
