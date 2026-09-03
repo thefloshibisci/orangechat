@@ -6,6 +6,8 @@
 
 package me.rerere.rikkahub.data.datastore
 
+import me.rerere.rikkahub.data.security.SecretCrypto
+
 import android.content.Context
 import android.util.Log
 import androidx.datastore.core.IOException
@@ -197,6 +199,34 @@ class SettingsStore(
 
     private val dataStore = context.settingsStore
 
+    init {
+        // One-time migration: decrypt any legacy encrypted keys back to plain JSON strings in background.
+        // Once migrated, future reads and writes are purely fast plaintext without hardware Keystore calls.
+        scope.launch(Dispatchers.IO) {
+            runCatching {
+                dataStore.edit { preferences ->
+                    val keysToMigrate = listOf(
+                        PROVIDERS, ASSISTANTS, SEARCH_SERVICES, MCP_SERVERS, WEBDAV_CONFIG,
+                        S3_CONFIG, TTS_PROVIDERS, ASR_PROVIDERS, WEB_SERVER_ACCESS_PASSWORD,
+                        SYSTEM_TOOLS_SETTING, WECHAT_BOT_SETTING, QQ_BOT_SETTING,
+                        EXTERNAL_MEMORIES, MINI_APPS
+                    )
+                    keysToMigrate.forEach { key ->
+                        val stored = preferences[key]
+                        if (!stored.isNullOrEmpty() && SecretCrypto.isEncrypted(stored)) {
+                            val decrypted = SecretCrypto.decrypt(stored, key.name)
+                            if (!decrypted.isNullOrEmpty()) {
+                                preferences[key] = decrypted
+                            }
+                        }
+                    }
+                }
+            }.onFailure {
+                Log.w(TAG, "Legacy ciphertext migration completed with non-fatal errors", it)
+            }
+        }
+    }
+
 
     // 用于检测 assistants 列表是否真正变化，避免无关设置写入触发 Pebble 模板缓存清空
     @Volatile
@@ -239,78 +269,44 @@ class SettingsStore(
                 assistantTags = preferences[ASSISTANT_TAGS]?.let {
                     JsonInstant.decodeFromString(it)
                 } ?: emptyList(),
-                providers = JsonInstant.decodeFromString(preferences[PROVIDERS] ?: "[]"),
-                assistants = JsonInstant.decodeFromString(preferences[ASSISTANTS] ?: "[]"),
+                providers = preferences.readPlaintextOrMigrate(PROVIDERS, emptyList()) { JsonInstant.decodeFromString(it) },
+                assistants = preferences.readPlaintextOrMigrate(ASSISTANTS, emptyList()) { JsonInstant.decodeFromString(it) },
                 dynamicColor = preferences[DYNAMIC_COLOR] != false,
                 themeId = preferences[THEME_ID] ?: PresetThemes[0].id,
-                customThemes = preferences[CUSTOM_THEMES]?.let {
-                    JsonInstant.decodeFromString(it)
-                } ?: emptyList(),
+                customThemes = runCatching { preferences[CUSTOM_THEMES]?.let { JsonInstant.decodeFromString<List<CustomTheme>>(it) } }.getOrNull() ?: emptyList(),
                 developerMode = preferences[DEVELOPER_MODE] == true,
-                displaySetting = JsonInstant.decodeFromString(preferences[DISPLAY_SETTING] ?: "{}"),
-                searchServices = preferences[SEARCH_SERVICES]?.let {
-                    JsonInstant.decodeFromString(it)
-                } ?: listOf(SearchServiceOptions.DEFAULT),
-                searchCommonOptions = preferences[SEARCH_COMMON]?.let {
-                    JsonInstant.decodeFromString(it)
-                } ?: SearchCommonOptions(),
+                displaySetting = runCatching { JsonInstant.decodeFromString<DisplaySetting>(preferences[DISPLAY_SETTING] ?: "{}") }.getOrElse { DisplaySetting() },
+                searchServices = preferences.readPlaintextOrMigrate(SEARCH_SERVICES, listOf(SearchServiceOptions.DEFAULT)) { JsonInstant.decodeFromString(it) },
+                searchCommonOptions = runCatching { preferences[SEARCH_COMMON]?.let { JsonInstant.decodeFromString<SearchCommonOptions>(it) } }.getOrNull() ?: SearchCommonOptions(),
                 searchServiceSelected = preferences[SEARCH_SELECTED] ?: 0,
-                mcpServers = preferences[MCP_SERVERS]?.let {
-                    JsonInstant.decodeFromString(it)
-                } ?: emptyList(),
-                webDavConfig = preferences[WEBDAV_CONFIG]?.let {
-                    JsonInstant.decodeFromString(it)
-                } ?: WebDavConfig(),
-                s3Config = preferences[S3_CONFIG]?.let {
-                    JsonInstant.decodeFromString(it)
-                } ?: S3Config(),
-                ttsProviders = preferences[TTS_PROVIDERS]?.let {
-                    JsonInstant.decodeFromString(it)
-                } ?: emptyList(),
+                mcpServers = preferences.readPlaintextOrMigrate(MCP_SERVERS, emptyList()) { JsonInstant.decodeFromString(it) },
+                webDavConfig = preferences.readPlaintextOrMigrate(WEBDAV_CONFIG, WebDavConfig()) { JsonInstant.decodeFromString(it) },
+                s3Config = preferences.readPlaintextOrMigrate(S3_CONFIG, S3Config()) { JsonInstant.decodeFromString(it) },
+                ttsProviders = preferences.readPlaintextOrMigrate(TTS_PROVIDERS, emptyList()) { JsonInstant.decodeFromString(it) },
                 selectedTTSProviderId = preferences[SELECTED_TTS_PROVIDER]?.let { Uuid.parse(it) }
                     ?: DEFAULT_SYSTEM_TTS_ID,
-                asrProviders = preferences[ASR_PROVIDERS]?.let {
-                    JsonInstant.decodeFromString(it)
-                } ?: emptyList(),
+                asrProviders = preferences.readPlaintextOrMigrate(ASR_PROVIDERS, emptyList()) { JsonInstant.decodeFromString(it) },
                 selectedASRProviderId = preferences[SELECTED_ASR_PROVIDER]?.let { Uuid.parse(it) },
-                modeInjections = preferences[MODE_INJECTIONS]?.let {
-                    JsonInstant.decodeFromString(it)
-                } ?: emptyList(),
-                lorebooks = preferences[LOREBOOKS]?.let {
-                    JsonInstant.decodeFromString(it)
-                } ?: emptyList(),
-                quickMessages = preferences[QUICK_MESSAGES]?.let {
-                    JsonInstant.decodeFromString(it)
-                } ?: emptyList(),
+                modeInjections = runCatching { preferences[MODE_INJECTIONS]?.let { JsonInstant.decodeFromString<List<PromptInjection.ModeInjection>>(it) } }.getOrNull() ?: emptyList(),
+                lorebooks = runCatching { preferences[LOREBOOKS]?.let { JsonInstant.decodeFromString<List<Lorebook>>(it) } }.getOrNull() ?: emptyList(),
+                quickMessages = runCatching { preferences[QUICK_MESSAGES]?.let { JsonInstant.decodeFromString<List<QuickMessage>>(it) } }.getOrNull() ?: emptyList(),
                 webServerEnabled = preferences[WEB_SERVER_ENABLED] == true,
                 webServerPort = preferences[WEB_SERVER_PORT] ?: 8080,
                 webServerJwtEnabled = preferences[WEB_SERVER_JWT_ENABLED] == true,
-                webServerAccessPassword = preferences[WEB_SERVER_ACCESS_PASSWORD] ?: "",
+                webServerAccessPassword = runCatching { val r = preferences[WEB_SERVER_ACCESS_PASSWORD]; if (SecretCrypto.isEncrypted(r)) SecretCrypto.decrypt(r, WEB_SERVER_ACCESS_PASSWORD.name).orEmpty() else r.orEmpty() }.getOrDefault(""),
                 webServerLocalhostOnly = preferences[WEB_SERVER_LOCALHOST_ONLY] == true,
                 backupReminderConfig = preferences[BACKUP_REMINDER_CONFIG]?.let {
                     JsonInstant.decodeFromString(it)
                 } ?: BackupReminderConfig(),
                 launchCount = preferences[LAUNCH_COUNT] ?: 0,
                 sponsorAlertDismissedAt = preferences[SPONSOR_ALERT_DISMISSED_AT] ?: 0,
-                systemToolsSetting = preferences[SYSTEM_TOOLS_SETTING]?.let {
-                    JsonInstant.decodeFromString(it)
-                } ?: SystemToolsSetting(),
-                proactiveMessageSetting = preferences[PROACTIVE_MESSAGE_SETTING]?.let {
-                    JsonInstant.decodeFromString(it)
-                } ?: ProactiveMessageSetting(),
-                wechatBotSetting = preferences[WECHAT_BOT_SETTING]?.let {
-                    JsonInstant.decodeFromString(it)
-                } ?: WechatBotSetting(),
-                qqBotSetting = preferences[QQ_BOT_SETTING]?.let {
-                    JsonInstant.decodeFromString(it)
-                } ?: QqBotSetting(),
+                systemToolsSetting = preferences.readPlaintextOrMigrate(SYSTEM_TOOLS_SETTING, SystemToolsSetting()) { JsonInstant.decodeFromString(it) },
+                proactiveMessageSetting = runCatching { preferences[PROACTIVE_MESSAGE_SETTING]?.let { JsonInstant.decodeFromString<ProactiveMessageSetting>(it) } }.getOrNull() ?: ProactiveMessageSetting(),
+                wechatBotSetting = preferences.readPlaintextOrMigrate(WECHAT_BOT_SETTING, WechatBotSetting()) { JsonInstant.decodeFromString(it) },
+                qqBotSetting = preferences.readPlaintextOrMigrate(QQ_BOT_SETTING, QqBotSetting()) { JsonInstant.decodeFromString(it) },
                 keepAliveEnabled = preferences[KEEP_ALIVE_ENABLED] == true,
-                externalMemories = preferences[EXTERNAL_MEMORIES]?.let {
-                    JsonInstant.decodeFromString(it)
-                } ?: emptyList(),
-                miniApps = preferences[MINI_APPS]?.let {
-                    JsonInstant.decodeFromString(it)
-                } ?: emptyList(),
+                externalMemories = preferences.readPlaintextOrMigrate(EXTERNAL_MEMORIES, emptyList()) { JsonInstant.decodeFromString(it) },
+                miniApps = preferences.readPlaintextOrMigrate(MINI_APPS, emptyList()) { JsonInstant.decodeFromString(it) },
                 forceConfirmToolCalls = preferences[FORCE_CONFIRM_TOOL_CALLS] != false,
                 workflowHeadlessBlockSensitive = preferences[WORKFLOW_HEADLESS_BLOCK_SENSITIVE] != false,
                 autoApproveAllTools = preferences[AUTO_APPROVE_ALL_TOOLS] == true,
@@ -911,3 +907,20 @@ val DEFAULT_MODE_INJECTIONS = listOf(
         name = "Learning Mode"
     )
 )
+
+private inline fun <reified T> Preferences.readPlaintextOrMigrate(
+    key: Preferences.Key<String>,
+    default: T,
+    crossinline decode: (String) -> T,
+): T {
+    val raw = this[key] ?: return default
+    val plaintext = if (SecretCrypto.isEncrypted(raw)) {
+        runCatching { SecretCrypto.decrypt(raw, key.name) }.getOrNull() ?: raw
+    } else {
+        raw
+    }
+    return runCatching { decode(plaintext) }.getOrElse {
+        Log.w(TAG, "Failed to decode preference '${key.name}', using default", it)
+        default
+    }
+}
