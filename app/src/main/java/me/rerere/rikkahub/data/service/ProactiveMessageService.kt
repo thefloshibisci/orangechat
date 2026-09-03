@@ -239,6 +239,7 @@ class ProactiveMessageService {
             // 立即触发：直接启动TriggerService
             val serviceIntent = Intent(context, ProactiveMessageTriggerService::class.java).apply {
                 putExtra(EXTRA_TRIGGER_SOURCE, "manual")
+                putExtra(EXTRA_FORCE_TRIGGER, true)
             }
             context.startForegroundService(serviceIntent)
         }

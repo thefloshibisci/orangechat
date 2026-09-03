@@ -16,6 +16,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.LargeFlexibleTopAppBar
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Button
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -97,6 +98,25 @@ fun SettingProactiveMessagePage(vm: SettingVM = koinInject()) {
                                 }
                             )
                         }
+                    )
+                    item(
+                        headlineContent = { Text("手动触发一次") },
+                        supportingContent = {
+                            Text("立即让 AI 判断一次并决定是否发消息，不改变后续定时循环。")
+                        },
+                        trailingContent = {
+                            Button(
+                                onClick = {
+                                    ProactiveMessageService.triggerNow(
+                                        context,
+                                        settings.proactiveMessageSetting,
+                                    )
+                                },
+                                enabled = settings.proactiveMessageSetting.enabled,
+                            ) {
+                                Text("立即触发")
+                            }
+                        },
                     )
                     if (settings.proactiveMessageSetting.enabled) {
                         var nextTime by remember { mutableStateOf(ProactiveMessageService.getNextTriggerTime(context)) }
