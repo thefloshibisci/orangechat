@@ -75,6 +75,7 @@ class ProactiveMessageService {
         const val TAG = "ProactiveMessageService"
         const val ACTION_PROACTIVE_MESSAGE = "me.rerere.orangechat.PROACTIVE_MESSAGE"
         const val EXTRA_TRIGGER_SOURCE = "proactive_trigger_source"
+        const val EXTRA_FORCE_TRIGGER = "force_trigger"
         private const val REQUEST_CODE = 10001
 
         internal const val PREFS_NAME = "proactive_message_prefs"
