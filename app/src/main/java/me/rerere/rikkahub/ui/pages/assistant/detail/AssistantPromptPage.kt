@@ -352,7 +352,7 @@ private fun AssistantPromptContent(
                 when (val p = preview) {
                     is UiState.Error -> {
                         Text(
-                            text = p.throwable.message ?: (p.throwable::class.simpleName ?: "Error"),
+                            text = p.error.message ?: (p.error::class.simpleName ?: "Error"),
                             color = MaterialTheme.colorScheme.error,
                         )
                     }
