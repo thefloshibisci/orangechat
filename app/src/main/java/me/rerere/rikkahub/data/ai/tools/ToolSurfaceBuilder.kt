@@ -1,5 +1,3 @@
-import kotlinx.serialization.json.JsonObject
-import me.rerere.rikkahub.data.ai.mcp.normalizeMcpArguments
 ﻿/*
  * 橘瓣 OrangeChat
  * 衍生自 RikkaHub (https://github.com/rikkahub/rikkahub)，原作者 RE
@@ -7,6 +5,9 @@ import me.rerere.rikkahub.data.ai.mcp.normalizeMcpArguments
  */
 
 package me.rerere.rikkahub.data.ai.tools
+
+import kotlinx.serialization.json.JsonObject
+import me.rerere.rikkahub.data.ai.mcp.normalizeMcpArguments
 
 import android.content.Context
 import kotlinx.serialization.json.Json

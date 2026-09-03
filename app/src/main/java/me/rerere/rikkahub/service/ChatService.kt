@@ -1,4 +1,3 @@
-import me.rerere.rikkahub.data.ai.mcp.normalizeMcpArguments
 ﻿/*
  * 橘瓣 OrangeChat
  * 衍生自 RikkaHub (https://github.com/rikkahub/rikkahub)，原作者 RE
@@ -6,6 +5,8 @@ import me.rerere.rikkahub.data.ai.mcp.normalizeMcpArguments
  */
 
 package me.rerere.rikkahub.service
+
+import me.rerere.rikkahub.data.ai.mcp.normalizeMcpArguments
 
 import android.app.Application
 import android.app.PendingIntent
