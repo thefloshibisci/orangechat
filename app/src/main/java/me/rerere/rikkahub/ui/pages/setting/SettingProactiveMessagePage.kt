@@ -28,6 +28,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -48,6 +49,14 @@ fun SettingProactiveMessagePage(vm: SettingVM = koinInject()) {
     val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
 
     var showProactiveRiskDialog by remember { mutableStateOf(false) }
+    var maxFollowUpDraft by remember { mutableStateOf("") }
+    var editingMaxFollowUps by remember { mutableStateOf(false) }
+
+    LaunchedEffect(settings.proactiveMessageSetting.maxFollowUpMessages) {
+        if (!editingMaxFollowUps) {
+            maxFollowUpDraft = settings.proactiveMessageSetting.maxFollowUpMessages.toString()
+        }
+    }
 
     if (showProactiveRiskDialog) {
         RiskConfirmDialog(
@@ -198,9 +207,11 @@ fun SettingProactiveMessagePage(vm: SettingVM = koinInject()) {
                         headlineContent = { Text("最多连续追问") },
                         supportingContent = {
                             OutlinedTextField(
-                                value = settings.proactiveMessageSetting.maxFollowUpMessages.toString(),
+                                value = maxFollowUpDraft,
                                 onValueChange = { value ->
-                                    value.toIntOrNull()?.takeIf { it in 1..8 }?.let { count ->
+                                    val digitsOnly = value.filter(Char::isDigit).take(1)
+                                    maxFollowUpDraft = digitsOnly
+                                    digitsOnly.toIntOrNull()?.takeIf { it in 1..8 }?.let { count ->
                                         vm.updateSettings(
                                             settings.copy(
                                                 proactiveMessageSetting = settings.proactiveMessageSetting.copy(
@@ -210,9 +221,26 @@ fun SettingProactiveMessagePage(vm: SettingVM = koinInject()) {
                                         )
                                     }
                                 },
-                                placeholder = { Text("2") },
+                                placeholder = { Text("1～8") },
                                 singleLine = true,
-                                modifier = Modifier.padding(top = 8.dp),
+                                modifier = Modifier
+                                    .padding(top = 8.dp)
+                                    .onFocusChanged { state ->
+                                        editingMaxFollowUps = state.isFocused
+                                        if (!state.isFocused) {
+                                            val count = maxFollowUpDraft.toIntOrNull()?.coerceIn(1, 8) ?: 2
+                                            maxFollowUpDraft = count.toString()
+                                            if (count != settings.proactiveMessageSetting.maxFollowUpMessages) {
+                                                vm.updateSettings(
+                                                    settings.copy(
+                                                        proactiveMessageSetting = settings.proactiveMessageSetting.copy(
+                                                            maxFollowUpMessages = count,
+                                                        ),
+                                                    ),
+                                                )
+                                            }
+                                        }
+                                    },
                             )
                             Text("同一次沉默后最多发送几次，可设置 1～8 次；重新开口后自动清零。")
                         },
