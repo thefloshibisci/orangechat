@@ -49,8 +49,24 @@ fun SettingProactiveMessagePage(vm: SettingVM = koinInject()) {
     val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
 
     var showProactiveRiskDialog by remember { mutableStateOf(false) }
+    var minIntervalDraft by remember { mutableStateOf(settings.proactiveMessageSetting.minIntervalMinutes.toString()) }
+    var maxIntervalDraft by remember { mutableStateOf(settings.proactiveMessageSetting.maxIntervalMinutes.toString()) }
     var maxFollowUpDraft by remember { mutableStateOf("") }
+    var editingMinInterval by remember { mutableStateOf(false) }
+    var editingMaxInterval by remember { mutableStateOf(false) }
     var editingMaxFollowUps by remember { mutableStateOf(false) }
+
+    LaunchedEffect(settings.proactiveMessageSetting.minIntervalMinutes) {
+        if (!editingMinInterval) {
+            minIntervalDraft = settings.proactiveMessageSetting.minIntervalMinutes.toString()
+        }
+    }
+
+    LaunchedEffect(settings.proactiveMessageSetting.maxIntervalMinutes) {
+        if (!editingMaxInterval) {
+            maxIntervalDraft = settings.proactiveMessageSetting.maxIntervalMinutes.toString()
+        }
+    }
 
     LaunchedEffect(settings.proactiveMessageSetting.maxFollowUpMessages) {
         if (!editingMaxFollowUps) {
@@ -130,7 +146,17 @@ fun SettingProactiveMessagePage(vm: SettingVM = koinInject()) {
                     if (settings.proactiveMessageSetting.enabled) {
                         var nextTime by remember { mutableStateOf(ProactiveMessageService.getNextTriggerTime(context)) }
                         LaunchedEffect(settings.proactiveMessageSetting) {
-                            nextTime = ProactiveMessageService.getNextTriggerTime(context)
+                            // The trigger timestamp may be written by the service just after
+                            // this page opens. Poll quickly during that handoff, then settle
+                            // into a low-frequency refresh while the page remains visible.
+                            var attempts = 0
+                            while (nextTime == null && attempts < 12) {
+                                nextTime = ProactiveMessageService.getNextTriggerTime(context)
+                                attempts++
+                                if (nextTime == null) {
+                                    kotlinx.coroutines.delay(500L)
+                                }
+                            }
                             while (true) {
                                 kotlinx.coroutines.delay(10_000L)
                                 nextTime = ProactiveMessageService.getNextTriggerTime(context)
@@ -161,22 +187,34 @@ fun SettingProactiveMessagePage(vm: SettingVM = koinInject()) {
                         headlineContent = { Text("最小间隔 (分钟)") },
                         supportingContent = {
                             OutlinedTextField(
-                                value = settings.proactiveMessageSetting.minIntervalMinutes.toString(),
+                                value = minIntervalDraft,
                                 onValueChange = { value ->
-                                    val minutes = value.toIntOrNull()
-                                    if (minutes != null && minutes > 0) {
-                                        vm.updateSettings(
-                                            settings.copy(
-                                                proactiveMessageSetting = settings.proactiveMessageSetting.copy(
-                                                    minIntervalMinutes = minutes
-                                                )
-                                            )
-                                        )
-                                    }
+                                    minIntervalDraft = value.filter(Char::isDigit)
                                 },
                                 placeholder = { Text("30") },
                                 singleLine = true,
-                                modifier = Modifier.padding(top = 8.dp),
+                                modifier = Modifier
+                                    .padding(top = 8.dp)
+                                    .onFocusChanged { state ->
+                                        editingMinInterval = state.isFocused
+                                        if (!state.isFocused) {
+                                            val current = settings.proactiveMessageSetting
+                                            val minutes = minIntervalDraft.toIntOrNull()
+                                                ?.coerceAtLeast(1)
+                                                ?.coerceAtMost(current.maxIntervalMinutes.coerceAtLeast(1))
+                                                ?: current.minIntervalMinutes
+                                            minIntervalDraft = minutes.toString()
+                                            if (minutes != current.minIntervalMinutes) {
+                                                vm.updateSettings(
+                                                    settings.copy(
+                                                        proactiveMessageSetting = current.copy(
+                                                            minIntervalMinutes = minutes,
+                                                        ),
+                                                    ),
+                                                )
+                                            }
+                                        }
+                                    },
                             )
                         },
                     )
@@ -184,22 +222,33 @@ fun SettingProactiveMessagePage(vm: SettingVM = koinInject()) {
                         headlineContent = { Text("最大间隔 (分钟)") },
                         supportingContent = {
                             OutlinedTextField(
-                                value = settings.proactiveMessageSetting.maxIntervalMinutes.toString(),
+                                value = maxIntervalDraft,
                                 onValueChange = { value ->
-                                    val minutes = value.toIntOrNull()
-                                    if (minutes != null && minutes >= settings.proactiveMessageSetting.minIntervalMinutes) {
-                                        vm.updateSettings(
-                                            settings.copy(
-                                                proactiveMessageSetting = settings.proactiveMessageSetting.copy(
-                                                    maxIntervalMinutes = minutes
-                                                )
-                                            )
-                                        )
-                                    }
+                                    maxIntervalDraft = value.filter(Char::isDigit)
                                 },
                                 placeholder = { Text("90") },
                                 singleLine = true,
-                                modifier = Modifier.padding(top = 8.dp),
+                                modifier = Modifier
+                                    .padding(top = 8.dp)
+                                    .onFocusChanged { state ->
+                                        editingMaxInterval = state.isFocused
+                                        if (!state.isFocused) {
+                                            val current = settings.proactiveMessageSetting
+                                            val minutes = maxIntervalDraft.toIntOrNull()
+                                                ?.coerceAtLeast(current.minIntervalMinutes)
+                                                ?: current.maxIntervalMinutes
+                                            maxIntervalDraft = minutes.toString()
+                                            if (minutes != current.maxIntervalMinutes) {
+                                                vm.updateSettings(
+                                                    settings.copy(
+                                                        proactiveMessageSetting = current.copy(
+                                                            maxIntervalMinutes = minutes,
+                                                        ),
+                                                    ),
+                                                )
+                                            }
+                                        }
+                                    },
                             )
                         },
                     )
