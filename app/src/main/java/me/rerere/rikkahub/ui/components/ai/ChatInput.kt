@@ -104,6 +104,7 @@ import me.rerere.asr.ASRStatus
 import me.rerere.common.android.appTempFolder
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.Add01
+import me.rerere.hugeicons.stroke.InLove
 import me.rerere.hugeicons.stroke.ArrowUp02
 import me.rerere.hugeicons.stroke.Cancel01
 import me.rerere.hugeicons.stroke.FullScreen
@@ -694,15 +695,17 @@ fun ChatInput(
                             }
 
                             ActionIconButton(
-                                    onClick = {
-                                        dismissExpand()
-                                        showStickerPicker = true
-                                    },
-                                ) {
-                                    Text(
-                                        text = "🙂",
-                                        style = MaterialTheme.typography.titleMedium,
-                                    )
+                                onClick = {
+                                    dismissExpand()
+                                    showStickerPicker = true
+                                },
+                            ) {
+                                Icon(
+                                    imageVector = HugeIcons.InLove,
+                                    contentDescription = "表情",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(18.dp),
+                                )
                             }
 
                             ActionIconButton(
