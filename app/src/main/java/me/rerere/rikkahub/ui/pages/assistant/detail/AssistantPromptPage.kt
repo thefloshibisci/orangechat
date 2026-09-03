@@ -356,16 +356,22 @@ private fun AssistantPromptContent(
                 }
                 preview.onSuccess {
                     it.fastForEach { message ->
-                        ChatMessage(
-                            node = message.toMessageNode(),
-                            onFork = {},
-                            onRegenerate = {},
-                            onEdit = {},
-                            onShare = {},
-                            onDelete = {},
-                            onUpdate = {},
-                            lastMessage = false,
-                        )
+                        Surface(
+                            shape = MaterialTheme.shapes.medium,
+                            color = if (message.role == MessageRole.USER)
+                                MaterialTheme.colorScheme.primaryContainer
+                            else
+                                MaterialTheme.colorScheme.surfaceContainerHigh,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 4.dp),
+                        ) {
+                            Text(
+                                text = message.parts.filterIsInstance<UIMessagePart.Text>().joinToString("") { it.text },
+                                style = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier.padding(12.dp),
+                            )
+                        }
                     }
                 }
             }
