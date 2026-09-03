@@ -1134,7 +1134,7 @@ class ChatService(
                     description = tool.description ?: "",
                     parameters = { tool.inputSchema },
                     needsApproval = tool.needsApproval,
-                    execute = { mcpManager.callTool(serverId, tool.name, it.jsonObject) },
+                    execute = { mcpManager.callTool(serverId, tool.name, if (it is JsonObject) it else normalizeMcpArguments(it)) },
                 )
             )
         }

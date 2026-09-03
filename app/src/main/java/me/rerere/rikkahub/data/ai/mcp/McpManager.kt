@@ -165,14 +165,15 @@ class McpManager(
         val client = pair?.second
             ?: return listOf(UIMessagePart.Text("Failed to execute tool, because no such mcp client for the tool"))
         val config = pair.first
-        Log.i(TAG, "callTool: $toolName / $args (server: ${config.commonOptions.name})")
+        val normalizedArgs = normalizeMcpArguments(args)
+        Log.i(TAG, "callTool: $toolName / $normalizedArgs (server: ${config.commonOptions.name})")
 
         if (client.transport == null) client.connect(getTransport(config))
         val result = client.callTool(
             request = CallToolRequest(
                 params = CallToolRequestParams(
                     name = toolName,
-                    arguments = args,
+                    arguments = normalizedArgs,
                 ),
             ),
             options = RequestOptions(timeout = 120.seconds),
@@ -765,4 +766,58 @@ internal val McpJson: Json by lazy {
 
 private fun ToolSchema.toSchema(): InputSchema {
     return InputSchema.Obj(properties = this.properties ?: JsonObject(emptyMap()), required = this.required)
+}
+
+/**
+ * 递归清洗大模型生成的工具参数：
+ * 1. 若字段值是以 [ 或 { 开头的双重编码 JSON 字符串，自动展开为真实的 JsonArray/JsonObject。
+ * 2. 保证复杂嵌套（如 decisions: [{"application_id": "xxx"}]）不会因转义字符串导致 MCP 模式校验失败。
+ */
+fun normalizeMcpArguments(raw: JsonElement): JsonObject {
+    val jsonObject = when (raw) {
+        is JsonObject -> raw
+        is JsonArray -> buildJsonObject {
+            put("decisions", raw)
+            put("items", raw)
+            put("data", raw)
+        }
+        is JsonPrimitive -> {
+            val content = raw.content.trim()
+            runCatching {
+                val parsed = JsonInstant.parseToJsonElement(content)
+                if (parsed is JsonObject) parsed else buildJsonObject { put("input", raw) }
+            }.getOrElse { buildJsonObject { put("input", raw) } }
+        }
+    }
+    return buildJsonObject {
+        jsonObject.forEach { (key, value) ->
+            put(key, unwrapDoubleEncodedJson(value))
+        }
+    }
+}
+
+private fun unwrapDoubleEncodedJson(element: JsonElement): JsonElement {
+    return when (element) {
+        is JsonPrimitive -> {
+            if (element.isString) {
+                val str = element.content.trim()
+                if ((str.startsWith("{") && str.endsWith("}")) || (str.startsWith("[") && str.endsWith("]"))) {
+                    runCatching {
+                        val parsed = JsonInstant.parseToJsonElement(str)
+                        unwrapDoubleEncodedJson(parsed)
+                    }.getOrDefault(element)
+                } else {
+                    element
+                }
+            } else {
+                element
+            }
+        }
+        is JsonArray -> buildJsonArray {
+            element.forEach { add(unwrapDoubleEncodedJson(it)) }
+        }
+        is JsonObject -> buildJsonObject {
+            element.forEach { (k, v) -> put(k, unwrapDoubleEncodedJson(v)) }
+        }
+    }
 }

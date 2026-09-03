@@ -302,8 +302,14 @@ class GenerationHandler(
                         runCatching {
                             val toolDef = toolsInternal.find { toolDef -> toolDef.name == tool.toolName }
                                 ?: error("Tool ${tool.toolName} not found")
+                            val cleanedInput = tool.input.trim()
+                                .removePrefix("```json")
+                                .removePrefix("```JSON")
+                                .removePrefix("```")
+                                .removeSuffix("```")
+                                .trim()
                             val args = runCatching {
-                                json.parseToJsonElement(tool.input.ifBlank { "{}" })
+                                json.parseToJsonElement(cleanedInput.ifBlank { "{}" })
                             }.getOrElse {
                                 error("Invalid tool arguments JSON for ${tool.toolName}: ${it.message}")
                             }
