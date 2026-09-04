@@ -24,6 +24,7 @@ import io.pebbletemplates.pebble.PebbleEngine
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
@@ -64,6 +65,7 @@ import me.rerere.search.SearchServiceOptions
 import me.rerere.tts.provider.TTSProviderSetting
 import org.koin.core.component.KoinComponent
 import org.koin.core.component.get
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.uuid.Uuid
 
 private const val TAG = "PreferencesStore"
@@ -215,10 +217,15 @@ class SettingsStore(
                     keysToMigrate.forEach { key ->
                         val stored = preferences[key]
                         if (!stored.isNullOrEmpty() && SecretCrypto.isEncrypted(stored)) {
-                            val decrypted = SecretCrypto.decrypt(stored, key.name)
-                            if (!decrypted.isNullOrEmpty()) {
-                                preferences[key] = decrypted
-                            }
+                            runCatching { SecretCrypto.decrypt(stored, key.name) }
+                                .onSuccess { decrypted ->
+                                    if (!decrypted.isNullOrEmpty()) {
+                                        preferences[key] = decrypted
+                                    }
+                                }
+                                .onFailure {
+                                    Log.w(TAG, "Failed to migrate protected preference '${key.name}'", it)
+                                }
                         }
                     }
                 }
@@ -233,14 +240,9 @@ class SettingsStore(
     @Volatile
     private var lastAssistantsForCacheInvalidation: List<Assistant>? = null
 
-    // If a legacy encrypted search setting cannot be read during startup, keep the raw value
-    // intact until a successful decode or an explicit search-list edit occurs.
     @Volatile
-    private var searchServicesLoadFailed = false
-    @Volatile
-    private var lastLoadedSearchServices: List<SearchServiceOptions>? = null
-    @Volatile
-    private var lastLoadedSearchServiceSelected: Int? = null
+    private var lastLoadedSettings: Settings? = null
+    private val unreadableProtectedSettingKeys = ConcurrentHashMap.newKeySet<String>()
 
     val settingsFlowRaw = dataStore.data
         .catch { exception ->
@@ -286,7 +288,7 @@ class SettingsStore(
                 customThemes = runCatching { preferences[CUSTOM_THEMES]?.let { JsonInstant.decodeFromString<List<CustomTheme>>(it) } }.getOrNull() ?: emptyList(),
                 developerMode = preferences[DEVELOPER_MODE] == true,
                 displaySetting = runCatching { JsonInstant.decodeFromString<DisplaySetting>(preferences[DISPLAY_SETTING] ?: "{}") }.getOrElse { DisplaySetting() },
-                searchServices = preferences.readSearchServices(),
+                searchServices = preferences.readPlaintextOrMigrate(SEARCH_SERVICES, listOf(SearchServiceOptions.DEFAULT)) { JsonInstant.decodeFromString(it) },
                 searchCommonOptions = runCatching { preferences[SEARCH_COMMON]?.let { JsonInstant.decodeFromString<SearchCommonOptions>(it) } }.getOrNull() ?: SearchCommonOptions(),
                 searchServiceSelected = preferences[SEARCH_SELECTED] ?: 0,
                 mcpServers = preferences.readPlaintextOrMigrate(MCP_SERVERS, emptyList()) { JsonInstant.decodeFromString(it) },
@@ -303,7 +305,7 @@ class SettingsStore(
                 webServerEnabled = preferences[WEB_SERVER_ENABLED] == true,
                 webServerPort = preferences[WEB_SERVER_PORT] ?: 8080,
                 webServerJwtEnabled = preferences[WEB_SERVER_JWT_ENABLED] == true,
-                webServerAccessPassword = runCatching { val r = preferences[WEB_SERVER_ACCESS_PASSWORD]; if (SecretCrypto.isEncrypted(r)) SecretCrypto.decrypt(r, WEB_SERVER_ACCESS_PASSWORD.name).orEmpty() else r.orEmpty() }.getOrDefault(""),
+                webServerAccessPassword = preferences.readPlaintextOrMigrate(WEB_SERVER_ACCESS_PASSWORD, "") { it },
                 webServerLocalhostOnly = preferences[WEB_SERVER_LOCALHOST_ONLY] == true,
                 backupReminderConfig = preferences[BACKUP_REMINDER_CONFIG]?.let {
                     JsonInstant.decodeFromString(it)
@@ -414,7 +416,9 @@ class SettingsStore(
                 miniApps = settings.miniApps.distinctBy { it.id },
             )
         }
+        .flowOn(Dispatchers.IO)
         .onEach { settings ->
+            lastLoadedSettings = settings
             // 只在助手列表变化时才清空 Pebble 模板缓存（assistant 的 messageTemplate 字段决定模板内容）
             // 避免无关设置变化（如显示设置、provider 设置等）触发不必要的模板重新编译
             if (settings.assistants != lastAssistantsForCacheInvalidation) {
@@ -433,6 +437,17 @@ class SettingsStore(
             return
         }
         settingsFlow.value = settings
+        val loadedSettings = lastLoadedSettings
+        fun canWriteProtected(
+            key: Preferences.Key<String>,
+            value: Any?,
+            loadedValue: Any?,
+        ): Boolean {
+            if (key.name !in unreadableProtectedSettingKeys) return true
+            if (loadedSettings == null || value == loadedValue) return false
+            unreadableProtectedSettingKeys.remove(key.name)
+            return true
+        }
         dataStore.edit { preferences ->
             preferences[DYNAMIC_COLOR] = settings.dynamicColor
             preferences[THEME_ID] = settings.themeId
@@ -459,33 +474,48 @@ class SettingsStore(
             preferences[COMPRESS_MODEL] = settings.compressModelId.toString()
             preferences[COMPRESS_PROMPT] = settings.compressPrompt
 
-            preferences[PROVIDERS] = JsonInstant.encodeToString(settings.providers)
+            if (canWriteProtected(PROVIDERS, settings.providers, loadedSettings?.providers)) {
+                preferences[PROVIDERS] = JsonInstant.encodeToString(settings.providers)
+            }
 
-            preferences[ASSISTANTS] = JsonInstant.encodeToString(settings.assistants)
+            if (canWriteProtected(ASSISTANTS, settings.assistants, loadedSettings?.assistants)) {
+                preferences[ASSISTANTS] = JsonInstant.encodeToString(settings.assistants)
+            }
             preferences[SELECT_ASSISTANT] = settings.assistantId.toString()
             preferences[ASSISTANT_TAGS] = JsonInstant.encodeToString(settings.assistantTags)
 
-            val canWriteSearchServices = !(searchServicesLoadFailed && settings.searchServices == lastLoadedSearchServices)
+            val canWriteSearchServices = canWriteProtected(
+                SEARCH_SERVICES,
+                settings.searchServices,
+                loadedSettings?.searchServices,
+            )
             if (canWriteSearchServices) {
                 preferences[SEARCH_SERVICES] = JsonInstant.encodeToString(settings.searchServices)
-                searchServicesLoadFailed = false
-                lastLoadedSearchServices = settings.searchServices
             }
             preferences[SEARCH_COMMON] = JsonInstant.encodeToString(settings.searchCommonOptions)
             val maxSearchIndex = (settings.searchServices.size - 1).coerceAtLeast(0)
-            if (canWriteSearchServices || settings.searchServiceSelected != lastLoadedSearchServiceSelected) {
+            if (canWriteSearchServices || settings.searchServiceSelected != loadedSettings?.searchServiceSelected) {
                 preferences[SEARCH_SELECTED] = settings.searchServiceSelected.coerceIn(0, maxSearchIndex)
-                lastLoadedSearchServiceSelected = settings.searchServiceSelected.coerceIn(0, maxSearchIndex)
             }
 
-            preferences[MCP_SERVERS] = JsonInstant.encodeToString(settings.mcpServers)
-            preferences[WEBDAV_CONFIG] = JsonInstant.encodeToString(settings.webDavConfig)
-            preferences[S3_CONFIG] = JsonInstant.encodeToString(settings.s3Config)
-            preferences[TTS_PROVIDERS] = JsonInstant.encodeToString(settings.ttsProviders)
+            if (canWriteProtected(MCP_SERVERS, settings.mcpServers, loadedSettings?.mcpServers)) {
+                preferences[MCP_SERVERS] = JsonInstant.encodeToString(settings.mcpServers)
+            }
+            if (canWriteProtected(WEBDAV_CONFIG, settings.webDavConfig, loadedSettings?.webDavConfig)) {
+                preferences[WEBDAV_CONFIG] = JsonInstant.encodeToString(settings.webDavConfig)
+            }
+            if (canWriteProtected(S3_CONFIG, settings.s3Config, loadedSettings?.s3Config)) {
+                preferences[S3_CONFIG] = JsonInstant.encodeToString(settings.s3Config)
+            }
+            if (canWriteProtected(TTS_PROVIDERS, settings.ttsProviders, loadedSettings?.ttsProviders)) {
+                preferences[TTS_PROVIDERS] = JsonInstant.encodeToString(settings.ttsProviders)
+            }
             settings.selectedTTSProviderId?.let {
                 preferences[SELECTED_TTS_PROVIDER] = it.toString()
             } ?: preferences.remove(SELECTED_TTS_PROVIDER)
-            preferences[ASR_PROVIDERS] = JsonInstant.encodeToString(settings.asrProviders)
+            if (canWriteProtected(ASR_PROVIDERS, settings.asrProviders, loadedSettings?.asrProviders)) {
+                preferences[ASR_PROVIDERS] = JsonInstant.encodeToString(settings.asrProviders)
+            }
             settings.selectedASRProviderId?.let {
                 preferences[SELECTED_ASR_PROVIDER] = it.toString()
             } ?: preferences.remove(SELECTED_ASR_PROVIDER)
@@ -495,18 +525,35 @@ class SettingsStore(
             preferences[WEB_SERVER_ENABLED] = settings.webServerEnabled
             preferences[WEB_SERVER_PORT] = settings.webServerPort
             preferences[WEB_SERVER_JWT_ENABLED] = settings.webServerJwtEnabled
-            preferences[WEB_SERVER_ACCESS_PASSWORD] = settings.webServerAccessPassword
+            if (canWriteProtected(
+                    WEB_SERVER_ACCESS_PASSWORD,
+                    settings.webServerAccessPassword,
+                    loadedSettings?.webServerAccessPassword,
+                )
+            ) {
+                preferences[WEB_SERVER_ACCESS_PASSWORD] = settings.webServerAccessPassword
+            }
             preferences[WEB_SERVER_LOCALHOST_ONLY] = settings.webServerLocalhostOnly
             preferences[BACKUP_REMINDER_CONFIG] = JsonInstant.encodeToString(settings.backupReminderConfig)
             preferences[LAUNCH_COUNT] = settings.launchCount
             preferences[SPONSOR_ALERT_DISMISSED_AT] = settings.sponsorAlertDismissedAt
-            preferences[SYSTEM_TOOLS_SETTING] = JsonInstant.encodeToString(settings.systemToolsSetting)
+            if (canWriteProtected(SYSTEM_TOOLS_SETTING, settings.systemToolsSetting, loadedSettings?.systemToolsSetting)) {
+                preferences[SYSTEM_TOOLS_SETTING] = JsonInstant.encodeToString(settings.systemToolsSetting)
+            }
             preferences[PROACTIVE_MESSAGE_SETTING] = JsonInstant.encodeToString(settings.proactiveMessageSetting)
-            preferences[WECHAT_BOT_SETTING] = JsonInstant.encodeToString(settings.wechatBotSetting)
-            preferences[QQ_BOT_SETTING] = JsonInstant.encodeToString(settings.qqBotSetting)
+            if (canWriteProtected(WECHAT_BOT_SETTING, settings.wechatBotSetting, loadedSettings?.wechatBotSetting)) {
+                preferences[WECHAT_BOT_SETTING] = JsonInstant.encodeToString(settings.wechatBotSetting)
+            }
+            if (canWriteProtected(QQ_BOT_SETTING, settings.qqBotSetting, loadedSettings?.qqBotSetting)) {
+                preferences[QQ_BOT_SETTING] = JsonInstant.encodeToString(settings.qqBotSetting)
+            }
             preferences[KEEP_ALIVE_ENABLED] = settings.keepAliveEnabled
-            preferences[EXTERNAL_MEMORIES] = JsonInstant.encodeToString(settings.externalMemories)
-            preferences[MINI_APPS] = JsonInstant.encodeToString(settings.miniApps)
+            if (canWriteProtected(EXTERNAL_MEMORIES, settings.externalMemories, loadedSettings?.externalMemories)) {
+                preferences[EXTERNAL_MEMORIES] = JsonInstant.encodeToString(settings.externalMemories)
+            }
+            if (canWriteProtected(MINI_APPS, settings.miniApps, loadedSettings?.miniApps)) {
+                preferences[MINI_APPS] = JsonInstant.encodeToString(settings.miniApps)
+            }
             preferences[FORCE_CONFIRM_TOOL_CALLS] = settings.forceConfirmToolCalls
             preferences[WORKFLOW_HEADLESS_BLOCK_SENSITIVE] = settings.workflowHeadlessBlockSensitive
             preferences[AUTO_APPROVE_ALL_TOOLS] = settings.autoApproveAllTools
@@ -588,36 +635,32 @@ class SettingsStore(
         }
     }
 
-    private fun Preferences.readSearchServices(): List<SearchServiceOptions> {
-        val fallback = listOf(SearchServiceOptions.DEFAULT)
-        val raw = this[SEARCH_SERVICES]
-        if (raw == null) {
-            searchServicesLoadFailed = false
-            lastLoadedSearchServices = fallback
-            lastLoadedSearchServiceSelected = this[SEARCH_SELECTED] ?: 0
-            return fallback
+    private inline fun <reified T> Preferences.readPlaintextOrMigrate(
+        key: Preferences.Key<String>,
+        default: T,
+        crossinline decode: (String) -> T,
+    ): T {
+        val raw = this[key] ?: run {
+            unreadableProtectedSettingKeys.remove(key.name)
+            return default
         }
-
         val plaintext = if (SecretCrypto.isEncrypted(raw)) {
-            runCatching { SecretCrypto.decrypt(raw, SEARCH_SERVICES.name) }.getOrNull()
+            runCatching { SecretCrypto.decrypt(raw, key.name) }.getOrNull()
         } else {
             raw
         }
-        val decoded = plaintext?.let {
-            runCatching { JsonInstant.decodeFromString<List<SearchServiceOptions>>(it) }.getOrNull()
+        if (plaintext == null) {
+            unreadableProtectedSettingKeys.add(key.name)
+            Log.w(TAG, "Failed to decrypt protected preference '${key.name}', preserving raw value")
+            return default
         }
-        if (decoded != null) {
-            searchServicesLoadFailed = false
-            lastLoadedSearchServices = decoded
-            lastLoadedSearchServiceSelected = this[SEARCH_SELECTED] ?: 0
-            return decoded
-        }
-
-        searchServicesLoadFailed = true
-        lastLoadedSearchServices = fallback
-        lastLoadedSearchServiceSelected = this[SEARCH_SELECTED] ?: 0
-        Log.w(TAG, "Failed to decode preference '${SEARCH_SERVICES.name}', preserving raw value")
-        return fallback
+        return runCatching { decode(plaintext) }
+            .onSuccess { unreadableProtectedSettingKeys.remove(key.name) }
+            .getOrElse {
+                unreadableProtectedSettingKeys.add(key.name)
+                Log.w(TAG, "Failed to decode protected preference '${key.name}', preserving raw value", it)
+                default
+            }
     }
 }
 
@@ -958,19 +1001,3 @@ val DEFAULT_MODE_INJECTIONS = listOf(
     )
 )
 
-private inline fun <reified T> Preferences.readPlaintextOrMigrate(
-    key: Preferences.Key<String>,
-    default: T,
-    crossinline decode: (String) -> T,
-): T {
-    val raw = this[key] ?: return default
-    val plaintext = if (SecretCrypto.isEncrypted(raw)) {
-        runCatching { SecretCrypto.decrypt(raw, key.name) }.getOrNull() ?: raw
-    } else {
-        raw
-    }
-    return runCatching { decode(plaintext) }.getOrElse {
-        Log.w(TAG, "Failed to decode preference '${key.name}', using default", it)
-        default
-    }
-}

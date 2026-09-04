@@ -41,6 +41,7 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onCompletion
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.runBlocking
@@ -514,15 +515,19 @@ class ChatService(
 
                 _generationDoneFlow.emit(conversationId)
 
-                // 只有本轮用户消息和正常 AI 回复完整处理完毕，才重新让主动器进入休眠计时。
-                val proactiveSetting = settingsStore.settingsFlow.value.proactiveMessageSetting
-                if (proactiveSetting.enabled) {
-                    me.rerere.rikkahub.data.service.ProactiveMessageService.resetTimer(context, proactiveSetting)
-                }
             } catch (e: Exception) {
                 e.printStackTrace()
                 Log.e(TAG, "sendMessage failed, conversationId=$conversationId", e)
                 addError(e, conversationId, title = context.getString(R.string.error_title_send_message))
+            } finally {
+                // An API failure must not leave the proactive timer cancelled forever. Do not
+                // restart it for a cancelled job that was superseded by a newer user message.
+                if (coroutineContext.isActive) {
+                    val proactiveSetting = settingsStore.settingsFlow.value.proactiveMessageSetting
+                    if (proactiveSetting.enabled) {
+                        me.rerere.rikkahub.data.service.ProactiveMessageService.resetTimer(context, proactiveSetting)
+                    }
+                }
             }
         }
         session.setJob(job)
@@ -1169,7 +1174,7 @@ class ChatService(
                 )
             )
         }
-        mcpManager.getAllAvailableTools().forEach { (serverId, tool) ->
+        mcpManager.getAllAvailableTools(assistant).forEach { (serverId, tool) ->
             add(
                 Tool(
                     name = ToolNaming.buildMcpToolName(serverId, tool.name),

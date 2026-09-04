@@ -6,17 +6,14 @@
 
 package me.rerere.rikkahub.data.security
 
-import android.security.keystore.KeyGenParameterSpec
-import android.security.keystore.KeyProperties
 import android.util.Base64
 import java.security.KeyStore
 import javax.crypto.Cipher
-import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
 /**
- * Encrypts locally persisted credentials with a non-exportable Android Keystore key.
+ * Reads the legacy encrypted settings format used by an intermediate build.
  *
  * [associatedData] binds a ciphertext to its storage field, so moving an encrypted value
  * from one preference/column to another makes authentication fail instead of silently
@@ -30,22 +27,6 @@ object SecretCrypto {
 
     fun isEncrypted(value: String?): Boolean = value?.startsWith(PREFIX) == true
 
-    fun encrypt(plaintext: String?, associatedData: String): String? {
-        if (plaintext == null || plaintext.isEmpty()) return plaintext
-
-        val cipher = Cipher.getInstance(TRANSFORMATION).apply {
-            init(Cipher.ENCRYPT_MODE, getOrCreateKey())
-            updateAAD(associatedData.toByteArray(Charsets.UTF_8))
-        }
-        val ciphertext = cipher.doFinal(plaintext.toByteArray(Charsets.UTF_8))
-        val envelope = ByteArray(1 + cipher.iv.size + ciphertext.size).also { output ->
-            output[0] = cipher.iv.size.toByte()
-            cipher.iv.copyInto(output, destinationOffset = 1)
-            ciphertext.copyInto(output, destinationOffset = 1 + cipher.iv.size)
-        }
-        return PREFIX + Base64.encodeToString(envelope, Base64.NO_WRAP)
-    }
-
     fun decrypt(storedValue: String?, associatedData: String): String? {
         if (storedValue == null || !isEncrypted(storedValue)) return storedValue
 
@@ -57,34 +38,16 @@ object SecretCrypto {
         val iv = envelope.copyOfRange(1, 1 + ivLength)
         val ciphertext = envelope.copyOfRange(1 + ivLength, envelope.size)
         val cipher = Cipher.getInstance(TRANSFORMATION).apply {
-            init(Cipher.DECRYPT_MODE, getOrCreateKey(), GCMParameterSpec(GCM_TAG_LENGTH_BITS, iv))
+            init(Cipher.DECRYPT_MODE, getExistingKey(), GCMParameterSpec(GCM_TAG_LENGTH_BITS, iv))
             updateAAD(associatedData.toByteArray(Charsets.UTF_8))
         }
         return cipher.doFinal(ciphertext).toString(Charsets.UTF_8)
     }
 
-    private fun getOrCreateKey(): SecretKey {
+    private fun getExistingKey(): SecretKey {
         val keyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-        (keyStore.getKey(KEY_ALIAS, null) as? SecretKey)?.let { return it }
-
-        return synchronized(this) {
-            val refreshedKeyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-            (refreshedKeyStore.getKey(KEY_ALIAS, null) as? SecretKey) ?: KeyGenerator
-                .getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore")
-                .apply {
-                    init(
-                        KeyGenParameterSpec.Builder(
-                            KEY_ALIAS,
-                            KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT,
-                        )
-                            .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
-                            .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
-                            .setKeySize(256)
-                            .setRandomizedEncryptionRequired(true)
-                            .build()
-                    )
-                }
-                .generateKey()
-        }
+        return keyStore.getKey(KEY_ALIAS, null) as? SecretKey
+            ?: error("Legacy encryption key is unavailable")
     }
+
 }
