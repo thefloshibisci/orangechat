@@ -233,6 +233,15 @@ class SettingsStore(
     @Volatile
     private var lastAssistantsForCacheInvalidation: List<Assistant>? = null
 
+    // If a legacy encrypted search setting cannot be read during startup, keep the raw value
+    // intact until a successful decode or an explicit search-list edit occurs.
+    @Volatile
+    private var searchServicesLoadFailed = false
+    @Volatile
+    private var lastLoadedSearchServices: List<SearchServiceOptions>? = null
+    @Volatile
+    private var lastLoadedSearchServiceSelected: Int? = null
+
     val settingsFlowRaw = dataStore.data
         .catch { exception ->
             if (exception is IOException) {
@@ -277,7 +286,7 @@ class SettingsStore(
                 customThemes = runCatching { preferences[CUSTOM_THEMES]?.let { JsonInstant.decodeFromString<List<CustomTheme>>(it) } }.getOrNull() ?: emptyList(),
                 developerMode = preferences[DEVELOPER_MODE] == true,
                 displaySetting = runCatching { JsonInstant.decodeFromString<DisplaySetting>(preferences[DISPLAY_SETTING] ?: "{}") }.getOrElse { DisplaySetting() },
-                searchServices = preferences.readPlaintextOrMigrate(SEARCH_SERVICES, listOf(SearchServiceOptions.DEFAULT)) { JsonInstant.decodeFromString(it) },
+                searchServices = preferences.readSearchServices(),
                 searchCommonOptions = runCatching { preferences[SEARCH_COMMON]?.let { JsonInstant.decodeFromString<SearchCommonOptions>(it) } }.getOrNull() ?: SearchCommonOptions(),
                 searchServiceSelected = preferences[SEARCH_SELECTED] ?: 0,
                 mcpServers = preferences.readPlaintextOrMigrate(MCP_SERVERS, emptyList()) { JsonInstant.decodeFromString(it) },
@@ -456,9 +465,18 @@ class SettingsStore(
             preferences[SELECT_ASSISTANT] = settings.assistantId.toString()
             preferences[ASSISTANT_TAGS] = JsonInstant.encodeToString(settings.assistantTags)
 
-            preferences[SEARCH_SERVICES] = JsonInstant.encodeToString(settings.searchServices)
+            val canWriteSearchServices = !(searchServicesLoadFailed && settings.searchServices == lastLoadedSearchServices)
+            if (canWriteSearchServices) {
+                preferences[SEARCH_SERVICES] = JsonInstant.encodeToString(settings.searchServices)
+                searchServicesLoadFailed = false
+                lastLoadedSearchServices = settings.searchServices
+            }
             preferences[SEARCH_COMMON] = JsonInstant.encodeToString(settings.searchCommonOptions)
-            preferences[SEARCH_SELECTED] = settings.searchServiceSelected.coerceIn(0, settings.searchServices.size - 1)
+            val maxSearchIndex = (settings.searchServices.size - 1).coerceAtLeast(0)
+            if (canWriteSearchServices || settings.searchServiceSelected != lastLoadedSearchServiceSelected) {
+                preferences[SEARCH_SELECTED] = settings.searchServiceSelected.coerceIn(0, maxSearchIndex)
+                lastLoadedSearchServiceSelected = settings.searchServiceSelected.coerceIn(0, maxSearchIndex)
+            }
 
             preferences[MCP_SERVERS] = JsonInstant.encodeToString(settings.mcpServers)
             preferences[WEBDAV_CONFIG] = JsonInstant.encodeToString(settings.webDavConfig)
@@ -569,8 +587,39 @@ class SettingsStore(
             )
         }
     }
-}
 
+    private fun Preferences.readSearchServices(): List<SearchServiceOptions> {
+        val fallback = listOf(SearchServiceOptions.DEFAULT)
+        val raw = this[SEARCH_SERVICES]
+        if (raw == null) {
+            searchServicesLoadFailed = false
+            lastLoadedSearchServices = fallback
+            lastLoadedSearchServiceSelected = this[SEARCH_SELECTED] ?: 0
+            return fallback
+        }
+
+        val plaintext = if (SecretCrypto.isEncrypted(raw)) {
+            runCatching { SecretCrypto.decrypt(raw, SEARCH_SERVICES.name) }.getOrNull()
+        } else {
+            raw
+        }
+        val decoded = plaintext?.let {
+            runCatching { JsonInstant.decodeFromString<List<SearchServiceOptions>>(it) }.getOrNull()
+        }
+        if (decoded != null) {
+            searchServicesLoadFailed = false
+            lastLoadedSearchServices = decoded
+            lastLoadedSearchServiceSelected = this[SEARCH_SELECTED] ?: 0
+            return decoded
+        }
+
+        searchServicesLoadFailed = true
+        lastLoadedSearchServices = fallback
+        lastLoadedSearchServiceSelected = this[SEARCH_SELECTED] ?: 0
+        Log.w(TAG, "Failed to decode preference '${SEARCH_SERVICES.name}', preserving raw value")
+        return fallback
+    }
+}
 
 @Serializable
 data class Settings(

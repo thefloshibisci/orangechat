@@ -23,6 +23,7 @@ import okhttp3.internal.closeQuietly
 import okio.IOException
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resumeWithException
+import kotlin.reflect.KClass
 import kotlin.uuid.Uuid
 
 interface SearchService<T : SearchServiceOptions> {
@@ -138,7 +139,25 @@ sealed class SearchServiceOptions {
     abstract val id: Uuid
 
     open val displayName: String
-        get() = TYPES[this::class] ?: "Unknown"
+        get() = when (this) {
+            is BingLocalOptions -> "Bing"
+            is RikkaHubOptions -> "RikkaHub"
+            is ZhipuOptions -> "智谱"
+            is TavilyOptions -> "Tavily"
+            is ExaOptions -> "Exa"
+            is SearXNGOptions -> "SearXNG"
+            is LinkUpOptions -> "LinkUp"
+            is BraveOptions -> "Brave"
+            is MetasoOptions -> "秘塔"
+            is OllamaOptions -> "Ollama"
+            is PerplexityOptions -> "Perplexity"
+            is FirecrawlOptions -> "Firecrawl"
+            is JinaOptions -> "Jina"
+            is BochaOptions -> "博查"
+            is GrokOptions -> "Grok"
+            is TinyfishOptions -> "Tinyfish"
+            is CustomJsOptions -> name.ifBlank { "Custom JS" }
+        }
 
     companion object {
         val DEFAULT = BingLocalOptions()
@@ -162,6 +181,32 @@ sealed class SearchServiceOptions {
             TinyfishOptions::class to "Tinyfish",
             CustomJsOptions::class to "Custom JS",
         )
+
+        /**
+         * Create a provider from the stable type selected by the settings UI.
+         * This deliberately avoids Kotlin reflection, which is not a reliable
+         * construction mechanism in a minified Android release build.
+         */
+        fun create(type: KClass<out SearchServiceOptions>): SearchServiceOptions = when (type) {
+            BingLocalOptions::class -> BingLocalOptions()
+            RikkaHubOptions::class -> RikkaHubOptions()
+            ZhipuOptions::class -> ZhipuOptions()
+            TavilyOptions::class -> TavilyOptions()
+            ExaOptions::class -> ExaOptions()
+            SearXNGOptions::class -> SearXNGOptions()
+            LinkUpOptions::class -> LinkUpOptions()
+            BraveOptions::class -> BraveOptions()
+            MetasoOptions::class -> MetasoOptions()
+            OllamaOptions::class -> OllamaOptions()
+            PerplexityOptions::class -> PerplexityOptions()
+            FirecrawlOptions::class -> FirecrawlOptions()
+            JinaOptions::class -> JinaOptions()
+            BochaOptions::class -> BochaOptions()
+            GrokOptions::class -> GrokOptions()
+            TinyfishOptions::class -> TinyfishOptions()
+            CustomJsOptions::class -> CustomJsOptions()
+            else -> error("Unsupported search provider type: $type")
+        }
     }
 
     @Serializable
