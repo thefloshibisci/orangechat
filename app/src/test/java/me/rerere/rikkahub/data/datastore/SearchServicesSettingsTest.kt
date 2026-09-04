@@ -32,8 +32,8 @@ class SearchServicesSettingsTest {
 
         assertEquals(selectedTypes.size + existingServices.size, rereadSettings.searchServices.size)
         selectedTypes.zip(selectedServices).zip(rereadSettings.searchServices).forEach { (selected, options) ->
-            val (type, selectedOptions) = selected
-            assertEquals(type.displayName, options.displayName)
+            val (_, selectedOptions) = selected
+            assertEquals(selectedOptions.displayName, options.displayName)
             assertEquals(selectedOptions.id, options.id)
             assertEquals(selectedOptions::class, options::class)
         }
