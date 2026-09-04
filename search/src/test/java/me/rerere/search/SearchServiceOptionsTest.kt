@@ -2,7 +2,6 @@ package me.rerere.search
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertSame
-import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.decodeFromString
@@ -12,12 +11,12 @@ import kotlinx.serialization.json.Json
 class SearchServiceOptionsTest {
     @Test
     fun `factory and service dispatch cover every selectable provider`() {
-        SearchServiceOptions.TYPES.forEach { type ->
+        SearchServiceOptions.TYPES.forEach { (type, name) ->
             val options = SearchServiceOptions.create(type)
 
-            assertEquals(type.displayName, options.displayName)
-            assertConcreteType(type, options)
-            assertSame(expectedService(type), SearchService.getService(options))
+            assertEquals(type, options::class)
+            assertEquals(name, options.displayName)
+            assertSame(expectedService(options), SearchService.getService(options))
         }
     }
 
@@ -49,8 +48,7 @@ class SearchServiceOptionsTest {
 
     @Test
     fun `provider selection survives the settings storage round trip`() {
-        val selectedTypes = SearchServiceOptions.TYPES
-        val settingsSearchServices = selectedTypes.map(SearchServiceOptions::create)
+        val settingsSearchServices = SearchServiceOptions.TYPES.keys.map(SearchServiceOptions::create)
 
         // This is the same JSON configuration used by PreferencesStore for SEARCH_SERVICES.
         val storedValue = storageJson().encodeToString(
@@ -59,11 +57,12 @@ class SearchServiceOptionsTest {
         )
         val reloadedSearchServices = storageJson().decodeFromString<List<SearchServiceOptions>>(storedValue)
 
-        assertEquals(selectedTypes.size, reloadedSearchServices.size)
-        selectedTypes.zip(reloadedSearchServices).forEach { (type, options) ->
-            assertConcreteType(type, options)
-            assertEquals(type.displayName, options.displayName)
-            assertSame(expectedService(type), SearchService.getService(options))
+        assertEquals(settingsSearchServices.size, reloadedSearchServices.size)
+        settingsSearchServices.zip(reloadedSearchServices).forEach { (selected, options) ->
+            assertEquals(selected::class, options::class)
+            assertEquals(selected.id, options.id)
+            assertEquals(selected.displayName, options.displayName)
+            assertSame(expectedService(options), SearchService.getService(options))
         }
     }
 
@@ -72,45 +71,23 @@ class SearchServiceOptionsTest {
         encodeDefaults = true
     }
 
-    private fun assertConcreteType(type: SearchServiceType, options: SearchServiceOptions) {
-        when (type) {
-            SearchServiceType.BING_LOCAL -> assertTrue(options is SearchServiceOptions.BingLocalOptions)
-            SearchServiceType.RIKKAHUB -> assertTrue(options is SearchServiceOptions.RikkaHubOptions)
-            SearchServiceType.ZHIPU -> assertTrue(options is SearchServiceOptions.ZhipuOptions)
-            SearchServiceType.TAVILY -> assertTrue(options is SearchServiceOptions.TavilyOptions)
-            SearchServiceType.EXA -> assertTrue(options is SearchServiceOptions.ExaOptions)
-            SearchServiceType.SEARXNG -> assertTrue(options is SearchServiceOptions.SearXNGOptions)
-            SearchServiceType.LINKUP -> assertTrue(options is SearchServiceOptions.LinkUpOptions)
-            SearchServiceType.BRAVE -> assertTrue(options is SearchServiceOptions.BraveOptions)
-            SearchServiceType.METASO -> assertTrue(options is SearchServiceOptions.MetasoOptions)
-            SearchServiceType.OLLAMA -> assertTrue(options is SearchServiceOptions.OllamaOptions)
-            SearchServiceType.PERPLEXITY -> assertTrue(options is SearchServiceOptions.PerplexityOptions)
-            SearchServiceType.FIRECRAWL -> assertTrue(options is SearchServiceOptions.FirecrawlOptions)
-            SearchServiceType.JINA -> assertTrue(options is SearchServiceOptions.JinaOptions)
-            SearchServiceType.BOCHA -> assertTrue(options is SearchServiceOptions.BochaOptions)
-            SearchServiceType.GROK -> assertTrue(options is SearchServiceOptions.GrokOptions)
-            SearchServiceType.TINYFISH -> assertTrue(options is SearchServiceOptions.TinyfishOptions)
-            SearchServiceType.CUSTOM_JS -> assertTrue(options is SearchServiceOptions.CustomJsOptions)
-        }
-    }
-
-    private fun expectedService(type: SearchServiceType): SearchService<*> = when (type) {
-        SearchServiceType.BING_LOCAL -> BingSearchService
-        SearchServiceType.RIKKAHUB -> RikkaHubSearchService
-        SearchServiceType.ZHIPU -> ZhipuSearchService
-        SearchServiceType.TAVILY -> TavilySearchService
-        SearchServiceType.EXA -> ExaSearchService
-        SearchServiceType.SEARXNG -> SearXNGService
-        SearchServiceType.LINKUP -> LinkUpService
-        SearchServiceType.BRAVE -> BraveSearchService
-        SearchServiceType.METASO -> MetasoSearchService
-        SearchServiceType.OLLAMA -> OllamaSearchService
-        SearchServiceType.PERPLEXITY -> PerplexitySearchService
-        SearchServiceType.FIRECRAWL -> FirecrawlSearchService
-        SearchServiceType.JINA -> JinaSearchService
-        SearchServiceType.BOCHA -> BochaSearchService
-        SearchServiceType.GROK -> GrokSearchService
-        SearchServiceType.TINYFISH -> TinyfishSearchService
-        SearchServiceType.CUSTOM_JS -> CustomJsSearchService
+    private fun expectedService(options: SearchServiceOptions): SearchService<*> = when (options) {
+        is SearchServiceOptions.BingLocalOptions -> BingSearchService
+        is SearchServiceOptions.RikkaHubOptions -> RikkaHubSearchService
+        is SearchServiceOptions.ZhipuOptions -> ZhipuSearchService
+        is SearchServiceOptions.TavilyOptions -> TavilySearchService
+        is SearchServiceOptions.ExaOptions -> ExaSearchService
+        is SearchServiceOptions.SearXNGOptions -> SearXNGService
+        is SearchServiceOptions.LinkUpOptions -> LinkUpService
+        is SearchServiceOptions.BraveOptions -> BraveSearchService
+        is SearchServiceOptions.MetasoOptions -> MetasoSearchService
+        is SearchServiceOptions.OllamaOptions -> OllamaSearchService
+        is SearchServiceOptions.PerplexityOptions -> PerplexitySearchService
+        is SearchServiceOptions.FirecrawlOptions -> FirecrawlSearchService
+        is SearchServiceOptions.JinaOptions -> JinaSearchService
+        is SearchServiceOptions.BochaOptions -> BochaSearchService
+        is SearchServiceOptions.GrokOptions -> GrokSearchService
+        is SearchServiceOptions.TinyfishOptions -> TinyfishSearchService
+        is SearchServiceOptions.CustomJsOptions -> CustomJsSearchService
     }
 }

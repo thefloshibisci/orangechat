@@ -288,7 +288,10 @@ class SettingsStore(
                 customThemes = runCatching { preferences[CUSTOM_THEMES]?.let { JsonInstant.decodeFromString<List<CustomTheme>>(it) } }.getOrNull() ?: emptyList(),
                 developerMode = preferences[DEVELOPER_MODE] == true,
                 displaySetting = runCatching { JsonInstant.decodeFromString<DisplaySetting>(preferences[DISPLAY_SETTING] ?: "{}") }.getOrElse { DisplaySetting() },
-                searchServices = preferences.readPlaintextOrMigrate(SEARCH_SERVICES, listOf(SearchServiceOptions.DEFAULT)) { JsonInstant.decodeFromString(it) },
+                searchServices = preferences.readPlaintextOrMigrate<List<SearchServiceOptions>>(
+                    SEARCH_SERVICES,
+                    listOf<SearchServiceOptions>(SearchServiceOptions.DEFAULT),
+                ) { JsonInstant.decodeFromString(it) },
                 searchCommonOptions = runCatching { preferences[SEARCH_COMMON]?.let { JsonInstant.decodeFromString<SearchCommonOptions>(it) } }.getOrNull() ?: SearchCommonOptions(),
                 searchServiceSelected = preferences[SEARCH_SELECTED] ?: 0,
                 mcpServers = preferences.readPlaintextOrMigrate(MCP_SERVERS, emptyList()) { JsonInstant.decodeFromString(it) },

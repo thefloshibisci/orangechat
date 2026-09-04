@@ -8,7 +8,6 @@ package me.rerere.rikkahub.data.datastore
 
 import me.rerere.rikkahub.utils.JsonInstant
 import me.rerere.search.SearchServiceOptions
-import me.rerere.search.SearchServiceType
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -18,9 +17,9 @@ class SearchServicesSettingsTest {
     fun `selected provider survives Settings write and reread`() {
         val existingServices = listOf(SearchServiceOptions.BingLocalOptions())
         val selectedTypes = listOf(
-            SearchServiceType.TAVILY,
-            SearchServiceType.METASO,
-            SearchServiceType.EXA,
+            SearchServiceOptions.TavilyOptions::class,
+            SearchServiceOptions.MetasoOptions::class,
+            SearchServiceOptions.ExaOptions::class,
         )
         val selectedServices = selectedTypes.map(SearchServiceOptions::create)
         val editedSettings = Settings(searchServices = selectedServices + existingServices)
