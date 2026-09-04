@@ -65,6 +65,12 @@ jobs:
               -dname "CN=Android Debug,O=Android,C=US"
           fi
 
+      - name: Test search provider construction and serialization
+        run: ./gradlew :search:testDebugUnitTest --tests me.rerere.search.SearchServiceOptionsTest
+
+      - name: Test search settings storage round trip
+        run: ./gradlew :app:testDebugUnitTest --tests me.rerere.rikkahub.data.datastore.SearchServicesSettingsTest
+
       - name: Build APK
         run: ./gradlew assembleRelease
 

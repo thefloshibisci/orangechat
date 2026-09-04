@@ -69,6 +69,7 @@ import me.rerere.rikkahub.utils.plus
 import me.rerere.search.SearchCommonOptions
 import me.rerere.search.SearchService
 import me.rerere.search.SearchServiceOptions
+import me.rerere.search.SearchServiceType
 import org.koin.androidx.compose.koinViewModel
 import sh.calvin.reorderable.ReorderableItem
 import sh.calvin.reorderable.rememberReorderableLazyListState
@@ -204,7 +205,7 @@ private fun AddProviderDialog(
     onConfirm: (SearchServiceOptions) -> Unit
 ) {
     var selectedType by remember {
-        mutableStateOf(SearchServiceOptions.TYPES.keys.first())
+        mutableStateOf(SearchServiceType.BING_LOCAL)
     }
 
     AlertDialog(
@@ -216,8 +217,8 @@ private fun AddProviderDialog(
             LazyColumn(
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                items(SearchServiceOptions.TYPES.keys.toList()) { type ->
-                    val name = SearchServiceOptions.TYPES[type] ?: "Unknown"
+                items(SearchServiceOptions.TYPES) { type ->
+                    val name = type.displayName
                     val isSelected = selectedType == type
                     Card(
                         onClick = { selectedType = type },
