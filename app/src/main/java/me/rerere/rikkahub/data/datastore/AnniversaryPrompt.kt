@@ -1,7 +1,7 @@
-﻿/*
- * 姗樼摚 OrangeChat
- * 琛嶇敓鑷?RikkaHub (https://github.com/rikkahub/rikkahub)锛屽師浣滆€?RE
- * 鏈」鐩熀浜?GNU AGPL v3 寮€婧愶紝璇﹁鏍圭洰褰?LICENSE 鏂囦欢
+/*
+ * 橘瓣 OrangeChat
+ * 衍生自 RikkaHub (https://github.com/rikkahub/rikkahub)，原作者 RE
+ * 本项目基于 GNU AGPL v3 开源，详见根目录 LICENSE 文件
  */
 
 package me.rerere.rikkahub.data.datastore
@@ -10,27 +10,36 @@ import java.time.LocalDate
 import java.time.temporal.ChronoUnit
 
 /**
- * 鏋勫缓绱у噾鐨勫畬鏁寸邯蹇垫棩涓婁笅鏂囥€傛棫閰嶇疆浠嶆部鐢ㄥ悓涓€涓紑鍏筹紱鍘嗗彶涓婄殑鍗曢€?ID
- * 鍙綔涓哄吋瀹瑰瓧娈典繚鐣欙紝涓嶅啀闄愬埗娉ㄥ叆鑼冨洿銆? */
+ * 构建紧凑的完整纪念日上下文。
+ *
+ * 保留旧设置中的开关和选中 ID 以兼容存量数据；开关打开后同步整个列表。
+ */
 fun DisplaySetting.buildAnniversaryPrompt(today: LocalDate = LocalDate.now()): String? {
-    if (!anniversaryAiInjectionEnabled) return null
+    if (!anniversaryAiInjectionEnabled || anniversaries.isEmpty()) return null
 
-    val lines = anniversaries.mapNotNull { entry ->
-        val date = runCatching { LocalDate.parse(entry.startDate) }.getOrNull() ?: return@mapNotNull null
-        if (entry.countdown) {
-            val remaining = ChronoUnit.DAYS.between(today, date)
-            when {
-                remaining > 0 -> "- ${entry.title} | 鏃ユ湡锛?{entry.startDate} | 鍊掓暟锛?{remaining}澶?
-                remaining == 0L -> "- ${entry.title} | 鏃ユ湡锛?{entry.startDate} | 浠婂ぉ"
-                else -> null
+    val lines = anniversaries.map { entry ->
+        val title = entry.title.replace(Regex("[\\r\\n]+"), " ").trim()
+        val date = runCatching { LocalDate.parse(entry.startDate) }.getOrNull()
+        when {
+            date == null -> "- $title | 日期：${entry.startDate} | 日期无效"
+            entry.countdown -> {
+                val remaining = ChronoUnit.DAYS.between(today, date)
+                when {
+                    remaining > 0 -> "- $title | 日期：${entry.startDate} | 倒数：${remaining}天"
+                    remaining == 0L -> "- $title | 日期：${entry.startDate} | 今天"
+                    else -> "- $title | 日期：${entry.startDate} | 已过期${-remaining}天"
+                }
             }
-        } else {
-            val dayNumber = ChronoUnit.DAYS.between(date, today) + 1
-            if (dayNumber < 1) null
-            else "- ${entry.title} | 寮€濮嬶細${entry.startDate} | 绗?{dayNumber}澶?
+            else -> {
+                val dayNumber = ChronoUnit.DAYS.between(date, today) + 1
+                if (dayNumber >= 1) {
+                    "- $title | 开始：${entry.startDate} | 第${dayNumber}天"
+                } else {
+                    "- $title | 开始：${entry.startDate} | 尚未开始"
+                }
+            }
         }
     }
 
-    if (lines.isEmpty()) return null
-    return "[绾康鏃ュ垪琛╙\n${lines.joinToString("\n")}"
+    return "[纪念日列表]\n${lines.joinToString("\n")}"
 }

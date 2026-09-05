@@ -177,8 +177,8 @@ private fun AssistantLocalToolContent(
                 }
             )
             item(
-                headlineContent = { Text("日历读写") },
-                supportingContent = { Text("允许AI读取、创建和删除日历事件，需要日历权限") },
+                headlineContent = { Text("日历与纪念日读写") },
+                supportingContent = { Text("允许 AI 读写系统日历和本地纪念日；系统日历操作需要日历权限") },
                 trailingContent = {
                     Switch(
                         checked = assistant.localTools.contains(LocalToolOption.Calendar),

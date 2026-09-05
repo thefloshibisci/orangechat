@@ -840,7 +840,7 @@ data class DisplaySetting(
     // 共看控件颜色与不透明度（PluginWebView 共看功能）
     val watchControlColor: Long? = null,
     val watchControlAlpha: Float = 0.18f,
-    // 纪念日：完全保存在本机；最多选择一个条目精简注入给 AI
+    // 纪念日：完全保存在本机；保留旧选中 ID 以兼容历史设置
     val anniversaries: List<AnniversaryEntry> = emptyList(),
     val anniversaryAiInjectionEnabled: Boolean = false,
     val anniversaryAiInjectionId: String? = null,
