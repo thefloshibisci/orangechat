@@ -17,6 +17,15 @@ interface WorkflowRunDao {
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insert(entity: WorkflowRunEntity): Long
 
+    @Query("UPDATE workflow_runs SET status = :status, durationMs = :durationMs, errorMessage = :errorMessage, outputSummary = :outputSummary, stepsJson = :stepsJson WHERE rowId = :rowId")
+    suspend fun update(rowId: Long, status: String, durationMs: Long, errorMessage: String?, outputSummary: String?, stepsJson: String?): Int
+
+    @Query("SELECT * FROM workflow_runs WHERE rowId = :rowId LIMIT 1")
+    suspend fun lastNForRow(rowId: Long): WorkflowRunEntity?
+
+    @Query("UPDATE workflow_runs SET status = 'INTERRUPTED', errorMessage = :message WHERE status = 'RUNNING'")
+    suspend fun markInterrupted(message: String): Int
+
     @Query("""
         SELECT * FROM workflow_runs
         WHERE workflowId = :workflowId
@@ -24,6 +33,9 @@ interface WorkflowRunDao {
         LIMIT :limit
     """)
     suspend fun lastN(workflowId: String, limit: Int): List<WorkflowRunEntity>
+
+    @Query("SELECT * FROM workflow_runs WHERE workflowId = :workflowId ORDER BY firedAtMs DESC LIMIT :limit")
+    fun observeLastN(workflowId: String, limit: Int): kotlinx.coroutines.flow.Flow<List<WorkflowRunEntity>>
 
     /**
      * Trim the rows for [workflowId] to the most recent [keep]. Called at the end of every

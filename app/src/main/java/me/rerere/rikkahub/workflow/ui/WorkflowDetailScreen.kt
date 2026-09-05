@@ -35,19 +35,17 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.nestedscroll.nestedScroll
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
-import me.rerere.rikkahub.Screen
+import kotlinx.coroutines.flow.collect
 import me.rerere.rikkahub.ui.components.nav.BackButton
 import me.rerere.rikkahub.ui.context.LocalNavController
 import me.rerere.rikkahub.ui.pages.setting.settingsScaffoldContainerColor
 import me.rerere.rikkahub.ui.theme.CustomColors
-import me.rerere.rikkahub.utils.base64Encode
-import me.rerere.rikkahub.utils.plus
 import me.rerere.rikkahub.workflow.model.WorkflowAction
 import me.rerere.rikkahub.workflow.model.WorkflowRun
+import me.rerere.rikkahub.workflow.execution.WorkflowEngine
 import me.rerere.rikkahub.workflow.repository.WorkflowRepository.Loaded
 import org.koin.androidx.compose.koinViewModel
 
@@ -57,7 +55,6 @@ fun WorkflowDetailScreen(
     vm: WorkflowsViewModel = koinViewModel(),
 ) {
     val nav = LocalNavController.current
-    val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
     val snackbarHostState = remember { SnackbarHostState() }
@@ -65,10 +62,14 @@ fun WorkflowDetailScreen(
     var loaded by remember { mutableStateOf<Loaded?>(null) }
     var history by remember { mutableStateOf<List<WorkflowRun>>(emptyList()) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
+    var showEditor by remember { mutableStateOf(false) }
+    var runOutcome by remember { mutableStateOf<WorkflowEngine.FireOutcome?>(null) }
 
     LaunchedEffect(workflowId) {
-        loaded = vm.get(workflowId)
-        history = vm.history(workflowId)
+        vm.observe(workflowId).collect { loaded = it }
+    }
+    LaunchedEffect(workflowId) {
+        vm.observeRuns(workflowId).collect { history = it }
     }
 
     val currentLoaded = loaded
@@ -94,6 +95,17 @@ fun WorkflowDetailScreen(
         return
     }
 
+    if (showEditor) {
+        WorkflowEditorDialog(
+            initial = currentLoaded.definition,
+            onDismiss = { showEditor = false },
+            onSave = { definition, callback ->
+                vm.update(definition, callback)
+            },
+            vm = vm,
+        )
+    }
+
     if (showDeleteConfirm) {
         AlertDialog(
             onDismissRequest = { showDeleteConfirm = false },
@@ -110,6 +122,26 @@ fun WorkflowDetailScreen(
             dismissButton = {
                 TextButton(onClick = { showDeleteConfirm = false }) { Text("取消") }
             },
+        )
+    }
+
+    runOutcome?.let { outcome ->
+        AlertDialog(
+            onDismissRequest = { runOutcome = null },
+            title = { Text("运行结果：${runStatusLabel(outcome.status)}") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        if (outcome.summary.isBlank()) "没有动作输出。"
+                        else outcome.summary,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    outcome.error?.let {
+                        Text("原因：$it", color = MaterialTheme.colorScheme.error)
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { runOutcome = null }) { Text("知道了") } },
         )
     }
 
@@ -137,19 +169,11 @@ fun WorkflowDetailScreen(
                     Button(onClick = {
                         scope.launch {
                             val outcome = vm.runNow(currentLoaded.entity.id)
-                            history = vm.history(currentLoaded.entity.id)
-                            loaded = vm.get(currentLoaded.entity.id)
-                            snackbarHostState.showSnackbar("运行结束：${outcome.status.name}")
+                            runOutcome = outcome
+                            snackbarHostState.showSnackbar("运行结束：${runStatusLabel(outcome.status)}")
                         }
                     }) { Text("立即运行") }
-                    TextButton(onClick = {
-                        nav.navigate(
-                            Screen.Chat(
-                                id = kotlin.uuid.Uuid.random().toString(),
-                                text = "帮我修改工作流「${currentLoaded.entity.name}」".base64Encode(),
-                            )
-                        )
-                    }) { Text("编辑") }
+                    TextButton(onClick = { showEditor = true }) { Text("编辑") }
                     TextButton(onClick = { showDeleteConfirm = true }) {
                         Text("删除", color = MaterialTheme.colorScheme.error)
                     }
@@ -193,6 +217,7 @@ fun WorkflowDetailScreen(
             // Actions
             item {
                 SectionHeader("动作")
+                Text("按下面顺序执行，前一步失败后会停止。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     for ((idx, a) in currentLoaded.definition.actions.withIndex()) {
                         ActionRow(idx + 1, a)
@@ -213,10 +238,7 @@ fun WorkflowDetailScreen(
                     val nowMs by rememberTickingNowMs()
                     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         for (r in history) {
-                            val ago = formatAgo(r.firedAtMs, nowMs)
-                            val line = "$ago - ${r.status.name}" +
-                                (r.errorMessage?.let { " - ${it.take(60)}" } ?: "")
-                            Text(line, style = MaterialTheme.typography.bodySmall)
+                            HistoryRunRow(r, formatAgo(r.firedAtMs, nowMs))
                         }
                     }
                 }
@@ -248,7 +270,7 @@ private fun ActionRow(index: Int, action: WorkflowAction) {
             .padding(8.dp),
     ) {
         Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-            Text("$index. ", style = MaterialTheme.typography.bodyMedium)
+            Text("第 $index 步：", style = MaterialTheme.typography.bodyMedium)
             Text(
                 action.tool,
                 style = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
@@ -316,4 +338,57 @@ private fun conditionLine(c: me.rerere.rikkahub.workflow.model.ConditionSpec): S
         is me.rerere.rikkahub.workflow.model.ConditionSpec.LastChatAgo -> "距上次聊天 ≥ ${c.minutes} 分钟"
     }
     return if (c.invert) "非（$base）" else base
+}
+
+@Composable
+private fun HistoryRunRow(run: WorkflowRun, ago: String) {
+    var expanded by remember(run.rowId) { mutableStateOf(false) }
+    Column(modifier = Modifier.fillMaxWidth()) {
+        TextButton(
+            onClick = { expanded = !expanded },
+            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
+        ) {
+            Text(
+                text = "$ago · ${runStatusLabel(run.status)}" +
+                    (run.errorMessage?.let { " · ${it.take(80)}" } ?: ""),
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+        if (expanded) {
+            run.outputSummary?.takeIf { it.isNotBlank() }?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(start = 8.dp))
+            }
+            run.steps?.forEach { step ->
+                Text(
+                    "第 ${step.index + 1} 步 · ${step.tool} · ${stepStatusLabel(step.status)}" +
+                        (step.errorMessage?.let { " · ${it.take(80)}" } ?: ""),
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(start = 8.dp),
+                )
+            }
+        }
+    }
+}
+
+private fun runStatusLabel(status: me.rerere.rikkahub.workflow.model.WorkflowRunStatus): String = when (status) {
+    me.rerere.rikkahub.workflow.model.WorkflowRunStatus.RUNNING -> "执行中"
+    me.rerere.rikkahub.workflow.model.WorkflowRunStatus.SUCCESS -> "成功"
+    me.rerere.rikkahub.workflow.model.WorkflowRunStatus.FAILED -> "失败"
+    me.rerere.rikkahub.workflow.model.WorkflowRunStatus.CANCELLED -> "已取消"
+    me.rerere.rikkahub.workflow.model.WorkflowRunStatus.INTERRUPTED -> "应用退出，中断"
+    me.rerere.rikkahub.workflow.model.WorkflowRunStatus.SKIPPED_CONDITIONS -> "条件不满足"
+    me.rerere.rikkahub.workflow.model.WorkflowRunStatus.SKIPPED_COOLDOWN -> "冷却中，已跳过"
+    me.rerere.rikkahub.workflow.model.WorkflowRunStatus.SKIPPED_DAILY_CAP -> "达到每日上限"
+    me.rerere.rikkahub.workflow.model.WorkflowRunStatus.SKIPPED_DISABLED -> "工作流已停用"
+}
+
+private fun stepStatusLabel(status: String): String = when (status) {
+    "PENDING" -> "等待"
+    "RUNNING" -> "执行中"
+    "SUCCESS" -> "完成"
+    "FAILED" -> "失败"
+    "TIMED_OUT" -> "超时"
+    "SKIPPED" -> "未执行"
+    "CANCELLED" -> "已取消"
+    else -> status
 }

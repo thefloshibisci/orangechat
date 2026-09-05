@@ -229,6 +229,12 @@ fun workflowGetTool(repository: WorkflowRepository): Tool = Tool(
                         put("status", r.status.name)
                         put("duration_ms", JsonPrimitive(r.durationMs.toString()))
                         put("error", JsonPrimitive(r.errorMessage))
+                        put("output_summary", JsonPrimitive(r.outputSummary))
+                        r.steps?.let { steps ->
+                            put("steps", kotlinx.serialization.json.Json.parseToJsonElement(
+                                me.rerere.rikkahub.utils.JsonInstant.encodeToString(steps)
+                            ))
+                        }
                     })
                 }
             })

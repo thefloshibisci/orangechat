@@ -17,6 +17,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.Icon
 import me.rerere.rikkahub.ui.theme.LargeFlexibleTopAppBar
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
@@ -41,6 +43,8 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.delay
 import me.rerere.rikkahub.Screen
+import me.rerere.hugeicons.HugeIcons
+import me.rerere.hugeicons.stroke.Add01
 import me.rerere.rikkahub.ui.components.nav.BackButton
 import me.rerere.rikkahub.ui.context.LocalNavController
 import me.rerere.rikkahub.ui.pages.setting.settingsScaffoldContainerColor
@@ -60,6 +64,16 @@ fun WorkflowsScreen(vm: WorkflowsViewModel = koinViewModel()) {
     val workflows by vm.workflows.collectAsStateWithLifecycle()
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
     var showHowItWorks by remember { mutableStateOf(false) }
+    var newWorkflow by remember { mutableStateOf<WorkflowDefinition?>(null) }
+
+    newWorkflow?.let { draft ->
+        WorkflowEditorDialog(
+            initial = draft,
+            onDismiss = { newWorkflow = null },
+            onSave = { definition, callback -> vm.update(definition, callback) },
+            vm = vm,
+        )
+    }
 
     if (showHowItWorks) {
         AlertDialog(
@@ -88,6 +102,17 @@ fun WorkflowsScreen(vm: WorkflowsViewModel = koinViewModel()) {
             )
         },
         modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
+        floatingActionButton = {
+            FloatingActionButton(onClick = {
+                newWorkflow = WorkflowDefinition(
+                    id = kotlin.uuid.Uuid.random().toString(),
+                    name = "",
+                    enabled = false,
+                    trigger = TriggerSpec.Manual,
+                    actions = emptyList(),
+                )
+            }) { Icon(HugeIcons.Add01, contentDescription = "新建工作流") }
+        },
         containerColor = settingsScaffoldContainerColor(CustomColors.topBarColors.containerColor),
     ) { innerPadding ->
         if (workflows.isEmpty()) {
@@ -98,7 +123,7 @@ fun WorkflowsScreen(vm: WorkflowsViewModel = koinViewModel()) {
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
-                    text = "还没有工作流。告诉助手创建一个，例如「连上家里 WiFi 时静音」。",
+                    text = "暂无工作流",
                     style = MaterialTheme.typography.bodyMedium.copy(fontStyle = FontStyle.Italic),
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -144,6 +169,9 @@ private fun WorkflowRow(
             when (loaded.entity.lastRunStatus) {
                 WorkflowRunStatus.SUCCESS.name -> "成功运行 · $ago"
                 WorkflowRunStatus.FAILED.name -> "运行失败 · $ago"
+                WorkflowRunStatus.RUNNING.name -> "正在运行 · $ago"
+                WorkflowRunStatus.CANCELLED.name -> "已取消 · $ago"
+                WorkflowRunStatus.INTERRUPTED.name -> "应用退出时中断 · $ago"
                 else -> "已跳过 · $ago"
             }
         }
@@ -157,7 +185,7 @@ private fun WorkflowRow(
         headlineContent = { Text(loaded.entity.name) },
         supportingContent = {
             Text(
-                text = "当：$triggerSummary\n$statusLine",
+                text = "当：$triggerSummary\n步骤：${loaded.definition.actions.size} 个\n$statusLine",
                 maxLines = 3,
                 style = MaterialTheme.typography.bodySmall,
             )

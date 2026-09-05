@@ -25,6 +25,7 @@ import me.rerere.workspace.RootfsInstallProgress
 import me.rerere.workspace.WorkspaceFileEntry
 import me.rerere.workspace.WorkspaceShellStatus
 import me.rerere.workspace.WorkspaceStorageArea
+import me.rerere.workspace.WorkspaceTextPreview
 import java.io.File
 import java.io.InputStream
 import java.io.OutputStream
@@ -199,6 +200,19 @@ class WorkspaceDetailVM(
         }
     }
 
+    suspend fun readFile(
+        entry: WorkspaceFileEntry,
+        area: WorkspaceStorageArea = _state.value.area,
+    ): WorkspaceTextPreview {
+        val workspace = _state.value.workspace ?: error("Workspace not found")
+        return repository.readTextPreview(
+            id = workspace.id,
+            area = area,
+            path = entry.path,
+            maxBytes = PREVIEW_MAX_BYTES,
+        )
+    }
+
     /**
      * 分享文件：将工作区内部文件复制到 [cacheDir] 下的临时文件，
      * 复制完成后回调 [onReady]，由 UI 层生成分享用的 content:// uri。
@@ -274,3 +288,5 @@ class WorkspaceDetailVM(
         _state.value = _state.value.copy(errorMessage = message)
     }
 }
+
+private const val PREVIEW_MAX_BYTES = 128 * 1024

@@ -203,13 +203,17 @@ class RikkaHubApp : Application() {
     }
 
     private fun startWorkflowTriggers() {
-        runCatching {
-            val registry = get<me.rerere.rikkahub.workflow.trigger.TriggerRegistry>()
-            val engine = get<me.rerere.rikkahub.workflow.execution.WorkflowEngine>()
-            registry.setEngineCallback(engine.triggerCallback)
-            registry.start()
-        }.onFailure {
-            Log.e(TAG, "startWorkflowTriggers failed", it)
+        get<AppScope>().launch(Dispatchers.IO) {
+            runCatching {
+                // Do not retry side effects from an interrupted process.
+                get<me.rerere.rikkahub.workflow.repository.WorkflowRepository>().markInterrupted()
+                val registry = get<me.rerere.rikkahub.workflow.trigger.TriggerRegistry>()
+                val engine = get<me.rerere.rikkahub.workflow.execution.WorkflowEngine>()
+                registry.setEngineCallback(engine.triggerCallback)
+                registry.start()
+            }.onFailure {
+                Log.e(TAG, "startWorkflowTriggers failed", it)
+            }
         }
     }
 

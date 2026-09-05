@@ -57,4 +57,6 @@ data class WorkflowRunEntity(
     val status: String,                       // SUCCESS / FAILED / SKIPPED_*
     val durationMs: Long,
     val errorMessage: String? = null,
+    val outputSummary: String? = null,
+    val stepsJson: String? = null,
 )

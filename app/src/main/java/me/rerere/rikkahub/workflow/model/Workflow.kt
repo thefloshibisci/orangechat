@@ -32,13 +32,28 @@ data class WorkflowAction(
  *  - SKIPPED_DISABLED — workflow toggle was off when trigger arrived (race-cleanup)
  */
 enum class WorkflowRunStatus {
+    RUNNING,
     SUCCESS,
     FAILED,
+    CANCELLED,
+    INTERRUPTED,
     SKIPPED_CONDITIONS,
     SKIPPED_COOLDOWN,
     SKIPPED_DAILY_CAP,
     SKIPPED_DISABLED,
 }
+
+@Serializable
+data class WorkflowStepRun(
+    val index: Int,
+    val tool: String,
+    val status: String,
+    val startedAtMs: Long? = null,
+    val finishedAtMs: Long? = null,
+    val durationMs: Long? = null,
+    val outputSummary: String? = null,
+    val errorMessage: String? = null,
+)
 
 /**
  * The full workflow definition the LLM authors. The server stores [definitionJson] in Room
@@ -81,6 +96,8 @@ data class WorkflowRun(
     val status: WorkflowRunStatus,
     val durationMs: Long,
     val errorMessage: String?,
+    val outputSummary: String? = null,
+    val steps: List<WorkflowStepRun>? = null,
 )
 
 object WorkflowConstants {

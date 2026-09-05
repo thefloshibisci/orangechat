@@ -15,6 +15,10 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.contentOrNull
 import me.rerere.ai.core.Tool
 import me.rerere.rikkahub.data.ai.tools.HardlineCommandGuard
 import me.rerere.rikkahub.data.ai.tools.LocalTools
@@ -25,6 +29,7 @@ import me.rerere.rikkahub.workflow.condition.ContextProvider
 import me.rerere.rikkahub.workflow.model.WorkflowAction
 import me.rerere.rikkahub.workflow.model.WorkflowDefinition
 import me.rerere.rikkahub.workflow.model.WorkflowRunStatus
+import me.rerere.rikkahub.workflow.model.WorkflowStepRun
 import me.rerere.rikkahub.workflow.repository.WorkflowRepository
 import me.rerere.rikkahub.workflow.trigger.TriggerFireCallback
 import java.time.LocalDate
@@ -131,6 +136,7 @@ class WorkflowEngine(
             ?: return FireOutcome(WorkflowRunStatus.FAILED, "workflow_not_found", "")
         val def = loaded.definition
         val entity = loaded.entity
+        val runId = repository.startRun(workflowId, firedAtMs)
 
         // Phase 24 — open the cross-pillar ledger row for this fire. Opened after the
         // workflow loads so a `workflow_not_found` non-fire isn't recorded, but before the
@@ -146,7 +152,7 @@ class WorkflowEngine(
         )
 
         if (!entity.enabled) {
-            return persistAndReturn(workflowId, firedAtMs, started, WorkflowRunStatus.SKIPPED_DISABLED, null, "", ledgerId)
+            return persistAndReturn(workflowId, firedAtMs, started, WorkflowRunStatus.SKIPPED_DISABLED, null, "", ledgerId, runId)
         }
 
         // Trigger runtime pre-flight — surface "this trigger needs setup" as an explicit
@@ -156,7 +162,7 @@ class WorkflowEngine(
         //  - notification_received without notification listener bound
         //  - app_launched / app_closed without accessibility service running
         triggerRuntimeCheck(def.trigger)?.let { reason ->
-            return persistAndReturn(workflowId, firedAtMs, started, WorkflowRunStatus.FAILED, reason, "", ledgerId)
+            return persistAndReturn(workflowId, firedAtMs, started, WorkflowRunStatus.FAILED, reason, "", ledgerId, runId)
         }
 
         // Cooldown gate. NOTE: must use `lastActualFireAtMs` (most-recent SUCCESS/FAILED
@@ -166,7 +172,7 @@ class WorkflowEngine(
         // be satisfied by waiting.
         val lastActualFireMs = if (def.cooldownSeconds > 0) repository.lastActualFireAtMs(workflowId) else null
         if (CooldownGate.isWithinCooldown(def.cooldownSeconds, lastActualFireMs, firedAtMs)) {
-            return persistAndReturn(workflowId, firedAtMs, started, WorkflowRunStatus.SKIPPED_COOLDOWN, null, "", ledgerId)
+            return persistAndReturn(workflowId, firedAtMs, started, WorkflowRunStatus.SKIPPED_COOLDOWN, null, "", ledgerId, runId)
         }
 
         // Daily-cap gate
@@ -174,7 +180,7 @@ class WorkflowEngine(
             val today = LocalDate.now(ZoneId.systemDefault()).toString()
             val countedToday = if (entity.runsTodayDate == today) entity.runsTodayCount else 0
             if (countedToday >= def.maxRunsPerDay) {
-                return persistAndReturn(workflowId, firedAtMs, started, WorkflowRunStatus.SKIPPED_DAILY_CAP, null, "", ledgerId)
+                return persistAndReturn(workflowId, firedAtMs, started, WorkflowRunStatus.SKIPPED_DAILY_CAP, null, "", ledgerId, runId)
             }
         }
 
@@ -188,7 +194,7 @@ class WorkflowEngine(
             if (cr is ConditionEvaluator.Result.FailedAt) {
                 return persistAndReturn(
                     workflowId, firedAtMs, started, WorkflowRunStatus.SKIPPED_CONDITIONS,
-                    "condition[${cr.index}] failed: ${cr.reason}", "", ledgerId,
+                    "condition[${cr.index}] failed: ${cr.reason}", "", ledgerId, runId,
                 )
             }
         }
@@ -217,7 +223,7 @@ class WorkflowEngine(
         }
         if (authoringAssistant == null) {
             return persistAndReturn(workflowId, firedAtMs, started, WorkflowRunStatus.FAILED,
-                "no_workflows_assistant", "", ledgerId)
+                "no_workflows_assistant", "", ledgerId, runId)
         }
         // Headless context — sub-agent recursion guard fires from workflow-action
         // dispatch so a workflow's actions can't spawn a sub-agent that re-fires another
@@ -248,15 +254,29 @@ class WorkflowEngine(
                 )
                 return persistAndReturn(
                     workflowId, firedAtMs, started, WorkflowRunStatus.FAILED,
-                    "headless_sensitive_blocked: $names", "", ledgerId,
+                    "headless_sensitive_blocked: $names", "", ledgerId, runId,
                 )
             }
         }
 
         // Execute the action sequence. ActionRunner enforces per-action timeout + HARDLINE.
-        val result = actionRunner.run(def.actions, tools)
+        var latestSteps: List<WorkflowStepRun>? = null
+        val result = try {
+            actionRunner.run(def.actions, tools) { steps ->
+                latestSteps = steps
+                repository.updateRun(runId, WorkflowRunStatus.RUNNING, (System.nanoTime() - started) / 1_000_000L, null, null, steps)
+            }
+        } catch (c: kotlinx.coroutines.CancellationException) {
+            withContext(kotlinx.coroutines.NonCancellable) {
+                val cancelledSteps = latestSteps?.map { step ->
+                    if (step.status == "RUNNING" || step.status == "PENDING") step.copy(status = "CANCELLED") else step
+                }
+                repository.updateRun(runId, WorkflowRunStatus.CANCELLED, (System.nanoTime() - started) / 1_000_000L, "工作流执行被取消，后续步骤未执行", null, cancelledSteps)
+            }
+            throw c
+        }
         val status = if (result.success) WorkflowRunStatus.SUCCESS else WorkflowRunStatus.FAILED
-        return persistAndReturn(workflowId, firedAtMs, started, status, result.error, result.summary, ledgerId)
+        return persistAndReturn(workflowId, firedAtMs, started, status, result.error, result.summary, ledgerId, runId, result.steps)
     }
 
     /**
@@ -323,15 +343,26 @@ class WorkflowEngine(
         error: String?,
         summary: String,
         ledgerId: String,
+        runId: Long? = null,
+        steps: List<WorkflowStepRun>? = null,
     ): FireOutcome {
         val durationMs = (System.nanoTime() - startedNanos) / 1_000_000L
         runCatching {
-            repository.recordFire(
+            if (runId != null) repository.updateRun(
+                rowId = runId,
+                status = status,
+                durationMs = durationMs,
+                errorMessage = error,
+                outputSummary = summary,
+                steps = steps,
+            ) else repository.recordFire(
                 workflowId = workflowId,
                 firedAtMs = firedAtMs,
                 status = status,
                 durationMs = durationMs,
                 errorMessage = error,
+                outputSummary = summary,
+                steps = steps,
             )
         }.onFailure { Log.w(TAG, "recordFire failed for $workflowId", it) }
         // Phase 24 — mirror the terminal outcome into the cross-pillar ledger. Every
@@ -383,21 +414,38 @@ internal object CooldownGate {
  */
 class WorkflowActionRunner {
 
-    data class RunResult(val success: Boolean, val error: String?, val summary: String)
+    data class RunResult(val success: Boolean, val error: String?, val summary: String, val steps: List<WorkflowStepRun> = emptyList())
 
-    suspend fun run(actions: List<WorkflowAction>, availableTools: List<Tool>): RunResult {
+    suspend fun run(actions: List<WorkflowAction>, availableTools: List<Tool>, onProgress: suspend (List<WorkflowStepRun>) -> Unit = {}): RunResult {
         val outputs = mutableListOf<String>()
+        val steps = actions.mapIndexed { index, action -> WorkflowStepRun(index, action.tool, "PENDING") }.toMutableList()
+        onProgress(steps.toList())
         for ((idx, action) in actions.withIndex()) {
+            val startedAt = System.currentTimeMillis()
+            steps[idx] = steps[idx].copy(status = "RUNNING", startedAtMs = startedAt)
+            onProgress(steps.toList())
             val argsJson = action.args.toString()
             val hardlineReason = HardlineCommandGuard.checkTool(action.tool, argsJson)
             if (hardlineReason != null) {
                 logSafe("workflow hardline-blocked action $idx tool=${action.tool}: $hardlineReason")
-                return RunResult(success = false,
-                    error = "action $idx: hardline:$hardlineReason",
-                    summary = outputs.joinToString("\n"))
+                return failedResult(
+                    outputs,
+                    idx,
+                    action,
+                    "被安全规则拦截：$hardlineReason",
+                    "action $idx: hardline:$hardlineReason",
+                    steps,
+                )
             }
             val tool = availableTools.find { it.name == action.tool }
-                ?: return RunResult(false, "action $idx: unknown_tool:${action.tool}", outputs.joinToString("\n"))
+                ?: return failedResult(
+                    outputs,
+                    idx,
+                    action,
+                    "找不到工具",
+                    "action $idx: unknown_tool:${action.tool}",
+                    steps,
+                )
             val out = try {
                 withTimeoutOrNull(action.timeoutSeconds * 1000L) { tool.execute(action.args) }
             } catch (c: kotlinx.coroutines.CancellationException) {
@@ -407,21 +455,66 @@ class WorkflowActionRunner {
                 throw c
             } catch (t: Throwable) {
                 logSafe("workflow action $idx tool=${action.tool} threw: ${t.message}")
-                return RunResult(false,
-                    "action $idx: ${t::class.simpleName}: ${t.message.orEmpty()}".take(500),
-                    outputs.joinToString("\n"))
+                val reason = "${t::class.simpleName}: ${t.message.orEmpty()}".take(500)
+                return failedResult(
+                    outputs,
+                    idx,
+                    action,
+                    reason,
+                    "action $idx: $reason",
+                    steps,
+                )
             }
             if (out == null) {
-                return RunResult(false,
+                return failedResult(
+                    outputs,
+                    idx,
+                    action,
+                    "超时（${action.timeoutSeconds} 秒）",
                     "action $idx: ${action.tool} exceeded ${action.timeoutSeconds}s",
-                    outputs.joinToString("\n"))
+                    steps,
+                )
             }
-            // Surface the first ~200 chars of the tool's text output for the run history.
+            // Keep a short, readable trace for the immediate run result and workflow tool response.
             val text = out.filterIsInstance<me.rerere.ai.ui.UIMessagePart.Text>()
                 .joinToString("\n") { it.text }
-            outputs += "[$idx] ${action.tool}: ${text.take(200)}"
+            val structuredFailure = out.filterIsInstance<me.rerere.ai.ui.UIMessagePart.Text>()
+                .firstNotNullOfOrNull { toolFailure(it.text) }
+            if (structuredFailure != null) {
+                return failedResult(outputs, idx, action, structuredFailure, "action $idx: $structuredFailure", steps)
+            }
+            outputs += "第 ${idx + 1} 步：${action.tool} 已完成" +
+                text.takeIf { it.isNotBlank() }?.let { "\n结果：${it.take(200)}" }.orEmpty()
+            steps[idx] = steps[idx].copy(status = "SUCCESS", finishedAtMs = System.currentTimeMillis(), durationMs = System.currentTimeMillis() - startedAt, outputSummary = text.take(200))
+            onProgress(steps.toList())
         }
-        return RunResult(true, null, outputs.joinToString("\n").take(2000))
+        return RunResult(true, null, outputs.joinToString("\n").take(2000), steps)
+    }
+
+    private fun toolFailure(text: String): String? = runCatching {
+        val obj = kotlinx.serialization.json.Json.parseToJsonElement(text).jsonObject
+        val error = obj["error"]?.jsonPrimitive?.contentOrNull
+        val ok = obj["ok"]?.jsonPrimitive?.booleanOrNull
+        val isError = obj["isError"]?.jsonPrimitive?.booleanOrNull
+        when {
+            isError == true -> error ?: "工具返回错误"
+            ok == false -> error ?: "工具返回失败"
+            else -> null
+        }
+    }.getOrNull()
+
+    private fun failedResult(
+        outputs: MutableList<String>,
+        index: Int,
+        action: WorkflowAction,
+        visibleReason: String,
+        error: String,
+        steps: MutableList<WorkflowStepRun>,
+    ): RunResult {
+        steps[index] = steps[index].copy(status = if (visibleReason.startsWith("超时")) "TIMED_OUT" else "FAILED", finishedAtMs = System.currentTimeMillis(), errorMessage = visibleReason.take(500))
+        for (i in index + 1 until steps.size) steps[i] = steps[i].copy(status = "SKIPPED")
+        outputs += "第 ${index + 1} 步：${action.tool} 失败\n原因：$visibleReason\n后续步骤未执行"
+        return RunResult(false, error.take(500), outputs.joinToString("\n").take(2000), steps)
     }
 
     /**

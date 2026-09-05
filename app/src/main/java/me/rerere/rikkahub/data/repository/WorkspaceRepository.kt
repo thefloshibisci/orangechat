@@ -24,6 +24,7 @@ import me.rerere.workspace.WorkspaceFileEntry
 import me.rerere.workspace.WorkspaceManager
 import me.rerere.workspace.WorkspaceShellStatus
 import me.rerere.workspace.WorkspaceStorageArea
+import me.rerere.workspace.WorkspaceTextPreview
 import java.io.InputStream
 import java.io.OutputStream
 import kotlin.uuid.Uuid
@@ -159,6 +160,17 @@ class WorkspaceRepository(
         val workspace = dao.getById(id) ?: error("Workspace not found: $id")
         manager.ensureWorkspace(workspace.root)
         manager.readText(workspace.root, path)
+    }
+
+    suspend fun readTextPreview(
+        id: String,
+        area: WorkspaceStorageArea,
+        path: String,
+        maxBytes: Int,
+    ): WorkspaceTextPreview = withContext(Dispatchers.IO) {
+        val workspace = dao.getById(id) ?: error("Workspace not found: $id")
+        manager.ensureWorkspace(workspace.root)
+        manager.readTextPreview(workspace.root, path, area, maxBytes)
     }
 
     suspend fun writeText(

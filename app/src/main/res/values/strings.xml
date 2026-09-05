@@ -394,6 +394,10 @@
   <string name="workspace_page_add_title">New Workspace</string>
   <string name="workspace_page_name_label">Workspace name</string>
   <string name="workspace_page_create">Create</string>
+  <string name="workspace_page_rename_title">Rename workspace</string>
+  <string name="workspace_page_rename">Rename</string>
+  <string name="workspace_page_rename_failed">Failed to rename workspace</string>
+  <string name="workspace_page_saving">Saving…</string>
   <string name="workspace_status_disabled">Shell disabled (Rootfs not installed)</string>
   <string name="workspace_status_installing">Installing Rootfs…</string>
   <string name="workspace_status_ready">Ready</string>
@@ -425,6 +429,8 @@
   <string name="workspace_terminal_title">Terminal</string>
   <string name="workspace_terminal_not_installed">Rootfs is not installed in this workspace</string>
   <string name="workspace_terminal_loading">Loading terminal…</string>
+  <string name="workspace_detail_preview_binary">This file is not a readable UTF-8 text file.</string>
+  <string name="workspace_detail_preview_truncated">Preview truncated for large files.</string>
   <string name="workspace_terminal_exited">Terminal process exited</string>
   <string name="extensions_page_prompts">Prompts</string>
   <string name="extensions_page_prompts_desc">Manage and use custom prompts</string>

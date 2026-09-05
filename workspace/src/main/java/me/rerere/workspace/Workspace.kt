@@ -70,3 +70,9 @@ data class WorkspaceCommandResult(
     val timedOut: Boolean = false,
     val truncated: Boolean = false,
 )
+
+data class WorkspaceTextPreview(
+    val text: String,
+    val isBinary: Boolean = false,
+    val truncated: Boolean = false,
+)

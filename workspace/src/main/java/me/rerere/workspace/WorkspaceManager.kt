@@ -59,6 +59,13 @@ class WorkspaceManager(
         charset: Charset = StandardCharsets.UTF_8,
     ): String = fileSystem.readText(filesDir(root), path, charset)
 
+    fun readTextPreview(
+        root: String,
+        path: String,
+        area: WorkspaceStorageArea = WorkspaceStorageArea.FILES,
+        maxBytes: Int = WorkspaceFileSystem.DEFAULT_PREVIEW_BYTES,
+    ): WorkspaceTextPreview = fileSystem.readTextPreview(areaDir(root, area), path, maxBytes)
+
     fun writeText(
         root: String,
         path: String,

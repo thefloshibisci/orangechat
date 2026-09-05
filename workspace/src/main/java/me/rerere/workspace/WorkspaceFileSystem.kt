@@ -8,7 +8,10 @@ package me.rerere.workspace
 
 import java.io.File
 import java.io.InputStream
+import java.nio.ByteBuffer
 import java.nio.charset.Charset
+import java.nio.charset.CharacterCodingException
+import java.nio.charset.CodingErrorAction
 import java.nio.charset.StandardCharsets
 import java.nio.file.FileSystems
 import java.nio.file.Files
@@ -38,6 +41,59 @@ class WorkspaceFileSystem(
             "File is too large to read: ${file.length()} bytes"
         }
         return file.readText(charset)
+    }
+
+    fun readTextPreview(
+        root: File,
+        path: String,
+        maxBytes: Int = DEFAULT_PREVIEW_BYTES,
+    ): WorkspaceTextPreview {
+        require(maxBytes > 0) { "Preview byte limit must be positive" }
+        val file = resolvePath(root, path)
+        require(file.exists()) { "File does not exist: $path" }
+        require(file.isFile) { "Path is not a file: $path" }
+        val bytes = ByteArray(maxBytes)
+        var count = 0
+        file.inputStream().use { input ->
+            while (count < bytes.size) {
+                val read = input.read(bytes, count, bytes.size - count)
+                if (read < 0) break
+                if (read == 0) {
+                    val one = input.read()
+                    if (one < 0) break
+                    bytes[count++] = one.toByte()
+                    continue
+                }
+                count += read
+            }
+        }
+        val truncated = file.length() > count
+        if ((0 until count).any { bytes[it].toInt() == 0 }) {
+            return WorkspaceTextPreview("", isBinary = true, truncated = truncated)
+        }
+        val decoder = StandardCharsets.UTF_8.newDecoder()
+            .onMalformedInput(CodingErrorAction.REPORT)
+            .onUnmappableCharacter(CodingErrorAction.REPORT)
+        val text = try {
+            decoder.decode(ByteBuffer.wrap(bytes, 0, count)).toString()
+        } catch (_: CharacterCodingException) {
+            if (!truncated) return WorkspaceTextPreview("", isBinary = true)
+            // A byte limit can split a valid UTF-8 code point. Drop only the
+            // incomplete tail before classifying the content as binary.
+            var decoded: String? = null
+            for (tail in 1..3) {
+                if (tail >= count) break
+                val retry = StandardCharsets.UTF_8.newDecoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT)
+                decoded = runCatching {
+                    retry.decode(ByteBuffer.wrap(bytes, 0, count - tail)).toString()
+                }.getOrNull()
+                if (decoded != null) break
+            }
+            decoded ?: return WorkspaceTextPreview("", isBinary = true, truncated = truncated)
+        }
+        return WorkspaceTextPreview(text, truncated = truncated)
     }
 
     fun writeText(
@@ -217,4 +273,8 @@ class WorkspaceFileSystem(
 
     private fun Path.relativeToString(): String =
         joinToString("/") { it.name }
+
+    companion object {
+        const val DEFAULT_PREVIEW_BYTES = 128 * 1024
+    }
 }

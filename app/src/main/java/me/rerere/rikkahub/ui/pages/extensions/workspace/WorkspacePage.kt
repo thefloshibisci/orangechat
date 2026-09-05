@@ -76,6 +76,7 @@ fun WorkspacePage() {
 
     var showAddDialog by rememberSaveable { mutableStateOf(false) }
     var deleteTarget by remember { mutableStateOf<WorkspaceEntity?>(null) }
+    var renameTarget by remember { mutableStateOf<WorkspaceEntity?>(null) }
 
     Scaffold(
         topBar = {
@@ -133,6 +134,7 @@ fun WorkspacePage() {
                     workspace = workspace,
                     onClick = { navController.navigate(Screen.WorkspaceDetail(workspace.id)) },
                     onDelete = { deleteTarget = workspace },
+                    onRename = { renameTarget = workspace },
                 )
             }
         }
@@ -165,6 +167,20 @@ fun WorkspacePage() {
     ) {
         Text(stringResource(R.string.workspace_page_delete_message, deleteTarget?.name ?: ""))
     }
+
+    renameTarget?.let { workspace ->
+        RenameWorkspaceDialog(
+            currentName = workspace.name,
+            onDismiss = { renameTarget = null },
+            onConfirm = { name, finish ->
+                vm.renameWorkspace(workspace.id, name) { result ->
+                    result.onSuccess { renameTarget = null }
+                        .onFailure { toaster.show(it.message ?: context.getString(R.string.workspace_page_rename_failed)) }
+                    finish()
+                }
+            },
+        )
+    }
 }
 
 @Composable
@@ -172,6 +188,7 @@ private fun WorkspaceCard(
     workspace: WorkspaceEntity,
     onClick: () -> Unit,
     onDelete: () -> Unit,
+    onRename: () -> Unit,
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
     val status = runCatching { WorkspaceShellStatus.valueOf(workspace.shellStatus) }
@@ -223,6 +240,13 @@ private fun WorkspaceCard(
                     border = materialModeBorderStroke(),
                 ) {
                     DropdownMenuItem(
+                        text = { Text(stringResource(R.string.workspace_page_rename)) },
+                        onClick = {
+                            menuExpanded = false
+                            onRename()
+                        },
+                    )
+                    DropdownMenuItem(
                         text = { Text(stringResource(R.string.delete), color = MaterialTheme.colorScheme.error) },
                         leadingIcon = {
                             Icon(
@@ -240,6 +264,35 @@ private fun WorkspaceCard(
             }
         }
     }
+}
+
+@Composable
+private fun RenameWorkspaceDialog(
+    currentName: String,
+    onDismiss: () -> Unit,
+    onConfirm: (String, () -> Unit) -> Unit,
+) {
+    var name by rememberSaveable(currentName) { mutableStateOf(currentName) }
+    var saving by rememberSaveable(currentName) { mutableStateOf(false) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.workspace_page_rename_title)) },
+        text = {
+            OutlinedTextField(
+                value = name,
+                onValueChange = { if (!saving) name = it },
+                label = { Text(stringResource(R.string.workspace_page_name_label)) },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = { saving = true; onConfirm(name) { saving = false } }, enabled = name.isNotBlank() && !saving) {
+                Text(if (saving) stringResource(R.string.workspace_page_saving) else stringResource(R.string.workspace_page_rename))
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.cancel)) } },
+    )
 }
 
 @Composable

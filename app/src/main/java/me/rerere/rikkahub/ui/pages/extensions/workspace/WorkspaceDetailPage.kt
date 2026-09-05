@@ -18,8 +18,12 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.pager.HorizontalPager
@@ -27,6 +31,7 @@ import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import me.rerere.rikkahub.ui.theme.materialModeBorderStroke
@@ -45,6 +50,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -62,6 +68,7 @@ import androidx.core.content.FileProvider
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.ArrowLeft01
@@ -90,6 +97,7 @@ import me.rerere.workspace.RootfsInstallStage
 import me.rerere.workspace.WorkspaceFileEntry
 import me.rerere.workspace.WorkspaceShellStatus
 import me.rerere.workspace.WorkspaceStorageArea
+import me.rerere.workspace.WorkspaceTextPreview
 import org.koin.androidx.compose.koinViewModel
 import org.koin.core.parameter.parametersOf
 
@@ -108,12 +116,28 @@ fun WorkspaceDetailPage(id: String) {
     var showInstallDialog by remember { mutableStateOf(false) }
     // 导出目标文件条目：非空时触发系统"另存为"选择器
     var exportTarget by remember { mutableStateOf<WorkspaceFileEntry?>(null) }
+    var previewTarget by remember { mutableStateOf<WorkspaceFileEntry?>(null) }
+    var previewResult by remember { mutableStateOf<WorkspaceTextPreview?>(null) }
+    var previewLoading by remember { mutableStateOf(false) }
 
     LaunchedEffect(state.errorMessage) {
         state.errorMessage?.let {
             toaster.show(it)
             vm.consumeError()
         }
+    }
+
+    LaunchedEffect(previewTarget, state.area) {
+        val target = previewTarget ?: return@LaunchedEffect
+        previewLoading = true
+        previewResult = try {
+            vm.readFile(target, state.area)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            WorkspaceTextPreview("读取失败：${e.message ?: "未知错误"}")
+        }
+        previewLoading = false
     }
 
     // 文件选择器：选择任意文件导入到当前正在浏览的工作区目录（FILES / LINUX 均支持）
@@ -215,6 +239,7 @@ fun WorkspaceDetailPage(id: String) {
                     onSwitchArea = { vm.switchArea(it) },
                     onNavigateUp = { vm.navigateUp() },
                     onOpen = { vm.navigateTo(it.path) },
+                    onPreview = { previewTarget = it },
                     onDelete = { deleteTarget = it },
                     onExport = { entry ->
                         exportTarget = entry
@@ -262,6 +287,48 @@ fun WorkspaceDetailPage(id: String) {
             vm.installRootfs(url)
         },
     )
+
+    previewTarget?.let { target ->
+        AlertDialog(
+            onDismissRequest = { previewTarget = null; previewResult = null },
+            title = { Text(target.name) },
+            text = {
+                if (previewLoading) {
+                    CircularProgressIndicator()
+                } else {
+                    val result = previewResult ?: WorkspaceTextPreview("")
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (result.isBinary) {
+                            Text(stringResource(R.string.workspace_detail_preview_binary))
+                        } else {
+                            SelectionContainer {
+                                Text(
+                                    text = result.text,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .heightIn(max = 400.dp)
+                                        .verticalScroll(rememberScrollState()),
+                                    fontFamily = FontFamily.Monospace,
+                                )
+                            }
+                            if (result.truncated) {
+                                Text(
+                                    stringResource(R.string.workspace_detail_preview_truncated),
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { previewTarget = null; previewResult = null }) {
+                    Text(stringResource(R.string.cancel))
+                }
+            },
+        )
+    }
 }
 
 /**
@@ -308,6 +375,7 @@ private fun WorkspaceFilesPage(
     onSwitchArea: (WorkspaceStorageArea) -> Unit,
     onNavigateUp: () -> Unit,
     onOpen: (WorkspaceFileEntry) -> Unit,
+    onPreview: (WorkspaceFileEntry) -> Unit,
     onDelete: (WorkspaceFileEntry) -> Unit,
     onExport: (WorkspaceFileEntry) -> Unit,
     onShare: (WorkspaceFileEntry) -> Unit,
@@ -362,6 +430,8 @@ private fun WorkspaceFilesPage(
                     onClick = {
                         if (entry.isDirectory) {
                             onOpen(entry)
+                        } else {
+                            onPreview(entry)
                         }
                     },
                     onDelete = { onDelete(entry) },

@@ -39,4 +39,13 @@ class WorkspaceVM(
             runCatching { repository.delete(id) }
         }
     }
+
+    fun renameWorkspace(id: String, name: String, onResult: (Result<Boolean>) -> Unit = {}) {
+        viewModelScope.launch {
+            onResult(runCatching {
+                check(repository.rename(id, name)) { "Workspace not found" }
+                true
+            })
+        }
+    }
 }

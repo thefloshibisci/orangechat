@@ -17,6 +17,8 @@ import me.rerere.rikkahub.workflow.model.WorkflowDefinition
 import me.rerere.rikkahub.workflow.model.WorkflowJson
 import me.rerere.rikkahub.workflow.model.WorkflowRun
 import me.rerere.rikkahub.workflow.model.WorkflowRunStatus
+import me.rerere.rikkahub.workflow.model.WorkflowStepRun
+import me.rerere.rikkahub.utils.JsonInstant
 import java.time.LocalDate
 import java.time.ZoneId
 
@@ -45,10 +47,10 @@ class WorkflowRepository(
 
     private fun parseCached(row: WorkflowEntity): WorkflowDefinition? {
         val cached = parseCache.get(row.id)
-        if (cached != null && cached.first == row.updatedAtMs) return cached.second
+        if (cached != null && cached.first == row.updatedAtMs) return cached.second.copy(enabled = row.enabled)
         val parsed = WorkflowJson.parseStored(row.definitionJson) ?: return null
         parseCache.put(row.id, row.updatedAtMs to parsed)
-        return parsed
+        return parsed.copy(enabled = row.enabled)
     }
 
     fun observeAll(): Flow<List<Loaded>> = workflowDao.observeAll().map { rows ->
@@ -137,6 +139,8 @@ class WorkflowRepository(
         status: WorkflowRunStatus,
         durationMs: Long,
         errorMessage: String?,
+        outputSummary: String? = null,
+        steps: List<WorkflowStepRun>? = null,
         zoneId: ZoneId = ZoneId.systemDefault(),
     ) {
         val truncatedErr = errorMessage?.take(WorkflowConstants.MAX_ERROR_LENGTH)
@@ -146,6 +150,8 @@ class WorkflowRepository(
             status = status.name,
             durationMs = durationMs,
             errorMessage = truncatedErr,
+            outputSummary = outputSummary?.take(2000),
+            stepsJson = steps?.let { JsonInstant.encodeToString(it) },
         ))
         // Daily-cap counter: only counted if the fire was real (SUCCESS or FAILED). Skip
         // statuses don't count, per spec.
@@ -168,6 +174,24 @@ class WorkflowRepository(
         workflowRunDao.trim(workflowId, WorkflowConstants.MAX_RUNS_HISTORY)
     }
 
+    suspend fun startRun(workflowId: String, firedAtMs: Long): Long = workflowRunDao.insert(
+        WorkflowRunEntity(workflowId = workflowId, firedAtMs = firedAtMs, status = WorkflowRunStatus.RUNNING.name, durationMs = 0)
+    )
+
+    suspend fun updateRun(rowId: Long, status: WorkflowRunStatus, durationMs: Long, errorMessage: String?, outputSummary: String?, steps: List<WorkflowStepRun>?) {
+        workflowRunDao.update(rowId, status.name, durationMs, errorMessage?.take(WorkflowConstants.MAX_ERROR_LENGTH), outputSummary?.take(2000), steps?.let { JsonInstant.encodeToString(it) })
+        if (status == WorkflowRunStatus.RUNNING) return
+        val run = workflowRunDao.lastNForRow(rowId) ?: return
+        val today = LocalDate.now().toString()
+        val current = workflowDao.getById(run.workflowId) ?: return
+        val counted = status == WorkflowRunStatus.SUCCESS || status == WorkflowRunStatus.FAILED
+        val count = if (current.runsTodayDate != today) if (counted) 1 else 0 else current.runsTodayCount + if (counted) 1 else 0
+        workflowDao.recordFire(run.workflowId, run.firedAtMs, status.name, errorMessage?.take(WorkflowConstants.MAX_ERROR_LENGTH), count, today)
+        workflowRunDao.trim(run.workflowId, WorkflowConstants.MAX_RUNS_HISTORY)
+    }
+
+    suspend fun markInterrupted(message: String = "应用在工作流执行中退出，未自动重试") = workflowRunDao.markInterrupted(message)
+
     /**
      * Most-recent SUCCESS/FAILED fire — used by the cooldown gate. The projected
      * `lastRunAtMs` column is bumped on every attempt (including skips) so it can't be
@@ -186,6 +210,16 @@ class WorkflowRepository(
                     .getOrDefault(WorkflowRunStatus.FAILED),
                 durationMs = row.durationMs,
                 errorMessage = row.errorMessage,
+                outputSummary = row.outputSummary,
+                steps = row.stepsJson?.let { runCatching { JsonInstant.decodeFromString<List<WorkflowStepRun>>(it) }.getOrNull() },
             )
         }
+
+    fun observeRuns(workflowId: String, limit: Int = 20): Flow<List<WorkflowRun>> =
+        workflowRunDao.observeLastN(workflowId, limit).map { rows -> rows.map { row ->
+            WorkflowRun(row.rowId, row.workflowId, row.firedAtMs,
+                runCatching { WorkflowRunStatus.valueOf(row.status) }.getOrDefault(WorkflowRunStatus.FAILED),
+                row.durationMs, row.errorMessage, row.outputSummary,
+                row.stepsJson?.let { runCatching { JsonInstant.decodeFromString<List<WorkflowStepRun>>(it) }.getOrNull() })
+        } }
 }
