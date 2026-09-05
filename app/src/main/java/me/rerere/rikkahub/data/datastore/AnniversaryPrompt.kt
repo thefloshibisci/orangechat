@@ -1,7 +1,7 @@
-/*
- * 橘瓣 OrangeChat
- * 衍生自 RikkaHub (https://github.com/rikkahub/rikkahub)，原作者 RE
- * 本项目基于 GNU AGPL v3 开源，详见根目录 LICENSE 文件
+﻿/*
+ * 姗樼摚 OrangeChat
+ * 琛嶇敓鑷?RikkaHub (https://github.com/rikkahub/rikkahub)锛屽師浣滆€?RE
+ * 鏈」鐩熀浜?GNU AGPL v3 寮€婧愶紝璇﹁鏍圭洰褰?LICENSE 鏂囦欢
  */
 
 package me.rerere.rikkahub.data.datastore
@@ -10,24 +10,27 @@ import java.time.LocalDate
 import java.time.temporal.ChronoUnit
 
 /**
- * 构建一条最短、可预测的纪念日上下文。
- *
- * 不注入列表、说明或工具定义，避免无谓增加 token。开始当天按“第 1 天”计算。
- */
+ * 鏋勫缓绱у噾鐨勫畬鏁寸邯蹇垫棩涓婁笅鏂囥€傛棫閰嶇疆浠嶆部鐢ㄥ悓涓€涓紑鍏筹紱鍘嗗彶涓婄殑鍗曢€?ID
+ * 鍙綔涓哄吋瀹瑰瓧娈典繚鐣欙紝涓嶅啀闄愬埗娉ㄥ叆鑼冨洿銆? */
 fun DisplaySetting.buildAnniversaryPrompt(today: LocalDate = LocalDate.now()): String? {
     if (!anniversaryAiInjectionEnabled) return null
-    val entry = anniversaries.firstOrNull { it.id == anniversaryAiInjectionId } ?: return null
-    val startDate = runCatching { LocalDate.parse(entry.startDate) }.getOrNull() ?: return null
-    return if (entry.countdown) {
-        val remaining = ChronoUnit.DAYS.between(today, startDate)
-        when {
-            remaining > 0 -> "[倒数日] 距离用户的“${entry.title}”（${entry.startDate}）还有${remaining}天。"
-            remaining == 0L -> "[倒数日] 今天就是用户的“${entry.title}”（${entry.startDate}）。"
-            else -> null
+
+    val lines = anniversaries.mapNotNull { entry ->
+        val date = runCatching { LocalDate.parse(entry.startDate) }.getOrNull() ?: return@mapNotNull null
+        if (entry.countdown) {
+            val remaining = ChronoUnit.DAYS.between(today, date)
+            when {
+                remaining > 0 -> "- ${entry.title} | 鏃ユ湡锛?{entry.startDate} | 鍊掓暟锛?{remaining}澶?
+                remaining == 0L -> "- ${entry.title} | 鏃ユ湡锛?{entry.startDate} | 浠婂ぉ"
+                else -> null
+            }
+        } else {
+            val dayNumber = ChronoUnit.DAYS.between(date, today) + 1
+            if (dayNumber < 1) null
+            else "- ${entry.title} | 寮€濮嬶細${entry.startDate} | 绗?{dayNumber}澶?
         }
-    } else {
-        val dayNumber = ChronoUnit.DAYS.between(startDate, today) + 1
-        if (dayNumber < 1) return null
-        "[纪念日] 用户的“${entry.title}”始于${entry.startDate}，今天是第${dayNumber}天。"
     }
+
+    if (lines.isEmpty()) return null
+    return "[绾康鏃ュ垪琛╙\n${lines.joinToString("\n")}"
 }

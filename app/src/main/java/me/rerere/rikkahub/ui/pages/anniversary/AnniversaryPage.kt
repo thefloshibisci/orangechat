@@ -375,7 +375,7 @@ private fun AiInjectionCard(
             Column(Modifier.weight(1f)) {
                 Text("告诉 AI", style = MaterialTheme.typography.titleMedium)
                 Text(
-                    text = if (selectedTitle == null) "请先新建纪念日" else "仅注入“$selectedTitle”的一条精简信息",
+                    text = if (selectedTitle == null) "请先新建纪念日" else "向 AI 同步纪念日列表",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

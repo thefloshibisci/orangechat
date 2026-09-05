@@ -132,6 +132,7 @@ class LocalTools(
     private val workflowRepository: me.rerere.rikkahub.workflow.repository.WorkflowRepository,
     private val workflowEngine: me.rerere.rikkahub.workflow.execution.WorkflowEngine,
     private val sshHostRepository: me.rerere.rikkahub.data.repository.SshHostRepository,
+    private val settingsStore: me.rerere.rikkahub.data.datastore.SettingsStore,
 ) {
     val javascriptTool by lazy {
         Tool(
@@ -596,6 +597,9 @@ class LocalTools(
         // 注: 本地短信工具已废弃, 与系统工具同名冲突。改由系统工具侧提供。
         if (options.contains(LocalToolOption.Calendar)) {
             tools.add(createCalendarTool(context))
+        }
+        if (options.contains(LocalToolOption.Calendar)) {
+            tools.add(createAnniversaryManageTool(settingsStore))
         }
         if (options.contains(LocalToolOption.WebFetch)) {
             tools.add(webFetchTool)
