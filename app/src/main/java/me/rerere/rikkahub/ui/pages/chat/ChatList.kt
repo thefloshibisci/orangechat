@@ -97,7 +97,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.util.fastCoerceAtLeast
 import androidx.compose.ui.zIndex
 import dev.chrisbanes.haze.HazeState
-import dev.chrisbanes.haze.hazeSource
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -136,7 +135,6 @@ fun ChatList(
     processingStatus: String? = null,
     previewMode: Boolean,
     settings: Settings,
-    hazeState: HazeState,
     errors: List<ChatError> = emptyList(),
     onDismissError: (Uuid) -> Unit = {},
     onClearAllErrors: () -> Unit = {},
@@ -166,7 +164,6 @@ fun ChatList(
                 innerPadding = innerPadding,
                 conversation = conversation,
                 settings = settings,
-                hazeState = hazeState,
                 onJumpToMessage = onJumpToMessage,
                 animatedVisibilityScope = this@AnimatedContent,
             )
@@ -178,7 +175,6 @@ fun ChatList(
                 loading = loading,
                 processingStatus = processingStatus,
                 settings = settings,
-                hazeState = hazeState,
                 errors = errors,
                 onDismissError = onDismissError,
                 onClearAllErrors = onClearAllErrors,
@@ -208,7 +204,6 @@ private fun ChatListNormal(
     loading: Boolean,
     processingStatus: String? = null,
     settings: Settings,
-    hazeState: HazeState,
     errors: List<ChatError>,
     onDismissError: (Uuid) -> Unit,
     onClearAllErrors: () -> Unit,
@@ -326,7 +321,6 @@ private fun ChatListNormal(
             verticalArrangement = Arrangement.spacedBy(12.dp),
             modifier = Modifier
                 .fillMaxSize()
-                .hazeSource(state = hazeState)
                 .padding(top = innerPadding.calculateTopPadding()),
         ) {
             itemsIndexed(
@@ -615,7 +609,6 @@ private fun ChatListPreview(
     innerPadding: PaddingValues,
     conversation: Conversation,
     settings: Settings,
-    hazeState: HazeState,
     animatedVisibilityScope: AnimatedVisibilityScope,
     onJumpToMessage: (Int) -> Unit
 ) {
@@ -640,7 +633,6 @@ private fun ChatListPreview(
         modifier = Modifier
             .padding(top = innerPadding.calculateTopPadding())
             .fillMaxSize()
-            .hazeSource(state = hazeState),
     ) {
         // 搜索框
         OutlinedTextField(

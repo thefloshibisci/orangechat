@@ -17,9 +17,9 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalScrollCaptureInProgress
 import androidx.compose.ui.res.painterResource
 import coil3.compose.AsyncImage
+import dev.chrisbanes.haze.hazeSource
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.getCurrentAssistant
@@ -64,16 +64,13 @@ fun rememberChatBackgroundVisuals(setting: Settings): ChatBackgroundVisuals {
 @Composable
 fun AssistantBackground(
     setting: Settings,
+    modifier: Modifier = Modifier,
 ) {
     val assistant = setting.getCurrentAssistant()
     val visuals = rememberChatBackgroundVisuals(setting)
     val chatBackgroundColor = setting.displaySetting.chatBackgroundColor?.let { it.toComposeColor() }
-    val isScrollCaptureInProgress = LocalScrollCaptureInProgress.current
-
-    Box(modifier = Modifier.fillMaxSize()) {
-        // MIUI's scroll capture composites the page by repeated screenshots. Keep image layers
-        // out of that capture window for one diagnostic pass; solid colors remain unchanged.
-        if (!isScrollCaptureInProgress && setting.themeId == "pearltide") {
+    Box(modifier = modifier.fillMaxSize()) {
+        if (setting.themeId == "pearltide") {
             Image(
                 painter = painterResource(id = R.drawable.pearltide_chat_bg),
                 contentDescription = null,
@@ -83,7 +80,7 @@ fun AssistantBackground(
         }
 
         when {
-            !isScrollCaptureInProgress && assistant.background != null -> {
+            assistant.background != null -> {
                 // 用户手动为助手设置的背景图，优先级最高
                 AsyncImage(
                     model = assistant.background,
