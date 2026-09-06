@@ -54,7 +54,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.geometry.isFinite
@@ -461,34 +460,6 @@ private fun ChatPageContent(
     // 与 sourceLayer 是两个不同对象；blurLayer 只在 overlay DrawScope 中按抽屉可见宽度录制，不被 sourceLayer 捕获。
     val drawerBlurLayer = rememberGraphicsLayer()
 
-    // 被录制子树：全部正常聊天原始内容（AssistantBackground + Scaffold + ChatList + ChatInput）。
-    // 正常聊天页面由 drawContent() 直接上屏，不再经过 sourceLayer；
-    // sourceLayer 仅作为额外录制副本，唯一消费位置是 drawerBlurLayer.record 内。
-    // 仅抽屉可见时录制，避免空 layer；capture modifier 内绝不 drawLayer(sourceLayer)。
-    val contentCaptureModifier = Modifier
-        .fillMaxSize()
-        .drawWithContent {
-            // 正常聊天页面直接上屏
-            drawContent()
-
-            // 本轮停用（注释）：sourceLayer.record 重放路径经外部专家会诊确认本机无输出，
-            // 注释掉录制以省掉双绘制成本；drawContent() 直绘上屏保留。
-            // record 代码本体保留，清理留到实机验证成功之后单独进行。
-            // 仅抽屉可见时额外录制一份，专供模糊 overlay
-            // if (drawerVisibleWidthPx > 0f) {
-            //     sourceLayer.record(
-            //         density = this,
-            //         layoutDirection = layoutDirection,
-            //         size = IntSize(
-            //             size.width.toInt().coerceAtLeast(1),
-            //             size.height.toInt().coerceAtLeast(1),
-            //         ),
-            //     ) {
-            //         this@drawWithContent.drawContent()
-            //     }
-            // }
-        }
-
     Surface(
         color = MaterialTheme.colorScheme.background,
         modifier = modifier.fillMaxSize(),
@@ -496,7 +467,6 @@ private fun ChatPageContent(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .then(contentCaptureModifier)
                 .onGloballyPositioned { coordinates ->
                     overlayOriginInWindow = coordinates.positionInWindow()
                     // 气泡真实背景模糊：记录背景容器（内容 Box）窗口原点与像素尺寸
