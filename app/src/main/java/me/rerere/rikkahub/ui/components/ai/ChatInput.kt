@@ -83,6 +83,7 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalScrollCaptureInProgress
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.ImeAction
@@ -175,9 +176,11 @@ fun ChatInput(
     val assistant = settings.getCurrentAssistant()
     val hazeTintColor = MaterialTheme.colorScheme.surfaceContainerLow
     val materialMode = LocalMaterialMode.current
+    val isScrollCaptureInProgress = LocalScrollCaptureInProgress.current
     val useRealtimeBlur = settings.displaySetting.enableBlurEffect &&
         materialMode == DisplayMaterialMode.GLASS &&
-        Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+        !isScrollCaptureInProgress
     val useMaterialBorder = materialMode == DisplayMaterialMode.TRANSLUCENT ||
         materialMode == DisplayMaterialMode.GLASS
 

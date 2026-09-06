@@ -7,13 +7,16 @@
 package me.rerere.rikkahub.service
 
 import android.util.Log
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
 import me.rerere.rikkahub.data.model.Conversation
 import java.util.concurrent.atomic.AtomicInteger
@@ -39,8 +42,9 @@ class ConversationSession(
 
     // 生成任务（内聚在 session 中）
     private val _generationJob = MutableStateFlow<Job?>(null)
+    private val activeJobs = mutableSetOf<Job>()
     val generationJob: StateFlow<Job?> = _generationJob.asStateFlow()
-    val isGenerating: Boolean get() = _generationJob.value?.isActive == true
+    val isGenerating: Boolean get() = synchronized(this) { activeJobs.any { it.isActive } }
     val isInUse: Boolean get() = refCount.get() > 0 || isGenerating
 
     /**
@@ -89,18 +93,31 @@ class ConversationSession(
         }
     }
 
-    fun setJob(job: Job?) {
-        _generationJob.value?.cancel()
+    @Synchronized
+    fun setJob(job: Job?, cancelPrevious: Boolean = true) {
+        val previous = _generationJob.value
         _generationJob.value = job
+        if (cancelPrevious) previous?.cancel()
+        if (job != null) activeJobs.add(job)
         job?.invokeOnCompletion {
-            _generationJob.value = null
-            if (refCount.get() <= 0) {
-                scheduleIdleCheck()
+            synchronized(this) {
+                activeJobs.remove(job)
+                if (_generationJob.value === job) {
+                    _generationJob.value = null
+                }
+                if (refCount.get() <= 0 && !isGenerating) {
+                    scheduleIdleCheck()
+                }
             }
         }
     }
 
     fun getJob(): Job? = _generationJob.value
+
+    @Synchronized
+    fun cancelJobs(): List<Job> = activeJobs.toList().also { jobs ->
+        jobs.asReversed().forEach { it.cancel() }
+    }
 
     /**
      * 原子地尝试把 newJob 注册为当前会话的生成任务，仅当当前没有生成任务在进行时才成功。
@@ -138,9 +155,21 @@ class ConversationSession(
     }
 
     fun cleanup() {
-        _generationJob.value?.cancel()
         _generationJob.value = null
+        cancelJobs()
         idleCheckJob?.cancel()
         idleCheckJob = null
+    }
+}
+
+/** Serialize approval saves without cancelling an earlier approval decision. */
+internal suspend fun afterPreviousGeneration(previous: Job?, block: suspend () -> Unit) {
+    try {
+        previous?.join()
+        block()
+    } catch (e: CancellationException) {
+        previous?.cancel()
+        withContext(NonCancellable) { previous?.join() }
+        throw e
     }
 }

@@ -224,7 +224,7 @@ class GenerationHandler(
                             tool.copy(approvalState = ToolApprovalState.Pending)
                         }
                         // State is Pending -> keep waiting
-                        tool.approvalState is ToolApprovalState.Pending -> {
+                        tool.isPending -> {
                             hasPendingApproval = true
                             tool
                         }
@@ -759,4 +759,3 @@ private fun buildCodeBlockPrompt(): String = buildString {
     appendLine("   - The `edits` mode applies search/replace to the files from your previous `write_files` call. Files not mentioned in `edits` keep their content unchanged.")
     appendLine("   - Always use actual filenames (e.g. `MainActivity.kt`) as code block language tags, not just language names (e.g. `kotlin`).")
 }
- 
