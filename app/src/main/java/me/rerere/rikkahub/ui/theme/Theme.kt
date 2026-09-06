@@ -136,10 +136,6 @@ fun RikkahubTheme(
             surfaceContainerHighest = scheme.surfaceContainerHighest.copy(alpha = interfaceSurfaceAlpha),
             surfaceVariant = scheme.surfaceVariant.copy(alpha = interfaceSurfaceAlpha),
         )
-        if (settings.themeId == "pearltide") {
-            // Pearl Tide 原有根背景由 RouteActivity 绘制，继续允许该背景透出。
-            scheme = scheme.copy(background = scheme.background.copy(alpha = 0f))
-        }
         scheme
     }
 

@@ -400,8 +400,6 @@ private fun ChatPageContent(
             setting.displaySetting.chatBubbleRealtimeBlur &&
             actualMaterialMode == DisplayMaterialMode.GLASS &&
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
-    // 共享聊天背景 Painter（仅图片背景时非空；与 AssistantBackground 共用同一实例，不重复加载）
-    val chatBackgroundPainter = rememberChatBackgroundPainter(setting)
     // 共享背景视觉参数（基础底色、背景纸 alpha、渐变遮罩），与 AssistantBackground 完全一致
     val chatBackgroundVisuals = rememberChatBackgroundVisuals(setting)
     // 共享聊天背景 ImageBitmap：仅当图片背景存在时在 LaunchedEffect 中异步解码一次，
@@ -565,7 +563,7 @@ private fun ChatPageContent(
                 radiusPx = bubbleBlurRadiusPx,
             )
         ) {
-        AssistantBackground(setting = setting, backgroundPainter = chatBackgroundPainter)
+        AssistantBackground(setting = setting)
         Scaffold(
             topBar = {
                 TopBar(
