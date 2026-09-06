@@ -7,6 +7,7 @@
 package me.rerere.rikkahub.ui.pages.chat
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
@@ -16,7 +17,9 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
 import coil3.compose.AsyncImage
+import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.getCurrentAssistant
 import me.rerere.rikkahub.ui.components.ui.toComposeColor
@@ -65,10 +68,19 @@ fun AssistantBackground(
     val visuals = rememberChatBackgroundVisuals(setting)
     val chatBackgroundColor = setting.displaySetting.chatBackgroundColor?.let { it.toComposeColor() }
 
-    when {
-        assistant.background != null -> {
-            // 用户手动为助手设置的背景图，优先级最高
-            Box {
+    Box(modifier = Modifier.fillMaxSize()) {
+        if (setting.themeId == "pearltide") {
+            Image(
+                painter = painterResource(id = R.drawable.pearltide_chat_bg),
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
+
+        when {
+            assistant.background != null -> {
+                // 用户手动为助手设置的背景图，优先级最高
                 AsyncImage(
                     model = assistant.background,
                     contentDescription = null,
@@ -90,15 +102,15 @@ fun AssistantBackground(
                         )
                 )
             }
-        }
 
-        chatBackgroundColor != null -> {
-            // 用户设置了自定义纯色背景
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(chatBackgroundColor)
-            )
+            chatBackgroundColor != null -> {
+                // 用户设置了自定义纯色背景
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(chatBackgroundColor)
+                )
+            }
         }
     }
 }

@@ -26,7 +26,6 @@ import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -48,8 +47,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.core.net.toUri
@@ -426,14 +423,6 @@ class RouteActivity : ComponentActivity() {
                         .fillMaxSize()
                         .background(MaterialTheme.colorScheme.background)
                 ) {
-                    if (settings.themeId == "pearltide") {
-                        Image(
-                            painter = painterResource(id = R.drawable.pearltide_chat_bg),
-                            contentDescription = null,
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier.matchParentSize(),
-                        )
-                    }
                     SettingsBackground {
                         NavDisplay(
                             backStack = backStack,
