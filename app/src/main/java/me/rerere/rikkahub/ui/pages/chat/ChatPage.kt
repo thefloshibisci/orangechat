@@ -86,7 +86,6 @@ import coil3.request.ImageRequest
 import coil3.request.allowHardware
 import com.dokar.sonner.ToastType
 import dev.chrisbanes.haze.HazeState
-import dev.chrisbanes.haze.hazeSource
 import dev.chrisbanes.haze.rememberHazeState
 import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
@@ -534,10 +533,7 @@ private fun ChatPageContent(
                 radiusPx = bubbleBlurRadiusPx,
             )
         ) {
-        AssistantBackground(
-            setting = setting,
-            modifier = Modifier.hazeSource(state = hazeState),
-        )
+        AssistantBackground(setting = setting)
         Scaffold(
             topBar = {
                 TopBar(
@@ -687,6 +683,7 @@ private fun ChatPageContent(
                 processingStatus = processingStatus,
                 previewMode = previewMode,
                 settings = setting,
+                hazeState = hazeState,
                 errors = errors,
                 onDismissError = onDismissError,
                 onClearAllErrors = onClearAllErrors,
