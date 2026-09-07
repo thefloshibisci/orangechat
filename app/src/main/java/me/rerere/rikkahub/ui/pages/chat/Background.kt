@@ -17,6 +17,7 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalScrollCaptureInProgress
 import androidx.compose.ui.res.painterResource
 import coil3.compose.AsyncImage
 import dev.chrisbanes.haze.hazeSource
@@ -69,8 +70,10 @@ fun AssistantBackground(
     val assistant = setting.getCurrentAssistant()
     val visuals = rememberChatBackgroundVisuals(setting)
     val chatBackgroundColor = setting.displaySetting.chatBackgroundColor?.let { it.toComposeColor() }
+    val isScrollCaptureInProgress = LocalScrollCaptureInProgress.current
     Box(modifier = modifier.fillMaxSize()) {
-        if (setting.themeId == "pearltide") {
+        // Keep bitmap layers out of MIUI's repeated scroll-capture composition.
+        if (!isScrollCaptureInProgress && setting.themeId == "pearltide") {
             Image(
                 painter = painterResource(id = R.drawable.pearltide_chat_bg),
                 contentDescription = null,
@@ -80,7 +83,7 @@ fun AssistantBackground(
         }
 
         when {
-            assistant.background != null -> {
+            !isScrollCaptureInProgress && assistant.background != null -> {
                 // 用户手动为助手设置的背景图，优先级最高
                 AsyncImage(
                     model = assistant.background,
