@@ -24,10 +24,16 @@ import io.pebbletemplates.pebble.PebbleEngine
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import me.rerere.ai.core.MessageRole
@@ -59,13 +65,13 @@ import me.rerere.rikkahub.data.sync.s3.S3Config
 import me.rerere.rikkahub.ui.theme.CustomTheme
 import me.rerere.rikkahub.ui.theme.PresetThemes
 import me.rerere.rikkahub.utils.JsonInstant
-import me.rerere.rikkahub.utils.toMutableStateFlow
 import me.rerere.search.SearchCommonOptions
 import me.rerere.search.SearchServiceOptions
 import me.rerere.tts.provider.TTSProviderSetting
 import org.koin.core.component.KoinComponent
 import org.koin.core.component.get
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.uuid.Uuid
 
 private const val TAG = "PreferencesStore"
@@ -198,39 +204,52 @@ class SettingsStore(
         // 自动批准所有工具调用（懒人模式）
         val AUTO_APPROVE_ALL_TOOLS = booleanPreferencesKey("auto_approve_all_tools")
 
+        /** Composite settings that contain credentials or authentication tokens. */
+        private val PROTECTED_STRING_KEYS: Set<Preferences.Key<String>> = setOf(
+            PROVIDERS,
+            ASSISTANTS,
+            SEARCH_SERVICES,
+            MCP_SERVERS,
+            WEBDAV_CONFIG,
+            S3_CONFIG,
+            TTS_PROVIDERS,
+            ASR_PROVIDERS,
+            WEB_SERVER_ACCESS_PASSWORD,
+            SYSTEM_TOOLS_SETTING,
+            WECHAT_BOT_SETTING,
+            QQ_BOT_SETTING,
+            EXTERNAL_MEMORIES,
+            MINI_APPS,
+        )
     }
 
     private val dataStore = context.settingsStore
+    private val updateMutex = Mutex()
 
     init {
-        // One-time migration: decrypt any legacy encrypted keys back to plain JSON strings in background.
-        // Once migrated, future reads and writes are purely fast plaintext without hardware Keystore calls.
+        // Upgrade existing plaintext secrets in the background. The read path below still
+        // understands both formats while this migration is pending or unable to run.
         scope.launch(Dispatchers.IO) {
-            runCatching {
-                dataStore.edit { preferences ->
-                    val keysToMigrate = listOf(
-                        PROVIDERS, ASSISTANTS, SEARCH_SERVICES, MCP_SERVERS, WEBDAV_CONFIG,
-                        S3_CONFIG, TTS_PROVIDERS, ASR_PROVIDERS, WEB_SERVER_ACCESS_PASSWORD,
-                        SYSTEM_TOOLS_SETTING, WECHAT_BOT_SETTING, QQ_BOT_SETTING,
-                        EXTERNAL_MEMORIES, MINI_APPS
-                    )
-                    keysToMigrate.forEach { key ->
-                        val stored = preferences[key]
-                        if (!stored.isNullOrEmpty() && SecretCrypto.isEncrypted(stored)) {
-                            runCatching { SecretCrypto.decrypt(stored, key.name) }
-                                .onSuccess { decrypted ->
-                                    if (!decrypted.isNullOrEmpty()) {
-                                        preferences[key] = decrypted
+            try {
+                updateMutex.withLock {
+                    dataStore.edit { preferences ->
+                        PROTECTED_STRING_KEYS.forEach { key ->
+                            val stored = preferences[key]
+                            if (!stored.isNullOrEmpty() && !SecretCrypto.isEncrypted(stored)) {
+                                try {
+                                    val encrypted = SecretCrypto.encrypt(stored, key.name)
+                                    if (!encrypted.isNullOrEmpty()) {
+                                        preferences[key] = encrypted
                                     }
+                                } catch (error: Exception) {
+                                    Log.w(TAG, "Failed to encrypt protected preference '${key.name}'", error)
                                 }
-                                .onFailure {
-                                    Log.w(TAG, "Failed to migrate protected preference '${key.name}'", it)
-                                }
+                            }
                         }
                     }
                 }
-            }.onFailure {
-                Log.w(TAG, "Legacy ciphertext migration completed with non-fatal errors", it)
+            } catch (error: Exception) {
+                Log.w(TAG, "Protected preference encryption migration failed", error)
             }
         }
     }
@@ -240,8 +259,6 @@ class SettingsStore(
     @Volatile
     private var lastAssistantsForCacheInvalidation: List<Assistant>? = null
 
-    @Volatile
-    private var lastLoadedSettings: Settings? = null
     private val unreadableProtectedSettingKeys = ConcurrentHashMap.newKeySet<String>()
 
     val settingsFlowRaw = dataStore.data
@@ -420,34 +437,72 @@ class SettingsStore(
             )
         }
         .flowOn(Dispatchers.IO)
-        .onEach { settings ->
-            lastLoadedSettings = settings
+        .onEach {
             // 只在助手列表变化时才清空 Pebble 模板缓存（assistant 的 messageTemplate 字段决定模板内容）
             // 避免无关设置变化（如显示设置、provider 设置等）触发不必要的模板重新编译
-            if (settings.assistants != lastAssistantsForCacheInvalidation) {
-                lastAssistantsForCacheInvalidation = settings.assistants
+            if (it.assistants != lastAssistantsForCacheInvalidation) {
+                lastAssistantsForCacheInvalidation = it.assistants
                 get<PebbleEngine>().templateCache.invalidateAll()
             }
         }
 
-    val settingsFlow = settingsFlowRaw
-        .distinctUntilChanged()
-        .toMutableStateFlow(scope, Settings.dummy())
+    val settingsFlow = MutableStateFlow(Settings.dummy())
+    private val pendingWrites = AtomicInteger()
+
+    init {
+        scope.launch {
+            runCatching {
+                settingsFlowRaw.distinctUntilChanged().collect { committed ->
+                    // A slow disk emission must not visually undo a newer optimistic write.
+                    if (pendingWrites.get() == 0) {
+                        settingsFlow.value = committed
+                    }
+                }
+            }.onFailure {
+                it.printStackTrace()
+                Log.e(TAG, "Error while collecting settings: ${it.message}", it)
+            }
+        }
+    }
 
     suspend fun update(settings: Settings) {
         if(settings.init) {
             Log.w(TAG, "Cannot update dummy settings")
             return
         }
+        pendingWrites.incrementAndGet()
         settingsFlow.value = settings
-        val loadedSettings = lastLoadedSettings
+        try {
+            updateMutex.withLock {
+                val previous = settingsFlowRaw.first()
+                withContext(Dispatchers.IO) {
+                    persistSettings(settings, previous)
+                }
+            }
+        } finally {
+            if (pendingWrites.decrementAndGet() == 0) {
+                withContext(NonCancellable) {
+                    runCatching { settingsFlow.value = settingsFlowRaw.first() }
+                        .onFailure {
+                            Log.w(TAG, "Failed to refresh settings after write", it)
+                        }
+                }
+            }
+        }
+    }
+
+    private suspend fun persistSettings(
+        settings: Settings,
+        previous: Settings,
+    ) {
+        val loadedSettings = previous
         fun canWriteProtected(
             key: Preferences.Key<String>,
             value: Any?,
             loadedValue: Any?,
         ): Boolean {
             if (key.name !in unreadableProtectedSettingKeys) return true
-            if (loadedSettings == null || value == loadedValue) return false
+            if (value == loadedValue) return false
             unreadableProtectedSettingKeys.remove(key.name)
             return true
         }
@@ -477,12 +532,18 @@ class SettingsStore(
             preferences[COMPRESS_MODEL] = settings.compressModelId.toString()
             preferences[COMPRESS_PROMPT] = settings.compressPrompt
 
-            if (canWriteProtected(PROVIDERS, settings.providers, loadedSettings?.providers)) {
-                preferences[PROVIDERS] = JsonInstant.encodeToString(settings.providers)
+            if (canWriteProtected(PROVIDERS, settings.providers, loadedSettings.providers)) {
+                preferences.putSecretIfChanged(
+                    PROVIDERS,
+                    settings.providers != previous.providers,
+                ) { JsonInstant.encodeToString(settings.providers) }
             }
 
-            if (canWriteProtected(ASSISTANTS, settings.assistants, loadedSettings?.assistants)) {
-                preferences[ASSISTANTS] = JsonInstant.encodeToString(settings.assistants)
+            if (canWriteProtected(ASSISTANTS, settings.assistants, loadedSettings.assistants)) {
+                preferences.putSecretIfChanged(
+                    ASSISTANTS,
+                    settings.assistants != previous.assistants,
+                ) { JsonInstant.encodeToString(settings.assistants) }
             }
             preferences[SELECT_ASSISTANT] = settings.assistantId.toString()
             preferences[ASSISTANT_TAGS] = JsonInstant.encodeToString(settings.assistantTags)
@@ -490,34 +551,52 @@ class SettingsStore(
             val canWriteSearchServices = canWriteProtected(
                 SEARCH_SERVICES,
                 settings.searchServices,
-                loadedSettings?.searchServices,
+                loadedSettings.searchServices,
             )
             if (canWriteSearchServices) {
-                preferences[SEARCH_SERVICES] = JsonInstant.encodeToString(settings.searchServices)
+                preferences.putSecretIfChanged(
+                    SEARCH_SERVICES,
+                    settings.searchServices != previous.searchServices,
+                ) { JsonInstant.encodeToString(settings.searchServices) }
             }
             preferences[SEARCH_COMMON] = JsonInstant.encodeToString(settings.searchCommonOptions)
             val maxSearchIndex = (settings.searchServices.size - 1).coerceAtLeast(0)
-            if (canWriteSearchServices || settings.searchServiceSelected != loadedSettings?.searchServiceSelected) {
+            if (canWriteSearchServices || settings.searchServiceSelected != loadedSettings.searchServiceSelected) {
                 preferences[SEARCH_SELECTED] = settings.searchServiceSelected.coerceIn(0, maxSearchIndex)
             }
 
-            if (canWriteProtected(MCP_SERVERS, settings.mcpServers, loadedSettings?.mcpServers)) {
-                preferences[MCP_SERVERS] = JsonInstant.encodeToString(settings.mcpServers)
+            if (canWriteProtected(MCP_SERVERS, settings.mcpServers, loadedSettings.mcpServers)) {
+                preferences.putSecretIfChanged(
+                    MCP_SERVERS,
+                    settings.mcpServers != previous.mcpServers,
+                ) { JsonInstant.encodeToString(settings.mcpServers) }
             }
-            if (canWriteProtected(WEBDAV_CONFIG, settings.webDavConfig, loadedSettings?.webDavConfig)) {
-                preferences[WEBDAV_CONFIG] = JsonInstant.encodeToString(settings.webDavConfig)
+            if (canWriteProtected(WEBDAV_CONFIG, settings.webDavConfig, loadedSettings.webDavConfig)) {
+                preferences.putSecretIfChanged(
+                    WEBDAV_CONFIG,
+                    settings.webDavConfig != previous.webDavConfig,
+                ) { JsonInstant.encodeToString(settings.webDavConfig) }
             }
-            if (canWriteProtected(S3_CONFIG, settings.s3Config, loadedSettings?.s3Config)) {
-                preferences[S3_CONFIG] = JsonInstant.encodeToString(settings.s3Config)
+            if (canWriteProtected(S3_CONFIG, settings.s3Config, loadedSettings.s3Config)) {
+                preferences.putSecretIfChanged(
+                    S3_CONFIG,
+                    settings.s3Config != previous.s3Config,
+                ) { JsonInstant.encodeToString(settings.s3Config) }
             }
-            if (canWriteProtected(TTS_PROVIDERS, settings.ttsProviders, loadedSettings?.ttsProviders)) {
-                preferences[TTS_PROVIDERS] = JsonInstant.encodeToString(settings.ttsProviders)
+            if (canWriteProtected(TTS_PROVIDERS, settings.ttsProviders, loadedSettings.ttsProviders)) {
+                preferences.putSecretIfChanged(
+                    TTS_PROVIDERS,
+                    settings.ttsProviders != previous.ttsProviders,
+                ) { JsonInstant.encodeToString(settings.ttsProviders) }
             }
             settings.selectedTTSProviderId?.let {
                 preferences[SELECTED_TTS_PROVIDER] = it.toString()
             } ?: preferences.remove(SELECTED_TTS_PROVIDER)
-            if (canWriteProtected(ASR_PROVIDERS, settings.asrProviders, loadedSettings?.asrProviders)) {
-                preferences[ASR_PROVIDERS] = JsonInstant.encodeToString(settings.asrProviders)
+            if (canWriteProtected(ASR_PROVIDERS, settings.asrProviders, loadedSettings.asrProviders)) {
+                preferences.putSecretIfChanged(
+                    ASR_PROVIDERS,
+                    settings.asrProviders != previous.asrProviders,
+                ) { JsonInstant.encodeToString(settings.asrProviders) }
             }
             settings.selectedASRProviderId?.let {
                 preferences[SELECTED_ASR_PROVIDER] = it.toString()
@@ -531,31 +610,49 @@ class SettingsStore(
             if (canWriteProtected(
                     WEB_SERVER_ACCESS_PASSWORD,
                     settings.webServerAccessPassword,
-                    loadedSettings?.webServerAccessPassword,
+                    loadedSettings.webServerAccessPassword,
                 )
             ) {
-                preferences[WEB_SERVER_ACCESS_PASSWORD] = settings.webServerAccessPassword
+                preferences.putSecretIfChanged(
+                    WEB_SERVER_ACCESS_PASSWORD,
+                    settings.webServerAccessPassword != previous.webServerAccessPassword,
+                ) { settings.webServerAccessPassword }
             }
             preferences[WEB_SERVER_LOCALHOST_ONLY] = settings.webServerLocalhostOnly
             preferences[BACKUP_REMINDER_CONFIG] = JsonInstant.encodeToString(settings.backupReminderConfig)
             preferences[LAUNCH_COUNT] = settings.launchCount
             preferences[SPONSOR_ALERT_DISMISSED_AT] = settings.sponsorAlertDismissedAt
-            if (canWriteProtected(SYSTEM_TOOLS_SETTING, settings.systemToolsSetting, loadedSettings?.systemToolsSetting)) {
-                preferences[SYSTEM_TOOLS_SETTING] = JsonInstant.encodeToString(settings.systemToolsSetting)
+            if (canWriteProtected(SYSTEM_TOOLS_SETTING, settings.systemToolsSetting, loadedSettings.systemToolsSetting)) {
+                preferences.putSecretIfChanged(
+                    SYSTEM_TOOLS_SETTING,
+                    settings.systemToolsSetting != previous.systemToolsSetting,
+                ) { JsonInstant.encodeToString(settings.systemToolsSetting) }
             }
             preferences[PROACTIVE_MESSAGE_SETTING] = JsonInstant.encodeToString(settings.proactiveMessageSetting)
-            if (canWriteProtected(WECHAT_BOT_SETTING, settings.wechatBotSetting, loadedSettings?.wechatBotSetting)) {
-                preferences[WECHAT_BOT_SETTING] = JsonInstant.encodeToString(settings.wechatBotSetting)
+            if (canWriteProtected(WECHAT_BOT_SETTING, settings.wechatBotSetting, loadedSettings.wechatBotSetting)) {
+                preferences.putSecretIfChanged(
+                    WECHAT_BOT_SETTING,
+                    settings.wechatBotSetting != previous.wechatBotSetting,
+                ) { JsonInstant.encodeToString(settings.wechatBotSetting) }
             }
-            if (canWriteProtected(QQ_BOT_SETTING, settings.qqBotSetting, loadedSettings?.qqBotSetting)) {
-                preferences[QQ_BOT_SETTING] = JsonInstant.encodeToString(settings.qqBotSetting)
+            if (canWriteProtected(QQ_BOT_SETTING, settings.qqBotSetting, loadedSettings.qqBotSetting)) {
+                preferences.putSecretIfChanged(
+                    QQ_BOT_SETTING,
+                    settings.qqBotSetting != previous.qqBotSetting,
+                ) { JsonInstant.encodeToString(settings.qqBotSetting) }
             }
             preferences[KEEP_ALIVE_ENABLED] = settings.keepAliveEnabled
-            if (canWriteProtected(EXTERNAL_MEMORIES, settings.externalMemories, loadedSettings?.externalMemories)) {
-                preferences[EXTERNAL_MEMORIES] = JsonInstant.encodeToString(settings.externalMemories)
+            if (canWriteProtected(EXTERNAL_MEMORIES, settings.externalMemories, loadedSettings.externalMemories)) {
+                preferences.putSecretIfChanged(
+                    EXTERNAL_MEMORIES,
+                    settings.externalMemories != previous.externalMemories,
+                ) { JsonInstant.encodeToString(settings.externalMemories) }
             }
-            if (canWriteProtected(MINI_APPS, settings.miniApps, loadedSettings?.miniApps)) {
-                preferences[MINI_APPS] = JsonInstant.encodeToString(settings.miniApps)
+            if (canWriteProtected(MINI_APPS, settings.miniApps, loadedSettings.miniApps)) {
+                preferences.putSecretIfChanged(
+                    MINI_APPS,
+                    settings.miniApps != previous.miniApps,
+                ) { JsonInstant.encodeToString(settings.miniApps) }
             }
             preferences[FORCE_CONFIRM_TOOL_CALLS] = settings.forceConfirmToolCalls
             preferences[WORKFLOW_HEADLESS_BLOCK_SENSITIVE] = settings.workflowHeadlessBlockSensitive
@@ -568,9 +665,7 @@ class SettingsStore(
     }
 
     suspend fun updateAssistant(assistantId: Uuid) {
-        dataStore.edit { preferences ->
-            preferences[SELECT_ASSISTANT] = assistantId.toString()
-        }
+        update { it.copy(assistantId = assistantId) }
     }
 
     suspend fun updateAssistantModel(assistantId: Uuid, modelId: Uuid) {
@@ -664,6 +759,18 @@ class SettingsStore(
                 Log.w(TAG, "Failed to decode protected preference '${key.name}', preserving raw value", it)
                 default
             }
+    }
+
+    private inline fun MutablePreferences.putSecretIfChanged(
+        key: Preferences.Key<String>,
+        changed: Boolean,
+        plaintext: () -> String,
+    ) {
+        val stored = this[key]
+        if (!changed && (stored == null || SecretCrypto.isEncrypted(stored))) return
+        SecretCrypto.encrypt(plaintext(), key.name)?.let { encrypted ->
+            this[key] = encrypted
+        }
     }
 }
 

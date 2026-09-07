@@ -7,13 +7,17 @@
 package me.rerere.rikkahub.data.security
 
 import android.util.Base64
+import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyProperties
 import java.security.KeyStore
+import java.util.concurrent.ConcurrentHashMap
 import javax.crypto.Cipher
+import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
 /**
- * Reads the legacy encrypted settings format used by an intermediate build.
+ * Encrypts locally persisted credentials with a non-exportable Android Keystore key.
  *
  * [associatedData] binds a ciphertext to its storage field, so moving an encrypted value
  * from one preference/column to another makes authentication fail instead of silently
@@ -25,10 +29,41 @@ object SecretCrypto {
     private const val PREFIX = "enc:v1:"
     private const val GCM_TAG_LENGTH_BITS = 128
 
+    private data class CachedPlaintext(
+        val ciphertext: String,
+        val plaintext: String,
+    )
+
+    // SettingsStore keeps decoded settings in memory; this bounded per-field cache
+    // prevents unrelated preference writes from repeatedly entering Android Keystore.
+    private val decryptCache = ConcurrentHashMap<String, CachedPlaintext>()
+
     fun isEncrypted(value: String?): Boolean = value?.startsWith(PREFIX) == true
+
+    fun encrypt(plaintext: String?, associatedData: String): String? {
+        if (plaintext == null || plaintext.isEmpty()) return plaintext
+
+        val cipher = Cipher.getInstance(TRANSFORMATION).apply {
+            init(Cipher.ENCRYPT_MODE, getOrCreateKey())
+            updateAAD(associatedData.toByteArray(Charsets.UTF_8))
+        }
+        val ciphertext = cipher.doFinal(plaintext.toByteArray(Charsets.UTF_8))
+        val envelope = ByteArray(1 + cipher.iv.size + ciphertext.size).also { output ->
+            output[0] = cipher.iv.size.toByte()
+            cipher.iv.copyInto(output, destinationOffset = 1)
+            ciphertext.copyInto(output, destinationOffset = 1 + cipher.iv.size)
+        }
+        return (PREFIX + Base64.encodeToString(envelope, Base64.NO_WRAP)).also { encrypted ->
+            decryptCache[associatedData] = CachedPlaintext(encrypted, plaintext)
+        }
+    }
 
     fun decrypt(storedValue: String?, associatedData: String): String? {
         if (storedValue == null || !isEncrypted(storedValue)) return storedValue
+
+        decryptCache[associatedData]
+            ?.takeIf { it.ciphertext == storedValue }
+            ?.let { return it.plaintext }
 
         val envelope = Base64.decode(storedValue.removePrefix(PREFIX), Base64.NO_WRAP)
         require(envelope.isNotEmpty()) { "Encrypted secret envelope is empty" }
@@ -41,13 +76,40 @@ object SecretCrypto {
             init(Cipher.DECRYPT_MODE, getExistingKey(), GCMParameterSpec(GCM_TAG_LENGTH_BITS, iv))
             updateAAD(associatedData.toByteArray(Charsets.UTF_8))
         }
-        return cipher.doFinal(ciphertext).toString(Charsets.UTF_8)
+        return cipher.doFinal(ciphertext).toString(Charsets.UTF_8).also { plaintext ->
+            decryptCache[associatedData] = CachedPlaintext(storedValue, plaintext)
+        }
     }
 
     private fun getExistingKey(): SecretKey {
+        return getExistingKeyOrNull() ?: error("Legacy encryption key is unavailable")
+    }
+
+    private fun getOrCreateKey(): SecretKey {
+        getExistingKeyOrNull()?.let { return it }
+        return synchronized(this) {
+            getExistingKeyOrNull() ?: KeyGenerator
+                .getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore")
+                .apply {
+                    init(
+                        KeyGenParameterSpec.Builder(
+                            KEY_ALIAS,
+                            KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT,
+                        )
+                            .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+                            .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+                            .setKeySize(256)
+                            .setRandomizedEncryptionRequired(true)
+                            .build()
+                    )
+                }
+                .generateKey()
+        }
+    }
+
+    private fun getExistingKeyOrNull(): SecretKey? {
         val keyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
         return keyStore.getKey(KEY_ALIAS, null) as? SecretKey
-            ?: error("Legacy encryption key is unavailable")
     }
 
 }

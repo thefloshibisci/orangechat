@@ -99,6 +99,7 @@ import me.rerere.rikkahub.ui.components.ui.AutoAIIcon
 import me.rerere.rikkahub.ui.components.ui.BitmapComposer
 import me.rerere.rikkahub.ui.components.ui.ChainOfThought
 import me.rerere.rikkahub.ui.components.ui.ChainOfThoughtScope
+import me.rerere.rikkahub.ui.context.LocalDisplaySettings
 import me.rerere.rikkahub.ui.context.LocalNavController
 import me.rerere.rikkahub.ui.context.LocalSettings
 import com.dokar.sonner.rememberToasterState
@@ -408,7 +409,10 @@ private suspend fun exportToImage(
         width = 540.dp,
         screenDensity = density,
         content = {
-            CompositionLocalProvider(LocalSettings provides settings) {
+            CompositionLocalProvider(
+                LocalSettings provides settings,
+                LocalDisplaySettings provides settings.displaySetting,
+            ) {
                 ExportedChatImage(
                     conversation = conversation,
                     messages = messages,
