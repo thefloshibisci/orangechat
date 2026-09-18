@@ -52,6 +52,9 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
 import org.koin.dsl.module
+import org.koin.core.qualifier.named
+import me.rerere.rikkahub.AppScope
+import me.rerere.rikkahub.data.codex.*
 import retrofit2.Retrofit
 import retrofit2.converter.kotlinx.serialization.asConverterFactory
 import java.util.Locale
@@ -257,8 +260,13 @@ val dataSourceModule = module {
         SponsorAPI.create(get())
     }
 
+    single(named("codexHttp")) { codexHttpClient() }
+    single { CodexCredentialStore(get(), get()) }
+    single { CodexAccountRepository(get<CodexCredentialStore>(), get(named("codexHttp")), get()) }
+    single { CodexOAuthManager(get(), get<AppScope>(), get(named("codexHttp")), get(), get()) }
+    single { CodexProvider(get(named("codexHttp")), get(), get(), get()) }
     single {
-        ProviderManager(client = get(), context = get())
+        ProviderManager(client = get(), context = get()).apply { registerProvider("codex", get<CodexProvider>()) }
     }
 
     single {

@@ -157,8 +157,8 @@ fun VoiceCallPage(
     }
 
     // boundService 为 null (绑定还没完成) 时, 显示默认空状态
-    val uiState by (boundService?.uiState
-        ?: MutableStateFlow(VoiceCallUiState()).asStateFlow())
+    val idleState = remember(conversationId) { MutableStateFlow(VoiceCallUiState()).asStateFlow() }
+    val uiState by (boundService?.uiState ?: idleState)
         .collectAsStateWithLifecycle(initialValue = VoiceCallUiState())
 
     // 返回键 = 切后台继续通话, 不挂断. 这是这次改动最核心的行为变化.

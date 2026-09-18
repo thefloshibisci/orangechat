@@ -43,6 +43,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
@@ -73,6 +74,7 @@ fun WorkspacePage() {
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
     val toaster = LocalToaster.current
     val context = LocalContext.current
+    val resources = LocalResources.current
 
     var showAddDialog by rememberSaveable { mutableStateOf(false) }
     var deleteTarget by remember { mutableStateOf<WorkspaceEntity?>(null) }
@@ -147,7 +149,7 @@ fun WorkspacePage() {
                 vm.createWorkspace(name) { result ->
                     showAddDialog = false
                     result.onFailure {
-                        toaster.show(it.message ?: context.getString(R.string.workspace_page_create_failed))
+                        toaster.show(it.message ?: resources.getString(R.string.workspace_page_create_failed))
                     }
                 }
             },
@@ -175,7 +177,7 @@ fun WorkspacePage() {
             onConfirm = { name, finish ->
                 vm.renameWorkspace(workspace.id, name) { result ->
                     result.onSuccess { renameTarget = null }
-                        .onFailure { toaster.show(it.message ?: context.getString(R.string.workspace_page_rename_failed)) }
+                        .onFailure { toaster.show(it.message ?: resources.getString(R.string.workspace_page_rename_failed)) }
                     finish()
                 }
             },

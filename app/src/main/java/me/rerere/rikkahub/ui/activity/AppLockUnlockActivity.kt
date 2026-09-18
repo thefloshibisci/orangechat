@@ -11,6 +11,7 @@ import android.content.pm.ApplicationInfo
 import android.graphics.drawable.Drawable
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.addCallback
 import androidx.activity.compose.setContent
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
@@ -70,6 +71,11 @@ class AppLockUnlockActivity : ComponentActivity() {
             finish()
             return
         }
+        onBackPressedDispatcher.addCallback(this) {
+            // Leaving the lock screen must not grant an unlock.
+            AppLockGuard.goHome()
+            finish()
+        }
         setContent {
             me.rerere.rikkahub.ui.theme.RikkahubTheme {
                 AppLockUnlockScreen(
@@ -89,12 +95,6 @@ class AppLockUnlockActivity : ComponentActivity() {
         }
     }
 
-    override fun onBackPressed() {
-        // B模式(require_pin=false)下:只退出拦截页,不调用 grantGraceUnlock,
-        // 用户下次打开 App 仍会被拦截,只有 AI 调用 unlock_app 才真正解除。
-        AppLockGuard.goHome()
-        finish()
-    }
 }
 
 private fun loadAppLabel(context: android.content.Context, packageName: String): String =

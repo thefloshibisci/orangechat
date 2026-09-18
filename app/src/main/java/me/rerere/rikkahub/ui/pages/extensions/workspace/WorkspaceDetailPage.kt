@@ -63,6 +63,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.stringResource
 import androidx.core.content.FileProvider
 import androidx.compose.ui.text.font.FontFamily
@@ -106,6 +107,7 @@ fun WorkspaceDetailPage(id: String) {
     val navController = LocalNavController.current
     val toaster = LocalToaster.current
     val context = LocalContext.current
+    val resources = LocalResources.current
     val vm: WorkspaceDetailVM = koinViewModel(parameters = { parametersOf(id) })
     val state by vm.state.collectAsStateWithLifecycle()
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
@@ -155,7 +157,7 @@ fun WorkspaceDetailPage(id: String) {
         if (inputStream != null) {
             vm.importFile(fileName, inputStream)
         } else {
-            toaster.show(context.getString(R.string.workspace_detail_import_failed))
+            toaster.show(resources.getString(R.string.workspace_detail_import_failed))
         }
     }
 
@@ -167,7 +169,7 @@ fun WorkspaceDetailPage(id: String) {
         if (uri != null && target != null) {
             context.contentResolver.openOutputStream(uri)?.let { out ->
                 vm.exportFile(target, out)
-            } ?: toaster.show(context.getString(R.string.workspace_detail_export_failed))
+            } ?: toaster.show(resources.getString(R.string.workspace_detail_export_failed))
         }
         exportTarget = null
     }

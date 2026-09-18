@@ -7,6 +7,7 @@
 package me.rerere.rikkahub.ui.activity
 
 import android.os.Bundle
+import androidx.activity.addCallback
 import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricPrompt
 import androidx.core.content.ContextCompat
@@ -41,6 +42,10 @@ class BiometricPromptActivity : FragmentActivity() {
 
         val requestId = intent.getStringExtra(EXTRA_REQUEST_ID) ?: run {
             finish(); return
+        }
+        onBackPressedDispatcher.addCallback(this) {
+            buffer.complete(requestId, BiometricResult.Error("user_cancelled"))
+            finish()
         }
         val title = intent.getStringExtra(EXTRA_BIO_TITLE) ?: "Authenticate"
         val subtitle = intent.getStringExtra(EXTRA_BIO_SUBTITLE)
@@ -107,16 +112,6 @@ class BiometricPromptActivity : FragmentActivity() {
         if (!allowDeviceCredential) infoBuilder.setNegativeButtonText("Cancel")
 
         prompt.authenticate(infoBuilder.build())
-    }
-
-    @Suppress("DEPRECATION")
-    override fun onBackPressed() {
-        // request_id 由调用方 (工具) 通过 Intent 传入; 回退时按用户取消处理
-        val requestId = intent.getStringExtra(EXTRA_REQUEST_ID)
-        if (requestId != null) {
-            buffer.complete(requestId, BiometricResult.Error("user_cancelled"))
-        }
-        super.onBackPressed()
     }
 
     companion object {

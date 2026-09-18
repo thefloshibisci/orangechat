@@ -1,4 +1,4 @@
-﻿/*
+/*
  * 橘瓣 OrangeChat
  * 衍生自 RikkaHub (https://github.com/rikkahub/rikkahub)，原作者 RE
  * 本项目基于 GNU AGPL v3 开源，详见根目录 LICENSE 文件
@@ -35,6 +35,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
@@ -72,6 +73,7 @@ fun Mermaid(
     val darkMode = LocalDarkMode.current
     val density = LocalDensity.current
     val context = LocalContext.current
+    val resources = LocalResources.current
     val activity = LocalActivity.current
     val toaster = LocalToaster.current
 
@@ -105,13 +107,13 @@ fun Mermaid(
                         }
                     }
                     toaster.show(
-                        context.getString(R.string.mermaid_export_success),
+                        resources.getString(R.string.mermaid_export_success),
                         type = ToastType.Success
                     )
                 }.onFailure {
                     it.printStackTrace()
                     toaster.show(
-                        context.getString(R.string.mermaid_export_failed),
+                        resources.getString(R.string.mermaid_export_failed),
                         type = ToastType.Error
                     )
                 }

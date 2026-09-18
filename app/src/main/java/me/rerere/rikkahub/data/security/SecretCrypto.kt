@@ -38,6 +38,10 @@ object SecretCrypto {
     // prevents unrelated preference writes from repeatedly entering Android Keystore.
     private val decryptCache = ConcurrentHashMap<String, CachedPlaintext>()
 
+    fun forget(associatedData: String) {
+        decryptCache.remove(associatedData)
+    }
+
     fun isEncrypted(value: String?): Boolean = value?.startsWith(PREFIX) == true
 
     fun encrypt(plaintext: String?, associatedData: String): String? {

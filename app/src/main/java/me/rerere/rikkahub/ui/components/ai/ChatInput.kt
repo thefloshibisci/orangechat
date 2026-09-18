@@ -1,4 +1,4 @@
-﻿/*
+/*
  * 橘瓣 OrangeChat
  * 衍生自 RikkaHub (https://github.com/rikkahub/rikkahub)，原作者 RE
  * 本项目基于 GNU AGPL v3 开源，详见根目录 LICENSE 文件
@@ -81,6 +81,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalScrollCaptureInProgress
@@ -218,6 +219,7 @@ fun ChatInput(
     }
 
     val context = LocalContext.current
+    val resources = LocalResources.current
     val filesManager: FilesManager = koinInject()
     val asr = LocalASRState.current
     val asrState by asr.state.collectAsState()
@@ -474,7 +476,7 @@ fun ChatInput(
                             allDocuments.add(UIMessagePart.Document(url = localUri.toString(), fileName = fileName, mime = mime))
                         } else {
                             toaster.show(
-                                context.getString(R.string.chat_input_unsupported_file_type, fileName),
+                                resources.getString(R.string.chat_input_unsupported_file_type, fileName),
                                 type = ToastType.Error
                             )
                         }

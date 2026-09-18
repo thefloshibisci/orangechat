@@ -57,6 +57,7 @@ class ProviderManager(client: OkHttpClient, context: Context) {
         return when (setting) {
             is ProviderSetting.OpenAI -> getProvider("openai")
             is ProviderSetting.Google -> getProvider("google")
+            is ProviderSetting.Codex -> getProvider("codex")
             is ProviderSetting.Claude -> getProvider("claude")
         } as Provider<T>
     }

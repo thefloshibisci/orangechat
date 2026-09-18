@@ -11,14 +11,16 @@ import me.rerere.ai.provider.Model
 import me.rerere.ai.provider.ProviderSetting
 import me.rerere.rikkahub.ui.components.ui.decodeProviderSetting
 import me.rerere.rikkahub.ui.components.ui.encodeForShare
+import me.rerere.rikkahub.utils.JsonInstant
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlin.uuid.Uuid
+import kotlin.io.encoding.Base64
 
 class ShareSheetTest {
     @Test
-    fun `decode should restore OpenAI provider correctly`() {
+    fun `share should restore OpenAI settings without exporting model list`() {
         val originalId = Uuid.random()
         val original = ProviderSetting.OpenAI(
             id = originalId,
@@ -46,8 +48,23 @@ class ShareSheetTest {
         assertEquals("Test OpenAI", decodedOpenAI.name)
         assertEquals("sk-test-key", decodedOpenAI.apiKey)
         assertEquals("https://api.openai.com/v1", decodedOpenAI.baseUrl)
-        assertEquals(1, decodedOpenAI.models.size)
-        assertEquals("gpt-4", decodedOpenAI.models[0].displayName)
+        assertTrue(decodedOpenAI.models.isEmpty())
+        assertEquals(1, original.models.size)
+        assertEquals("gpt-4", original.models[0].displayName)
+    }
+
+    @Test
+    fun `decode should preserve models included in a legacy share payload`() {
+        val original: ProviderSetting = ProviderSetting.OpenAI(
+            name = "Legacy provider",
+            models = listOf(Model(modelId = "gpt-4", displayName = "GPT-4"))
+        )
+        val payload = JsonInstant.encodeToString(original)
+        val decoded = decodeProviderSetting("ai-provider:v1:" + Base64.encode(payload.encodeToByteArray()))
+
+        assertTrue(decoded is ProviderSetting.OpenAI)
+        assertEquals(original.id, decoded.id)
+        assertEquals(original.models, decoded.models)
     }
 
     @Test

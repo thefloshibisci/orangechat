@@ -67,6 +67,8 @@ data class TextGenerationParams(
     val reasoningLevel: ReasoningLevel = ReasoningLevel.OFF,
     val customHeaders: List<CustomHeader> = emptyList(),
     val customBody: List<CustomBody> = emptyList(),
+    // Stable conversation identity for subscription cache routing; ignored by other providers.
+    val conversationId: String? = null,
 )
 
 @Serializable

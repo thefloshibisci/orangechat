@@ -33,6 +33,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
@@ -492,7 +493,7 @@ fun SettingSystemToolsPage(vm: SettingVM = koinViewModel()) {
                                 val remaining = triggerTime - currentTime
                                 val remainMinutes = remaining / 60_000
                                 val remainSeconds = (remaining % 60_000) / 1000
-                                val sdf = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.getDefault())
+                                val sdf = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", LocalConfiguration.current.locales[0])
                                 Text("🕐 下次: ${sdf.format(java.util.Date(triggerTime))}（剩余 ${remainMinutes}分${remainSeconds}秒）")
                             } else {
                                 Text("✅ 已开启，等待调度...")

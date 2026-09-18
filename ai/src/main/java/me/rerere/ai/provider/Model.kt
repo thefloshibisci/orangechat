@@ -23,6 +23,8 @@ data class Model(
     val abilities: List<ModelAbility> = emptyList(),
     val tools: Set<BuiltInTools> = emptySet(),
     val providerOverwrite: ProviderSetting? = null,
+    // Discovered from Codex; optional for old configurations and manually added models.
+    val codexReasoningEfforts: List<String> = emptyList(),
 )
 
 @Serializable

@@ -9,6 +9,8 @@ package me.rerere.rikkahub.ui.pages.setting.components
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
@@ -53,23 +55,25 @@ fun ProviderConfigure(
     ) {
         // Type
         if (!provider.builtIn) {
-            SingleChoiceSegmentedButtonRow(
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                ProviderSetting.Types.forEachIndexed { index, type ->
-                    SegmentedButton(
-                        shape = SegmentedButtonDefaults.itemShape(
-                            index = index,
-                            count = ProviderSetting.Types.size
-                        ),
-                        label = {
-                            Text(type.simpleName ?: "")
-                        },
-                        selected = provider::class == type,
-                        onClick = {
-                            onEdit(provider.convertTo(type))
+            BoxWithConstraints(Modifier.fillMaxWidth()) {
+                // A phone dialog cannot fit four full labels plus the selection icon.
+                val rows = ProviderSetting.Types.chunked(if (maxWidth < 360.dp) 2 else 4)
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    rows.forEach { types ->
+                        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                            types.forEachIndexed { index, type ->
+                                SegmentedButton(
+                                    modifier = Modifier.heightIn(min = 48.dp),
+                                    shape = SegmentedButtonDefaults.itemShape(index, types.size),
+                                    label = {
+                                        Text(type.simpleName ?: "", maxLines = 1, softWrap = false)
+                                    },
+                                    selected = provider::class == type,
+                                    onClick = { onEdit(provider.convertTo(type)) }
+                                )
+                            }
                         }
-                    )
+                    }
                 }
             }
         }
@@ -79,6 +83,7 @@ fun ProviderConfigure(
 
         // Provider Configure
         when (provider) {
+            is ProviderSetting.Codex -> CodexProviderConfigure(provider, onEdit)
             is ProviderSetting.OpenAI -> {
                 ProviderConfigureOpenAI(provider, onEdit)
             }
@@ -102,21 +107,25 @@ fun ProviderSetting.convertTo(type: KClass<out ProviderSetting>): ProviderSettin
     val apiKey = when (this) {
         is ProviderSetting.OpenAI -> this.apiKey
         is ProviderSetting.Google -> this.apiKey
+        is ProviderSetting.Codex -> ""
         is ProviderSetting.Claude -> this.apiKey
     }
 
     val sourceBaseUrl = when (this) {
         is ProviderSetting.OpenAI -> this.baseUrl
         is ProviderSetting.Google -> this.baseUrl
+        is ProviderSetting.Codex -> "https://chatgpt.com/backend-api/codex"
         is ProviderSetting.Claude -> this.baseUrl
     }
     val targetDefaultBaseUrl = when (type) {
         ProviderSetting.OpenAI::class -> ProviderSetting.OpenAI().baseUrl
         ProviderSetting.Google::class -> ProviderSetting.Google().baseUrl
+        ProviderSetting.Codex::class -> "https://chatgpt.com/backend-api/codex"
         ProviderSetting.Claude::class -> ProviderSetting.Claude().baseUrl
         else -> error("Unsupported provider type: $type")
     }
-    val convertedBaseUrl = sourceBaseUrl.convertToTargetBaseUrl(targetDefaultBaseUrl)
+    val convertedBaseUrl = if (this is ProviderSetting.Codex) targetDefaultBaseUrl
+    else sourceBaseUrl.convertToTargetBaseUrl(targetDefaultBaseUrl)
 
     return when (type) {
         ProviderSetting.OpenAI::class -> ProviderSetting.OpenAI(
@@ -145,6 +154,7 @@ fun ProviderSetting.convertTo(type: KClass<out ProviderSetting>): ProviderSettin
             baseUrl = convertedBaseUrl
         )
 
+        ProviderSetting.Codex::class -> ProviderSetting.Codex(id = id, name = "OpenAI Codex (ChatGPT)", enabled = enabled)
         ProviderSetting.Claude::class -> ProviderSetting.Claude(
             id = this.id,
             enabled = this.enabled,
@@ -168,6 +178,7 @@ internal fun ProviderSetting.defaultBaseUrlForReset(): String {
         when (this) {
             is ProviderSetting.OpenAI -> if (defaultProvider is ProviderSetting.OpenAI) return defaultProvider.baseUrl
             is ProviderSetting.Google -> if (defaultProvider is ProviderSetting.Google) return defaultProvider.baseUrl
+            is ProviderSetting.Codex -> return "https://chatgpt.com/backend-api/codex"
             is ProviderSetting.Claude -> if (defaultProvider is ProviderSetting.Claude) return defaultProvider.baseUrl
         }
     }
@@ -175,6 +186,7 @@ internal fun ProviderSetting.defaultBaseUrlForReset(): String {
     return when (this) {
         is ProviderSetting.OpenAI -> ProviderSetting.OpenAI().baseUrl
         is ProviderSetting.Google -> ProviderSetting.Google().baseUrl
+        is ProviderSetting.Codex -> "https://chatgpt.com/backend-api/codex"
         is ProviderSetting.Claude -> ProviderSetting.Claude().baseUrl
     }
 }
@@ -184,6 +196,7 @@ internal fun ProviderSetting.resetBaseUrlToDefault(): ProviderSetting {
     return when (this) {
         is ProviderSetting.OpenAI -> this.copy(baseUrl = defaultBaseUrl)
         is ProviderSetting.Google -> this.copy(baseUrl = defaultBaseUrl)
+        is ProviderSetting.Codex -> this
         is ProviderSetting.Claude -> this.copy(baseUrl = defaultBaseUrl)
     }
 }
@@ -192,6 +205,7 @@ internal fun ProviderSetting.isUsingDefaultBaseUrl(): Boolean {
     val baseUrl = when (this) {
         is ProviderSetting.OpenAI -> this.baseUrl
         is ProviderSetting.Google -> this.baseUrl
+        is ProviderSetting.Codex -> "https://chatgpt.com/backend-api/codex"
         is ProviderSetting.Claude -> this.baseUrl
     }
     return baseUrl == defaultBaseUrlForReset()

@@ -397,6 +397,7 @@ class SettingsStore(
                             models = provider.models.distinctBy { model -> model.id }
                         )
 
+                        is ProviderSetting.Codex -> provider.copy(models = provider.models.distinctBy { it.id })
                         is ProviderSetting.Claude -> provider.copy(
                             models = provider.models.distinctBy { model -> model.id }
                         )

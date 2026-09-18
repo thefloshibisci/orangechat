@@ -87,6 +87,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
@@ -147,6 +148,7 @@ fun SettingProviderDetailPage(id: Uuid, vm: SettingVM = koinViewModel()) {
     val scope = rememberCoroutineScope()
     val toaster = LocalToaster.current
     val context = LocalContext.current
+    val resources = LocalResources.current
 
     val onEdit = { newProvider: ProviderSetting ->
         val newSettings = settings.copy(
@@ -235,7 +237,7 @@ fun SettingProviderDetailPage(id: Uuid, vm: SettingVM = koinViewModel()) {
                         onEdit = {
                             onEdit(it)
                             toaster.show(
-                                context.getString(R.string.setting_provider_page_save_success),
+                                resources.getString(R.string.setting_provider_page_save_success),
                                 type = ToastType.Success
                             )
                         },
@@ -694,13 +696,14 @@ private fun AddModelButton(
     ) {
         ModelPicker(
             models = models,
+            useProviderMetadata = parentProvider is ProviderSetting.Codex,
             selectedModels = selectedModels,
             onModelSelected = { model ->
                 val inputModalities = ModelRegistry.MODEL_INPUT_MODALITIES.getData(model.modelId)
                 val outputModalities = ModelRegistry.MODEL_OUTPUT_MODALITIES.getData(model.modelId)
                 val abilities = ModelRegistry.MODEL_ABILITIES.getData(model.modelId)
                 onAddModel(
-                    model.copy(
+                    if (parentProvider is ProviderSetting.Codex) model else model.copy(
                         inputModalities = inputModalities,
                         outputModalities = outputModalities,
                         abilities = abilities
@@ -716,7 +719,7 @@ private fun AddModelButton(
                         models = parentProvider.models + it.filter { model ->
                             parentProvider.models.none { existing -> existing.modelId == model.modelId }
                         }.map { model ->
-                            model.copy(
+                            if (parentProvider is ProviderSetting.Codex) model else model.copy(
                                 inputModalities = ModelRegistry.MODEL_INPUT_MODALITIES.getData(model.modelId),
                                 outputModalities = ModelRegistry.MODEL_OUTPUT_MODALITIES.getData(model.modelId),
                                 abilities = ModelRegistry.MODEL_ABILITIES.getData(model.modelId)
@@ -839,6 +842,7 @@ private fun AddModelButton(
 @Composable
 private fun ModelPicker(
     models: List<Model>,
+    useProviderMetadata: Boolean = false,
     selectedModels: List<Model>,
     onModelSelected: (Model) -> Unit,
     onModelDeselected: (Model) -> Unit,
@@ -943,8 +947,8 @@ private fun ModelPicker(
                                         verticalAlignment = Alignment.CenterVertically,
                                         horizontalArrangement = Arrangement.spacedBy(2.dp)
                                     ) {
-                                        val modelMeta = remember(it) {
-                                            it.copy(
+                                        val modelMeta = remember(it, useProviderMetadata) {
+                                            if (useProviderMetadata) it else it.copy(
                                                 inputModalities = ModelRegistry.MODEL_INPUT_MODALITIES.getData(it.modelId),
                                                 outputModalities = ModelRegistry.MODEL_OUTPUT_MODALITIES.getData(it.modelId),
                                                 abilities = ModelRegistry.MODEL_ABILITIES.getData(it.modelId),

@@ -226,11 +226,13 @@ class PluginLoader(
                     val baseUrl = when (provider) {
                         is ProviderSetting.OpenAI -> provider.baseUrl
                         is ProviderSetting.Google -> provider.baseUrl
+                        is ProviderSetting.Codex -> "" // Subscription credentials are never exposed to plugins.
                         is ProviderSetting.Claude -> provider.baseUrl
                     }
                     val apiKey = when (provider) {
                         is ProviderSetting.OpenAI -> provider.apiKey
                         is ProviderSetting.Google -> provider.apiKey
+                        is ProviderSetting.Codex -> ""
                         is ProviderSetting.Claude -> provider.apiKey
                     }
  

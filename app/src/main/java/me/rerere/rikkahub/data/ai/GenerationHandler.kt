@@ -183,6 +183,7 @@ class GenerationHandler(
                     processingStatus = processingStatus,
                     conversationSystemPrompt = conversationSystemPrompt,
                     workspaceCwd = workspaceCwd,
+                    conversationId = conversationId,
                 )
                 messages = messages.visualTransforms(
                     transformers = outputTransformers,
@@ -385,6 +386,7 @@ class GenerationHandler(
         processingStatus: MutableStateFlow<String?> = MutableStateFlow(null),
         conversationSystemPrompt: String? = null,
         workspaceCwd: String? = null,
+        conversationId: String? = null,
     ) {
         val internalMessages = buildList {
             val system = buildString {
@@ -571,6 +573,7 @@ class GenerationHandler(
         var messages: List<UIMessage> = messages
         val params = TextGenerationParams(
             model = model,
+            conversationId = if (provider is ProviderSetting.Codex) conversationId else null,
             temperature = assistant.temperature,
             topP = assistant.topP,
             maxTokens = assistant.maxTokens,
