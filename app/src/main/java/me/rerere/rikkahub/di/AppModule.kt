@@ -125,6 +125,13 @@ val appModule = module {
     }
 
     single {
+        me.rerere.rikkahub.data.ai.transformers.ExtraInfoInjectionCollector(
+            context = get(),
+            memoryBankService = get(),
+        )
+    }
+
+    single {
         ChatService(
             context = get(),
             appScope = get(),
@@ -143,6 +150,7 @@ val appModule = module {
             workspaceRepository = get(),
             memoryBankService = get(),
             folderRepository = get(),
+            extraInfoInjectionCollector = get(),
         )
     }
 

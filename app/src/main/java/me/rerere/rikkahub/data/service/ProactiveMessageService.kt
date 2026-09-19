@@ -16,6 +16,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -42,10 +43,11 @@ import me.rerere.rikkahub.data.ai.transformers.ThinkTagTransformer
 import me.rerere.rikkahub.data.ai.transformers.Base64ImageToLocalFileTransformer
 import me.rerere.rikkahub.data.ai.transformers.RegexOutputTransformer
 import me.rerere.rikkahub.data.ai.transformers.collectInjections
+import me.rerere.rikkahub.data.ai.transformers.ExtraInfoInjectionCollector
+import me.rerere.rikkahub.data.ai.transformers.forProactiveExtraInfo
 import me.rerere.rikkahub.data.ai.transformers.transforms
 import me.rerere.rikkahub.data.repository.MemoryRepository
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonObject
 import me.rerere.rikkahub.CHAT_COMPLETED_NOTIFICATION_CHANNEL_ID
 import me.rerere.rikkahub.CHAT_LIVE_UPDATE_NOTIFICATION_CHANNEL_ID
 import me.rerere.rikkahub.data.datastore.ProactiveMessageSetting
@@ -91,11 +93,15 @@ class ProactiveMessageService {
                 return
             }
 
-            val minMinutes = setting.minIntervalMinutes.coerceAtLeast(1)
-            val maxMinutes = setting.maxIntervalMinutes.coerceAtLeast(minMinutes)
+            val minMinutes = setting.minIntervalMinutes.coerceIn(1, Int.MAX_VALUE - 1)
+            val maxMinutes = setting.maxIntervalMinutes.coerceIn(minMinutes, Int.MAX_VALUE - 1)
             val delayMinutes = delayMinutesOverride?.coerceAtLeast(1)
                 ?: Random.nextInt(minMinutes, maxMinutes + 1)
-            val triggerTime = java.lang.System.currentTimeMillis() + TimeUnit.MINUTES.toMillis(delayMinutes.toLong())
+            val triggerTime = nextProactiveActiveTime(
+                setting,
+                System.currentTimeMillis() + TimeUnit.MINUTES.toMillis(delayMinutes.toLong()),
+                java.time.ZoneId.systemDefault(),
+            )
 
             // 保存下次触发时间到SharedPreferences
             context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -172,7 +178,7 @@ class ProactiveMessageService {
             Log.d(TAG, "Scheduled proactive message in $delayMinutes minutes, trigger at ${java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date(triggerTime))}")
 
             // Also schedule via WorkManager as a more reliable fallback
-            ProactiveMessageWorker.scheduleNext(context, setting, delayMinutes)
+            ProactiveMessageWorker.scheduleNext(context, setting, triggerTime)
         }
 
         fun getNextTriggerTime(context: Context): Long? {
@@ -302,6 +308,7 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
     private val providerManager: ProviderManager by inject()
     private val json: Json by inject()
     private val chatService: ChatService by inject()
+    private val extraInfoCollector: ExtraInfoInjectionCollector by inject()
     private val proactiveMessageService = ProactiveMessageService()
     private val activeRunCount = AtomicInteger(0)
     private val generationWakeLocks = ConcurrentHashMap<Int, PowerManager.WakeLock>()
@@ -383,6 +390,15 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                     return@launch
                 }
 
+                // Only an explicit manual check may bypass quiet hours, never a gateway signal.
+                if (triggerSource != "manual" && !isProactiveActiveTime(
+                        proactiveSetting, System.currentTimeMillis(), java.time.ZoneId.systemDefault(),
+                    )
+                ) {
+                    outcome = "quiet_hours"
+                    return@launch
+                }
+
                 val prefs = getSharedPreferences(ProactiveMessageService.PREFS_NAME, Context.MODE_PRIVATE)
 
                 // 去重判断：防止 AlarmManager 和 WorkManager 在同一窗口内重复触发。
@@ -447,7 +463,12 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 // Protect every branch alternative, not only currentMessages.
                 activeConversation.messageNodes
                     .flatMapTo(protectedMessageIds) { node -> node.messages.map { it.id } }
-                val stateStore = ProactiveMessageStateStore(this@ProactiveMessageTriggerService)
+                val stateStore = ProactiveMessageStateStore(
+                    this@ProactiveMessageTriggerService, "${assistant.id}_${activeConversation.id}",
+                )
+                val activityStore = ProactiveActivityStore(
+                    this@ProactiveMessageTriggerService, assistant.id.toString(), activeConversation.id.toString(),
+                )
                 val proactiveState = stateStore.synchronizeWithUser(latestUserMessage.id.toString())
                 val maxFollowUps = proactiveSetting.maxFollowUpMessages.coerceIn(1, 8)
                 if (proactiveState.stopUntilUserReturns ||
@@ -466,11 +487,6 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 // 放在 claim 之前：即使 claim 失败提前返回，引用也能在 finally 里被正确释放，保持计数平衡。
                 // 同时把数据库里的完整对话同步到 session，防止流式更新时 conv 是空状态导致覆盖历史。
                 chatService.addConversationReference(conversationId)
-                trace.conversation("session_before_sync", chatService.getConversationFlow(conversationId).value)
-                if (conversation != null) {
-                    chatService.updateConversationState(conversationId) { _ -> conversation }
-                }
-                trace.conversation("session_after_sync", chatService.getConversationFlow(conversationId).value)
 
                 // 抢占生成权：尝试把当前协程的 Job 注册进 ConversationSession。
                 // 这一步对所有触发源（含 isForceTrigger / 激进模式设备事件）一视同仁，是并发安全的核心。
@@ -490,6 +506,21 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                     return@launch
                 }
                 trace.event("generation_claim", "success=true")
+                val session = chatService.getOrCreateSession(conversationId)
+                val sessionMatches = session.saveMutex.withLock {
+                    coroutineContext.ensureActive()
+                    val current = chatService.getConversationFlow(conversationId).value
+                    if (current.messageNodes.isEmpty()) {
+                        chatService.updateConversation(conversationId, activeConversation)
+                        true
+                    } else {
+                        current.currentMessages.lastOrNull { it.role == MessageRole.USER }?.id == latestUserMessage.id
+                    }
+                }
+                if (!sessionMatches) {
+                    outcome = "user_returned"
+                    return@launch
+                }
 
                 // 构建上下文
                 val idleMinutes = latestUserMessage.createdAt
@@ -504,7 +535,18 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                     return@launch
                 }
                 trace.event("idle_guard", "passed=true idleMinutes=$idleMinutes")
-                val contextStr = proactiveMessageService.buildProactiveContext(settings, idleMinutes)
+                val priorActivities = activityStore.snapshot().takeLast(8)
+                val contextStr = proactiveMessageService.buildProactiveContext(settings, idleMinutes) +
+                    "\n" + proactiveActivityText(priorActivities)
+                val extraContext = extraInfoCollector.collect(
+                    settings = settings.forProactiveExtraInfo(),
+                    assistantId = assistant.id.toString(),
+                    queryText = latestUserMessage.visibleTextForProactiveContext(),
+                    proactive = true,
+                    onItem = { name, status, chars ->
+                        trace.event("extra_info_item", "item=$name status=$status chars=$chars")
+                    },
+                )
                 trace.event(
                     "proactive_context",
                     "idleIncluded=true currentTimeIncluded=${settings.systemToolsSetting.timeContextInjectionEnabled}",
@@ -529,18 +571,26 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                     return@launch
                 }
 
-                // 主动消息复用正常聊天的完整工具集合。只有 AppUsage 需要额外的主动查岗授权；
+                // 完整轮次复用聊天工具，轻量轮次只带记忆检索。AppUsage 需要额外授权；
                 // 未授权时连它的 schema 都不暴露，更不会预先读取或注入任何手机使用数据。
                 val appUsageToolAllowed = proactiveSetting.allowProactiveAppUsage &&
                     me.rerere.rikkahub.data.ai.tools.SystemToolOption.AppUsage in
                     settings.systemToolsSetting.getEnabledOptions()
-                val tools = chatService.buildAvailableTools(
+                val fullTools = useFullProactiveTools(proactiveSetting, Random.nextInt(100)) &&
+                    me.rerere.ai.provider.ModelAbility.TOOL in model.abilities
+                val tools = if (fullTools) chatService.buildAvailableTools(
                     settings = settings,
                     assistant = assistant,
                     conversationId = conversationId,
                     conversation = activeConversation,
                     allowAppUsage = appUsageToolAllowed,
-                )
+                ) else if (me.rerere.ai.provider.ModelAbility.TOOL in model.abilities) {
+                    chatService.buildProactiveMemoryTools(assistant)
+                } else emptyList()
+                val timeline = if (appUsageToolAllowed && proactiveSetting.includeAppTimeline) {
+                    AppUsageService(this@ProactiveMessageTriggerService).getRecentProactiveTimeline()
+                } else ""
+                trace.event("activity_mode", "fullTools=$fullTools timelineIncluded=${timeline.isNotBlank()}")
                 val deepSeekThinkingWithTools = isDeepSeekCompatible(providerSetting, model) &&
                     assistant.reasoningLevel.isEnabled && tools.isNotEmpty()
                 val missingReasoningHistory = deepSeekThinkingWithTools && rawHistoryMessages.any { message ->
@@ -600,7 +650,12 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 // 构建系统提示词（包含记忆 + 上下文，都放在最后面避免被网关淹没）
                 val systemPrompt = buildSystemPrompt(
                     assistant = assistant,
-                    context = contextStr,
+                    context = contextStr + "\n" + timeline + if (fullTools) {
+                        "\n这次可按需使用已配置的工具。"
+                    } else {
+                        "\n这次是轻量判断，只能使用列出的只读记忆搜索工具；若没有工具，就依据现有上下文判断。" +
+                            "不能声称完成未实际执行的外部行动。"
+                    },
                     state = proactiveState,
                     maxFollowUps = maxFollowUps,
                     allowAppUsage = appUsageToolAllowed && tools.any { it.name == "get_app_usage" },
@@ -609,16 +664,17 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                     latestAssistantText = latestRegularAssistantText,
                 )
 
-                // 后台判定只存在于本次临时 SYSTEM 中，不伪装成真实 USER 消息，
-                // 更不会与对方最后一句合并或持久化到正常聊天历史。
-                val messages = mergeAdjacentSameRoleMessages(
+                // Keep the wake-up user turn request-only. Claude/Gemini cannot start from
+                // an assistant prefill; tool continuations below retain their result pairing.
+                val messages = beginProactiveRequest(
                     buildList {
                         add(UIMessage(
                             role = MessageRole.SYSTEM,
                             parts = listOf(UIMessagePart.Text(systemPrompt))
                         ))
                         addAll(historyMessages)
-                    }
+                    },
+                    context = extraContext.orEmpty(),
                 )
                 trace.messages("request", messages)
 
@@ -629,6 +685,7 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 // 否则对智谱 GLM 等 thinking 模型会同时下发 temperature + thinking，触发 "Invalid request body" 400。
                 val params = TextGenerationParams(
                     model = model,
+                    conversationId = if (providerSetting is ProviderSetting.Codex) conversationId.toString() else null,
                     temperature = assistant.temperature,
                     topP = assistant.topP,
                     maxTokens = assistant.maxTokens,
@@ -665,6 +722,7 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                     trace = trace,
                     runAssistantMessageIds = runAssistantMessageIds,
                     protectedMessageIds = protectedMessageIds,
+                    activityStore = activityStore,
                 )
 
                 // 部分 thinking 模型会结束在 Reasoning/Tool 上而没有 Text 正文。
@@ -797,9 +855,9 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 }
 
                 // 若移除了标记，同步更新 session 里 aiMessage 的文本 parts
-                if (rawText != replyText) {
+                val cleanedAiMessage = if (rawText != replyText) {
                     var visibleTextWritten = false
-                    val cleanedAiMessage = aiMessage.copy(
+                    aiMessage.copy(
                         parts = aiMessage.parts.map { part ->
                             if (part is UIMessagePart.Text) {
                                 if (!visibleTextWritten) {
@@ -813,14 +871,7 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                             }
                         }
                     )
-                    updateOrAppendAiMessage(
-                        conversationId,
-                        cleanedAiMessage,
-                        trace,
-                        runAssistantMessageIds,
-                        protectedMessageIds,
-                    )
-                }
+                } else aiMessage
                 trace.event(
                     "decision",
                     "send=${decision.shouldSend} wait=${decision.waitMinutes ?: 0} " +
@@ -850,6 +901,16 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                         label = "skip",
                     )
                 } else {
+                    // Commit only a completed SEND. WAIT/STOP/NOTE and partial streams stay out of chat.
+                    (finalMessages.filter { it.id in runAssistantMessageIds && it.id != aiMessage.id } +
+                        cleanedAiMessage).associateBy { it.id }.values.forEach { completed ->
+                        updateOrAppendAiMessage(
+                            conversationId, completed.copy(parts = completed.parts.map { part ->
+                                if (part is UIMessagePart.Text) part.copy(text = stripProactiveNotes(part.text)) else part
+                            }), trace, runAssistantMessageIds, protectedMessageIds,
+                            persist = true,
+                        )
+                    }
                     // 有效回复：session 里已有 aiMessage（流式过程已追加），持久化并发通知
                     saveProactiveMessage(
                         assistant, conversationId, conversation, trace
@@ -897,7 +958,12 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                     } catch (e: Exception) {
                         Log.w(ProactiveMessageService.TAG, "Failed to save proactive message to external memory", e)
                     }
-                    showProactiveNotification(conversationId, assistant.name.ifBlank { "AI" }, replyText)
+                    runCatching {
+                        showProactiveNotification(conversationId, assistant.name.ifBlank { "AI" }, replyText)
+                    }.onFailure {
+                        trace.event("notification", "delivered=false messagePersisted=true")
+                        Log.w(TAG, "Notification failed; proactive message remains in conversation", it)
+                    }
                     // 强制跳转屏幕到聊天界面（方案 A：普通拉起前台）
                     if (shouldJump) {
                         try {
@@ -916,6 +982,20 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                         }
                     }
                 }
+                runCatching { activityStore.append(ProactiveActivity(
+                    id = aiMessage.id.toString(),
+                    timestamp = System.currentTimeMillis(),
+                    outcome = when {
+                        decision.shouldSend -> "已发送主动消息"
+                        decision.stopUntilUserReturns -> "等待对方再次开口"
+                        decision.waitMinutes != null -> "决定再等${decision.waitMinutes}分钟"
+                        else -> "这轮没有发消息"
+                    },
+                    note = decision.activityNote,
+                    toolNames = finalMessages.filter { it.id in runAssistantMessageIds }
+                        .flatMap { it.getTools() }.filter { it.isExecuted }
+                        .map { it.toolName.take(80) }.distinct().take(12),
+                )) }.onFailure { Log.w(TAG, "Could not persist proactive activity summary", it) }
             } catch (e: CancellationException) {
                 outcome = "cancelled"
                 failure = e
@@ -1082,7 +1162,7 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
             appendLine("“${latestUserText.ifBlank { "（非文本消息）" }}”")
             appendLine("你在那之后最后一次正常回复：")
             appendLine("“${latestAssistantText.ifBlank { "（没有可用的文本回复）" }}”")
-            appendLine("这是同一次沉默后的第 ${state.followUpCount + 1} 次判断。")
+            appendLine("这次沉默后已经实际发送 ${state.followUpCount} 条主动消息。等待或不发送不计入条数。")
             appendLine("在她/他重新开口以前，你最多还可以实际发送 ${maxFollowUps - state.followUpCount} 条消息。")
             if (state.lastProactiveText.isNotBlank()) {
                 appendLine()
@@ -1109,6 +1189,8 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
             appendLine("- 不要为了显得有过程而故意写很长；没有复杂情况时，一两句短暂想法就够了。")
             appendLine()
             appendLine("先结合已有对话判断现在是否真的适合再次开口：")
+            appendLine("也可以不联系对方：按当前可用工具回顾记忆或探索感兴趣的话题，留一条简记后选择不发消息。" +
+                "什么也不做同样可以，不必为每次醒来找任务。")
             appendLine("- 如果话聊到一半突然没了回应，也没有说明要去做什么，可以自然地关心、追问或开启一个合适的新话题。")
             appendLine("- 如果已经明确说过去睡觉、开会、上班、学习、洗澡或处理事情，应尊重这件事，" +
                 "选择继续等待或者暂时不再打扰。")
@@ -1130,6 +1212,8 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
 
             appendLine()
             appendLine("## 最终输出")
+            appendLine("先单独写一行 [NOTE:简短活动摘要]，最多240字，只记这次决定等待的原因或实际行动结果，" +
+                "供下次接续；不要记录完整思考、敏感资料或工具原文。随后另起一行输出最终结果。")
             appendLine("完成思考后，最终只能选择下面一种结果：")
             appendLine("- [PASS]：这轮不发，之后再看看。")
             appendLine("- [WAIT:分钟]：先等待指定分钟再判断，不向聊天中显示。")
@@ -1263,6 +1347,7 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
         trace: ProactiveMessageTrace,
         runAssistantMessageIds: MutableSet<Uuid>,
         protectedMessageIds: Set<Uuid>,
+        persist: Boolean = false,
     ) {
         if (!registerProactiveRunMessageId(
                 messageId = aiMessage.id,
@@ -1276,9 +1361,13 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
             )
             error("Proactive generation attempted to overwrite a pre-existing message")
         }
+        if (!persist) return
         val session = chatService.getOrCreateSession(conversationId)
         session.saveMutex.withLock {
             val conv = chatService.getConversationFlow(conversationId).value
+            if (conv.currentMessages.lastOrNull { it.role == MessageRole.USER }?.id !in protectedMessageIds) {
+                throw CancellationException("User turn changed before proactive message commit")
+            }
             val existingNodeIndex = conv.messageNodes.indexOfFirst { node ->
                 node.messages.any { it.id == aiMessage.id }
             }
@@ -1407,6 +1496,7 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
         trace: ProactiveMessageTrace,
         runAssistantMessageIds: MutableSet<Uuid>,
         protectedMessageIds: Set<Uuid>,
+        activityStore: ProactiveActivityStore,
     ): Triple<List<UIMessage>, Boolean, Boolean> {
         var messages = initialMessages.toMutableList()
         var hasToolCalls = false
@@ -1420,10 +1510,9 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
             // The provider-only copy may merge adjacent roles for API compatibility. Never merge
             // the local streaming list: doing so can fold this run's assistant into the previous
             // persisted assistant and transfer ownership back to the old message id.
-            val requestMessages = mergeAdjacentSameRoleMessages(messages)
-            // A proactive request may legitimately end with an existing ASSISTANT message. Seed a
-            // fresh assistant placeholder locally so handleMessageChunk cannot append the new
-            // stream to that old message and reuse its id. Do not send the placeholder upstream.
+            val requestMessages = mergeAdjacentSameRoleMessages(prepareProactiveToolContinuation(messages))
+            // Tool continuations still use local ASSISTANT records that the providers expand
+            // into call/result pairs. Never reuse their ids for the next assistant output.
             var streamMessages = beginProactiveAssistantTurn(messages.toList(), model.id)
             val turnMessageId = streamMessages.last().id
             trace.event(
@@ -1461,7 +1550,7 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
 
             // 在输出转换器处理前，检测 AI 原始输出是否含 [JUMP] 标记
             val rawAiText = aiMessage.parts.filterIsInstance<UIMessagePart.Text>().joinToString("\n") { it.text }
-            if (rawAiText.contains("[JUMP]")) {
+            if (parseProactiveDecision(rawAiText, false).shouldJump) {
                 hasJumpFlag = true
                 Log.d(TAG, "[JUMP] flag detected in raw AI output")
             }
@@ -1527,6 +1616,15 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                     ))
                     continue
                 }
+                if (!canExecuteProactiveTool(
+                        toolDef.needsApproval, settings.forceConfirmToolCalls, settings.autoApproveAllTools,
+                    )
+                ) {
+                    executedTools.add(toolCall.copy(output = listOf(UIMessagePart.Text(
+                        "This tool requires foreground approval. It was not executed in the background.",
+                    ))))
+                    continue
+                }
 
                 // 主动器复用助手已经启用的工具权限，不再额外把普通工具一律拒绝。
                 // AppUsage 在组装工具列表时已经由“允许主动查岗”单独把关；未授权时
@@ -1535,18 +1633,30 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                     val args = try {
                         json.parseToJsonElement(toolCall.input.ifBlank { "{}" })
                     } catch (e: Exception) {
-                        // toolCall.input 可能因为流式截断而是不完整的 JSON, 回退为空对象
-                        Log.w(
-                            TAG,
-                            "Tool ${toolCall.toolName} input JSON is incomplete; " +
-                                "falling back to empty object (length=${toolCall.input.length})",
-                        )
-                        JsonObject(emptyMap())
+                        error("Invalid tool arguments; no action was executed")
                     }
                     Log.d(TAG, "Executing tool ${toolDef.name}, inputLength=${toolCall.input.length}")
+                    activityStore.append(ProactiveActivity(
+                        id = "tool-start:${toolCall.toolCallId}",
+                        timestamp = System.currentTimeMillis(),
+                        outcome = "开始尝试后台工具；如无后续返回记录，结果尚未确认，勿盲目重试",
+                        note = toolCall.toolName.take(80),
+                    ))
                     val result = toolDef.execute(args)
                     executedTools.add(toolCall.copy(output = result))
+                    withContext(NonCancellable) {
+                        runCatching {
+                            activityStore.append(ProactiveActivity(
+                                id = "tool:${toolCall.toolCallId}",
+                                timestamp = System.currentTimeMillis(),
+                                outcome = "后台工具调用已返回；如需确认结果，应核查业务状态，不要盲目重复执行",
+                                toolNames = listOf(toolCall.toolName.take(80)),
+                            ))
+                        }.onFailure { Log.w(TAG, "Could not persist background tool receipt", it) }
+                    }
                     trace.event("tool_result", "name=${toolDef.name} success=true outputParts=${result.size}")
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (e: Exception) {
                     Log.e(
                         TAG,

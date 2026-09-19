@@ -8,7 +8,31 @@ package me.rerere.rikkahub.data.service
 
 import me.rerere.ai.core.MessageRole
 import me.rerere.ai.ui.UIMessage
+import me.rerere.ai.ui.UIMessagePart
 import kotlin.uuid.Uuid
+
+/** A new background decision is a request-only user turn, never a persisted chat message. */
+internal fun beginProactiveRequest(messages: List<UIMessage>, context: String = ""): List<UIMessage> =
+    messages + UIMessage.user(
+        "<proactive_trigger>这是应用发起的一次后台判断，不是对方的新发言。" +
+            "请依据以上聊天与本次背景信息，决定发送、等待或停止，不要重新回答历史提问。" +
+            "</proactive_trigger>" + context.takeIf { it.isNotBlank() }?.let { "\n\n$it" }.orEmpty(),
+    )
+
+/** A tool result closes the wire turn as user, unless visible assistant content follows it. */
+internal fun prepareProactiveToolContinuation(messages: List<UIMessage>): List<UIMessage> {
+    val last = messages.lastOrNull() ?: return messages
+    if (last.role != MessageRole.ASSISTANT) return messages
+    if (last.getTools().any { !it.isExecuted }) return messages
+    val lastWirePart = last.parts.lastOrNull {
+        it is UIMessagePart.Tool || it is UIMessagePart.Text ||
+            it is UIMessagePart.Reasoning || it is UIMessagePart.Image
+    }
+    if (lastWirePart is UIMessagePart.Tool && lastWirePart.isExecuted) return messages
+    return messages + UIMessage.user(
+        "请接着上面的工具结果完成本次后台判断；已执行的行动不要重复执行。",
+    )
+}
 
 /**
  * Start a new assistant turn without letting [UIMessage.handleMessageChunk] reuse the id of an

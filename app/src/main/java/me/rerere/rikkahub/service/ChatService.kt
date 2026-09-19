@@ -46,6 +46,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.datetime.TimeZone
+import kotlinx.datetime.toInstant
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonObject
@@ -85,6 +87,9 @@ import me.rerere.rikkahub.plugin.loader.PluginLoader
 import me.rerere.rikkahub.plugin.provider.PluginToolProvider
 import me.rerere.rikkahub.data.ai.transformers.Base64ImageToLocalFileTransformer
 import me.rerere.rikkahub.data.ai.transformers.DocumentAsPromptTransformer
+import me.rerere.rikkahub.data.ai.transformers.ExtraInfoInjectionCollector
+import me.rerere.rikkahub.data.ai.transformers.ExtraInfoRequestCache
+import me.rerere.rikkahub.data.ai.transformers.ExtraInfoRequestTransformer
 import me.rerere.rikkahub.data.ai.transformers.OcrTransformer
 import me.rerere.rikkahub.data.ai.transformers.PlaceholderTransformer
 import me.rerere.rikkahub.data.ai.transformers.PromptInjectionTransformer
@@ -174,9 +179,11 @@ class ChatService(
     private val workspaceRepository: WorkspaceRepository,
     private val memoryBankService: MemoryBankService,
     private val folderRepository: FolderRepository,
+    private val extraInfoInjectionCollector: ExtraInfoInjectionCollector,
 ) {
     // workspace 系统提示注入 (依赖 workspaceRepository, 故在类内构造)
     private val workspaceReminderTransformer = WorkspaceReminderTransformer(workspaceRepository)
+    private val extraInfoRequestCache = ExtraInfoRequestCache()
 
     // 统一会话管理
     private val sessions = ConcurrentHashMap<Uuid, ConversationSession>()
@@ -848,6 +855,12 @@ class ChatService(
 
         // session 需要在 runCatching 外声明，以便 .onSuccess 中也能访问 saveMutex
         val session = getOrCreateSession(conversationId)
+        val activityStore = me.rerere.rikkahub.data.service.ProactiveActivityStore(
+            context, assistant.id.toString(), conversationId.toString(),
+        )
+        var activitySnapshot = emptyList<me.rerere.rikkahub.data.service.ProactiveActivity>()
+        var activityUserId: String? = null
+        var activityTransformer: me.rerere.rikkahub.data.service.ProactiveActivityTransformer? = null
 
         runCatching {
 
@@ -875,6 +888,43 @@ class ChatService(
                     it
                 }
             }
+            val latestUserMessage = messagesForGeneration.lastOrNull { it.role == MessageRole.USER }
+            val extraInfoContext = if (latestUserMessage != null && messageRange == null) {
+                extraInfoRequestCache.resolve(
+                    conversationId = conversationId,
+                    assistantId = assistant.id,
+                    user = latestUserMessage,
+                    option = settings.systemToolsSetting,
+                    allowCollection = messagesForGeneration.lastOrNull()?.role == MessageRole.USER,
+                ) {
+                    session.processingStatus.value = "正在读取额外信息…"
+                    try {
+                        extraInfoInjectionCollector.collect(
+                            settings = settings,
+                            assistantId = assistant.id.toString(),
+                            queryText = latestUserMessage.toText().take(300),
+                        )
+                    } finally {
+                        session.processingStatus.value = null
+                    }
+                }
+            } else {
+                null
+            }
+            activitySnapshot = runCatching { activityStore.snapshot() }.getOrElse {
+                Log.w(TAG, "Could not read proactive activity records", it)
+                emptyList()
+            }
+            activityUserId = messagesForGeneration.lastOrNull { it.role == MessageRole.USER }
+                ?.id?.toString()?.takeIf { messageRange == null }
+            val activityCutoff = messagesForGeneration.lastOrNull { it.id.toString() == activityUserId }
+                ?.createdAt?.toInstant(TimeZone.currentSystemDefault())?.toEpochMilliseconds()
+            activitySnapshot = activitySnapshot.filter {
+                it.claimedByUserId != null || (activityCutoff != null && it.timestamp <= activityCutoff)
+            }
+            activityTransformer = me.rerere.rikkahub.data.service.ProactiveActivityTransformer(
+                activitySnapshot, activityUserId,
+            )
 
             // Continuity is an app-level transport concern, not a tool the model
             // has to remember to call. Only sync at the start of an ordinary
@@ -916,6 +966,8 @@ class ChatService(
                     addAll(inputTransformers)
                     add(templateTransformer)
                     add(workspaceReminderTransformer)
+                    add(requireNotNull(activityTransformer))
+                    add(ExtraInfoRequestTransformer(latestUserMessage?.id, extraInfoContext))
                 },
                 outputTransformers = outputTransformers,
                 tools = if (enableTools) buildAvailableTools(
@@ -975,6 +1027,17 @@ class ChatService(
                 val latest = getConversationFlow(conversationId).value
                 saveConversation(conversationId, latest)
                 latest
+            }
+            val completedReply = finalConversation.currentMessages.lastOrNull()
+            if (activityUserId != null && completedReply?.role == MessageRole.ASSISTANT &&
+                completedReply.finishedAt != null && completedReply.getTools().isEmpty()
+            ) {
+                runCatching {
+                    activityStore.claim(
+                        activityTransformer?.deliveredPendingIds.orEmpty(),
+                        activityUserId,
+                    )
+                }.onFailure { Log.w(TAG, "Could not acknowledge proactive activity records", it) }
             }
 
             // Publish the completed assistant turn as well, so another client
@@ -1116,8 +1179,31 @@ class ChatService(
         }
     }
 
+    internal suspend fun buildProactiveMemoryTools(assistant: Assistant): List<Tool> = buildList {
+        if (assistant.enableMemory) {
+            add(me.rerere.rikkahub.data.ai.tools.buildProactiveMemorySearchTool {
+                if (assistant.useGlobalMemory) memoryRepository.getGlobalMemories()
+                else memoryRepository.getMemoriesOfAssistant(assistant.id.toString())
+            })
+        }
+        // Only configured, named read-only memory retrieval endpoints belong to the light tier.
+        mcpManager.getAllAvailableTools(assistant)
+            .filter { (_, tool) -> tool.name in setOf("breath_search", "search_memory", "search_memories") }
+            .sortedBy { (serverId, tool) -> "$serverId/${tool.name}" }
+            .take(2)
+            .forEach { (serverId, tool) ->
+                add(Tool(
+                    name = ToolNaming.buildMcpToolName(serverId, tool.name),
+                    description = tool.description ?: "Search configured memories",
+                    parameters = { tool.inputSchema },
+                    needsApproval = tool.needsApproval,
+                    execute = { mcpManager.callTool(serverId, tool.name, if (it is JsonObject) it else normalizeMcpArguments(it)) },
+                ))
+            }
+    }
+
     /**
-     * One tool assembly path shared by normal and proactive chat. Proactive chat receives every
+     * One tool assembly path shared by normal and full-tier proactive chat. Proactive chat receives every
      * configured tool except AppUsage, which additionally requires explicit proactive check-in
      * consent. Merely exposing the AppUsage schema never reads or injects device usage data.
      */

@@ -14,7 +14,12 @@ internal data class ProactiveDecision(
     val shouldJump: Boolean,
     val waitMinutes: Int? = null,
     val stopUntilUserReturns: Boolean = false,
+    val activityNote: String = "",
 )
+
+private val proactiveNoteRegex = Regex("(?m)^\\s*\\[NOTE[:：]([^\\r\\n]*?)]\\s*$")
+
+internal fun stripProactiveNotes(text: String): String = text.replace(proactiveNoteRegex, "").trim()
 
 internal fun parseProactiveDecision(rawText: String, jumpDetectedDuringStreaming: Boolean): ProactiveDecision {
     return parseProactiveDecision(
@@ -29,7 +34,12 @@ internal fun parseProactiveDecision(
     @Suppress("UNUSED_PARAMETER") reasoningText: String,
     jumpDetectedDuringStreaming: Boolean,
 ): ProactiveDecision {
-    val finalLine = rawText.lineSequence().lastOrNull { it.isNotBlank() }.orEmpty()
+    val note = proactiveNoteRegex.find(rawText)?.groupValues?.get(1)?.trim()?.take(240).orEmpty()
+    val decisionText = stripProactiveNotes(rawText)
+    if (Regex("(?m)^\\s*\\[NOTE[:：]").containsMatchIn(decisionText)) {
+        return ProactiveDecision(message = "", shouldSend = false, shouldJump = false)
+    }
+    val finalLine = decisionText.lineSequence().lastOrNull { it.isNotBlank() }.orEmpty()
     val bracketWaitRegex = Regex("^\\s*\\[WAIT(?:\\s*[:：]\\s*(\\d+))?]\\s*[。.!！]?\\s*$", RegexOption.IGNORE_CASE)
     val bareWaitRegex = Regex("^\\s*WAIT(?:\\s*[:：]?\\s*(\\d+))?\\s*[。.!！]?\\s*$", RegexOption.IGNORE_CASE)
     val bracketWaitMatch = bracketWaitRegex.matchEntire(finalLine)
@@ -47,14 +57,14 @@ internal fun parseProactiveDecision(
     // ignored: a model may consider PASS and then decide to send a real message.
     val pass = bracketPass || barePass
     val jump = jumpDetectedDuringStreaming ||
-        Regex("\\[JUMP]", RegexOption.IGNORE_CASE).containsMatchIn(rawText)
+        Regex("\\[JUMP]", RegexOption.IGNORE_CASE).containsMatchIn(decisionText)
 
     val cleaned = if (
         bracketStop || bareStop || bracketPass || barePass ||
         bracketWaitMatch != null || bareWaitMatch != null
     ) {
         ""
-    } else rawText
+    } else decisionText
         .replace(Regex("\\[JUMP]", RegexOption.IGNORE_CASE), "")
         .trim()
 
@@ -64,6 +74,7 @@ internal fun parseProactiveDecision(
         shouldJump = jump,
         waitMinutes = waitMinutes,
         stopUntilUserReturns = stop,
+        activityNote = note,
     )
 }
 
@@ -79,11 +90,19 @@ internal data class ProactiveSessionState(
  * Small persistent state machine anchored to the latest real USER message.
  * Assistant proactive messages never reset this anchor.
  */
-internal class ProactiveMessageStateStore(context: Context) {
-    private val prefs = context.getSharedPreferences(ProactiveMessageService.PREFS_NAME, Context.MODE_PRIVATE)
+internal class ProactiveMessageStateStore(context: Context, scope: String) {
+    private val prefs = context.getSharedPreferences("proactive_state_$scope", Context.MODE_PRIVATE)
+    private val legacyPrefs = context.getSharedPreferences(ProactiveMessageService.PREFS_NAME, Context.MODE_PRIVATE)
 
     fun synchronizeWithUser(lastUserMessageId: String?): ProactiveSessionState {
-        val current = read()
+        var current = read()
+        if (current.anchorUserMessageId.isBlank() && !lastUserMessageId.isNullOrBlank()) {
+            val legacy = read(legacyPrefs)
+            if (legacy.anchorUserMessageId == lastUserMessageId) {
+                current = legacy
+                write(current)
+            }
+        }
         if (!lastUserMessageId.isNullOrBlank() && current.anchorUserMessageId != lastUserMessageId) {
             return ProactiveSessionState(anchorUserMessageId = lastUserMessageId).also(::write)
         }
@@ -114,7 +133,7 @@ internal class ProactiveMessageStateStore(context: Context) {
         write(state.copy(stopUntilUserReturns = true))
     }
 
-    private fun read(): ProactiveSessionState = ProactiveSessionState(
+    private fun read(prefs: android.content.SharedPreferences = this.prefs): ProactiveSessionState = ProactiveSessionState(
         anchorUserMessageId = prefs.getString(KEY_ANCHOR_USER_ID, "").orEmpty(),
         followUpCount = prefs.getInt(KEY_FOLLOW_UP_COUNT, 0),
         recentProactiveMessageIds = prefs.getString(KEY_RECENT_PROACTIVE_IDS, "")

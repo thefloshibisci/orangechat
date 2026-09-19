@@ -12,6 +12,8 @@ import android.os.Build
 import android.provider.Settings
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.LargeFlexibleTopAppBar
@@ -19,6 +21,10 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Button
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
+import androidx.compose.material3.Slider
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -41,6 +47,13 @@ import me.rerere.rikkahub.ui.components.ui.CardGroup
 import me.rerere.rikkahub.ui.components.ui.RiskConfirmDialog
 import me.rerere.rikkahub.data.service.ProactiveMessageService
 import me.rerere.rikkahub.data.service.ProactiveMessageWorker
+import me.rerere.rikkahub.data.service.ProactiveActivity
+import me.rerere.rikkahub.data.service.ProactiveActivityStore
+import me.rerere.rikkahub.data.repository.ConversationRepository
+import me.rerere.rikkahub.data.datastore.getCurrentAssistant
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlin.uuid.Uuid
 import org.koin.compose.koinInject
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -48,6 +61,51 @@ fun SettingProactiveMessagePage(vm: SettingVM = koinInject()) {
     val context = LocalContext.current
     val settings by vm.settings.collectAsStateWithLifecycle()
     val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
+    val conversationRepository: ConversationRepository = koinInject()
+    var showActivities by remember { mutableStateOf(false) }
+    var activityRecords by remember { mutableStateOf<List<ProactiveActivity>>(emptyList()) }
+    var activityStatus by remember { mutableStateOf("") }
+    LaunchedEffect(showActivities) {
+        if (!showActivities) return@LaunchedEffect
+        activityStatus = "读取中…"
+        activityRecords = emptyList()
+        runCatching {
+            withContext(Dispatchers.IO) {
+                val assistantId = runCatching { Uuid.parse(settings.proactiveMessageSetting.assistantId) }
+                    .getOrDefault(settings.getCurrentAssistant().id)
+                conversationRepository.getMostRecentConversationId(assistantId)?.let { id ->
+                    ProactiveActivityStore(context, assistantId.toString(), id.toString()).snapshot().reversed()
+                }.orEmpty()
+            }
+        }.onSuccess {
+            activityRecords = it
+            activityStatus = if (it.isEmpty()) "暂无活动记录" else ""
+        }.onFailure { activityStatus = "活动记录读取失败" }
+    }
+    if (showActivities) {
+        AlertDialog(
+            onDismissRequest = { showActivities = false },
+            title = { Text("最近会话的后台活动") },
+            text = {
+                LazyColumn(Modifier.heightIn(max = 440.dp)) {
+                    if (activityStatus.isNotBlank()) item { Text(activityStatus) }
+                    items(activityRecords.size, key = { activityRecords[it].id }) { index ->
+                        val record = activityRecords[index]
+                        Column(Modifier.padding(vertical = 8.dp)) {
+                            Text(java.text.SimpleDateFormat("MM-dd HH:mm", LocalConfiguration.current.locales[0])
+                                .format(java.util.Date(record.timestamp)), style = MaterialTheme.typography.labelMedium)
+                            Text(record.outcome)
+                            if (record.note.isNotBlank()) Text(record.note)
+                            if (record.toolNames.isNotEmpty()) Text(record.toolNames.joinToString())
+                            Text(if (record.claimedByUserId == null) "待下次聊天接续" else "已接续",
+                                style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { showActivities = false }) { Text("关闭") } },
+        )
+    }
 
     var showProactiveRiskDialog by remember { mutableStateOf(false) }
     var minIntervalDraft by remember { mutableStateOf(settings.proactiveMessageSetting.minIntervalMinutes.toString()) }
@@ -84,7 +142,7 @@ fun SettingProactiveMessagePage(vm: SettingVM = koinInject()) {
                 val newSetting = settings.proactiveMessageSetting.copy(enabled = true, aggressiveModeEnabled = false)
                 vm.updateSettings(settings.copy(proactiveMessageSetting = newSetting))
                 me.rerere.rikkahub.data.service.DeviceEventAiTriggerService.stop(context)
-                ProactiveMessageService.triggerNow(context, newSetting)
+                ProactiveMessageService.scheduleNext(context, newSetting)
             },
             onDismiss = { showProactiveRiskDialog = false }
         )
@@ -109,7 +167,7 @@ fun SettingProactiveMessagePage(vm: SettingVM = koinInject()) {
                 CardGroup {
                     item(
                         headlineContent = { Text("启用主动消息") },
-                        supportingContent = { Text("开启后AI立即主动发一条消息，之后按设定间隔循环") },
+                        supportingContent = { Text("按设定时段与间隔判断是否联系") },
                         trailingContent = {
                             Switch(
                                 checked = settings.proactiveMessageSetting.enabled,
@@ -128,7 +186,7 @@ fun SettingProactiveMessagePage(vm: SettingVM = koinInject()) {
                     item(
                         headlineContent = { Text("手动触发一次") },
                         supportingContent = {
-                            Text("立即让 AI 判断一次并决定是否发消息，不改变后续定时循环。")
+                            Text("本次忽略活跃时段，仍遵守连续追问上限。")
                         },
                         trailingContent = {
                             Button(
@@ -180,6 +238,77 @@ fun SettingProactiveMessagePage(vm: SettingVM = koinInject()) {
                             }
                         )
                     }
+                }
+            }
+            item {
+                CardGroup {
+                    item(
+                        headlineContent = { Text("限定活跃时段") },
+                        trailingContent = {
+                            Switch(
+                                checked = settings.proactiveMessageSetting.activeHoursEnabled,
+                                onCheckedChange = { enabled ->
+                                    val updated = settings.proactiveMessageSetting.copy(activeHoursEnabled = enabled)
+                                    vm.updateSettings(settings.copy(proactiveMessageSetting = updated))
+                                    ProactiveMessageService.scheduleNext(context, updated)
+                                },
+                            )
+                        },
+                    )
+                    item(
+                        headlineContent = { Text("查看后台活动记录") },
+                        onClick = { showActivities = true },
+                    )
+                    if (settings.proactiveMessageSetting.activeHoursEnabled) {
+                        item(
+                            headlineContent = { Text("活跃时段（本地时间；起止相同为全天）") },
+                            supportingContent = {
+                                val current = settings.proactiveMessageSetting
+                                var start by remember(current.activeStartHour) { mutableStateOf(current.activeStartHour.toFloat()) }
+                                var end by remember(current.activeEndHour) { mutableStateOf(current.activeEndHour.toFloat()) }
+                                Column {
+                                    Text("开始 ${start.toInt().toString().padStart(2, '0')}:00")
+                                    Slider(
+                                        value = start, onValueChange = { start = it }, valueRange = 0f..23f, steps = 22,
+                                        onValueChangeFinished = {
+                                            val updated = current.copy(activeStartHour = start.toInt())
+                                            vm.updateSettings(settings.copy(proactiveMessageSetting = updated))
+                                            ProactiveMessageService.scheduleNext(context, updated)
+                                        },
+                                    )
+                                    Text("结束 ${end.toInt().toString().padStart(2, '0')}:00")
+                                    Slider(
+                                        value = end, onValueChange = { end = it }, valueRange = 0f..23f, steps = 22,
+                                        onValueChangeFinished = {
+                                            val updated = current.copy(activeEndHour = end.toInt())
+                                            vm.updateSettings(settings.copy(proactiveMessageSetting = updated))
+                                            ProactiveMessageService.scheduleNext(context, updated)
+                                        },
+                                    )
+                                }
+                            },
+                        )
+                    }
+                    item(
+                        headlineContent = { Text("完整工具轮次比例") },
+                        supportingContent = {
+                            val current = settings.proactiveMessageSetting
+                            var chance by remember(current.fullToolChancePercent) {
+                                mutableStateOf(current.fullToolChancePercent.toFloat())
+                            }
+                            Column {
+                                Text("${chance.toInt()}% 完整工具 / ${100 - chance.toInt()}% 轻量")
+                                Slider(
+                                    value = chance, onValueChange = { chance = it }, valueRange = 0f..100f, steps = 9,
+                                    onValueChangeFinished = {
+                                        vm.updateSettings(settings.copy(
+                                            proactiveMessageSetting = current.copy(fullToolChancePercent = chance.toInt()),
+                                        ))
+                                    },
+                                )
+                            }
+                        },
+                    )
                 }
             }
             item {
@@ -318,6 +447,23 @@ fun SettingProactiveMessagePage(vm: SettingVM = koinInject()) {
                             )
                         },
                     )
+                    item(
+                        headlineContent = { Text("自动附带最近应用时间线") },
+                        supportingContent = { Text("最近6小时的应用切换会发给当前模型；需同时允许查岗和系统应用使用权限。") },
+                        trailingContent = {
+                            Switch(
+                                checked = settings.proactiveMessageSetting.includeAppTimeline,
+                                enabled = settings.proactiveMessageSetting.allowProactiveAppUsage,
+                                onCheckedChange = { enabled ->
+                                    vm.updateSettings(settings.copy(
+                                        proactiveMessageSetting = settings.proactiveMessageSetting.copy(
+                                            includeAppTimeline = enabled,
+                                        ),
+                                    ))
+                                },
+                            )
+                        },
+                    )
                 }
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -383,7 +529,7 @@ fun SettingProactiveMessagePage(vm: SettingVM = koinInject()) {
                     item(
                         headlineContent = { Text("说明") },
                         supportingContent = {
-                            Text("AI 会先判断聊天中的人是突然离开、明确去忙，还是对话已经结束，再决定发送、等待或停止。上一轮主动消息会作为真实交流保留，达到连续追问上限后会等待再次开口。\n\n只有同时开启系统里的应用使用工具和本页的查岗权限，主动消息才可以按需查看；未调用就不会附带这份数据。AI 也可以自行用 JUMP 拉起聊天页。\n\nAlarmManager 与 WorkManager 会共同保证后台调度。")
+                            Text("等待和行动简记保存在本机，下一次聊天接续；发送过的消息保留在原对话。自动时间线默认关闭。后台触发仍受手机省电与权限限制。")
                         },
                     )
                 }

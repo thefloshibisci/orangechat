@@ -45,8 +45,8 @@ class LocationService(
 
             // GPS坐标(WGS84)需要先转换为高德坐标(GCJ02)才能正确逆地理编码
             val amapCoord = amapService.convertToAmapCoord(location.latitude, location.longitude)
-            val lat = amapCoord?.first ?: location.latitude
-            val lng = amapCoord?.second ?: location.longitude
+            val lat = amapCoord?.first ?: error("坐标转换失败")
+            val lng = amapCoord.second
 
             val address = amapService.reverseGeocode(lat, lng)
             if (!address.success) {

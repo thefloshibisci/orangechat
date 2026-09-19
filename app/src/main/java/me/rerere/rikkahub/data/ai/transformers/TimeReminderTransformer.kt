@@ -29,7 +29,8 @@ object TimeReminderTransformer : InputMessageTransformer {
         val setting = ctx.settings.systemToolsSetting
         return applyExtraTimeContext(
             messages = messages,
-            currentTimeEnabled = setting.timeContextInjectionEnabled,
+            // The request-scoped collector now owns current time; keep reply-gap behavior here.
+            currentTimeEnabled = setting.timeContextInjectionEnabled && !setting.extraInfoInjectionEnabled,
             replyIntervalEnabled = ctx.assistant.enableTimeReminder,
             thresholdSeconds = ctx.assistant.timeReminderIntervalMinutes.coerceAtLeast(1) * 60L,
             currentInstant = Clock.System.now(),

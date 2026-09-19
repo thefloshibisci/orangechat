@@ -91,6 +91,10 @@ class CardGroupScope {
     }
 }
 
+/** Build descriptors outside restartable composable lambdas so rows cannot retain an old scope. */
+fun buildCardGroupItems(content: CardGroupScope.() -> Unit): List<CardGroupItem> =
+    CardGroupScope().apply(content).items.toList()
+
 @Composable
 private fun CardGroupListItem(
     item: CardGroupItem,
@@ -201,6 +205,16 @@ fun CardGroup(
     val scope = CardGroupScope()
     scope.content()
 
+    CardGroup(items = scope.items.toList(), modifier = modifier, title = title, colors = colors)
+}
+
+@Composable
+fun CardGroup(
+    items: List<CardGroupItem>,
+    modifier: Modifier = Modifier,
+    title: (@Composable () -> Unit)? = null,
+    colors: ListItemColors = CustomColors.listItemColors,
+) {
     Column(modifier = modifier) {
         if (title != null) {
             CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.primary) {
@@ -211,8 +225,8 @@ fun CardGroup(
                 }
             }
         }
-        val count = scope.items.size
-        scope.items.fastForEachIndexed { index, item ->
+        val count = items.size
+        items.fastForEachIndexed { index, item ->
             CardGroupListItem(
                 item = if (item.colors == null) item.copy(colors = colors) else item,
                 count = count,

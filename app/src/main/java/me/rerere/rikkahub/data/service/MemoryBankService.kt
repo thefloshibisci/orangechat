@@ -152,6 +152,11 @@ class MemoryBankService(
         }
     }
 
+    suspend fun recallScopedMemories(query: String, assistantId: String, count: Int): List<MemoryBankEntity> =
+        withContext(Dispatchers.IO) {
+            memoryBankDAO.searchScopedMemories(query, assistantId, count.coerceIn(1, 20))
+        }
+
     // ==================== Vector Recall ====================
 
     /**

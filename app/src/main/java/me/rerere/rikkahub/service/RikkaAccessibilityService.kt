@@ -99,6 +99,20 @@ class RikkaAccessibilityService : AccessibilityService() {
         // Required override; no-op.
     }
 
+    fun currentApplicationPackage(): String? {
+        val application = windows.firstOrNull {
+            it.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_APPLICATION &&
+                (it.isActive || it.isFocused)
+        }?.root
+        val root = application ?: rootInActiveWindow ?: return null
+        return try {
+            root.packageName?.toString()?.takeIf { it.isNotBlank() }
+        } finally {
+            @Suppress("DEPRECATION")
+            root.recycle()
+        }
+    }
+
     fun appendLog(entry: ActionLogEntry) {
         val current = _lastActions.value
         val next = (current + entry).takeLast(LOG_RING_SIZE)
@@ -221,8 +235,13 @@ class RikkaAccessibilityService : AccessibilityService() {
                             if (cont.isActive) {
                                 cont.resume(
                                     if (bmp != null) ScreenshotOutcome.Success(bmp)
-                                    else ScreenshotOutcome.Failure("bitmap_decode_failed")
+                                    else ScreenshotOutcome.Failure("bitmap_decode_failed"),
+                                    onCancellation = { _, outcome, _ ->
+                                        (outcome as? ScreenshotOutcome.Success)?.bitmap?.recycle()
+                                    },
                                 )
+                            } else {
+                                bmp?.recycle()
                             }
                         } catch (t: Throwable) {
                             if (cont.isActive) cont.resume(ScreenshotOutcome.Failure("exception:${t.message}"))
@@ -234,6 +253,7 @@ class RikkaAccessibilityService : AccessibilityService() {
                             ERROR_TAKE_SCREENSHOT_INTERVAL_TIME_SHORT -> "rate_limited"
                             ERROR_TAKE_SCREENSHOT_NO_ACCESSIBILITY_ACCESS -> "no_access"
                             ERROR_TAKE_SCREENSHOT_INTERNAL_ERROR -> "internal_error"
+                            ERROR_TAKE_SCREENSHOT_SECURE_WINDOW -> "secure_window"
                             else -> "error_code_$errorCode"
                         }
                         if (cont.isActive) cont.resume(ScreenshotOutcome.Failure(reason))

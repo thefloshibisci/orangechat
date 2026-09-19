@@ -80,6 +80,11 @@ class RikkaNotificationListenerService : NotificationListenerService() {
         super.onListenerDisconnected()
     }
 
+    override fun onDestroy() {
+        me.rerere.rikkahub.data.ai.tools.local.NotificationListenerHandle.connected = false
+        super.onDestroy()
+    }
+
     override fun onNotificationPosted(sbn: StatusBarNotification) {
         super.onNotificationPosted(sbn)
         addNotification(sbn)
@@ -120,7 +125,7 @@ class RikkaNotificationListenerService : NotificationListenerService() {
         val currentList = _notifications.value.toMutableList()
         
         // 避免重复
-        val existingIndex = currentList.indexOfFirst { it.id == notification.id && it.packageName == notification.packageName }
+        val existingIndex = currentList.indexOfFirst { it.key == notification.key }
         if (existingIndex >= 0) {
             currentList[existingIndex] = notification
         } else {
@@ -148,9 +153,8 @@ class RikkaNotificationListenerService : NotificationListenerService() {
     }
     
     private fun updateRecentNotifications(now: Long) {
-        val threshold = now - RECENT_THRESHOLD_MS
-        _recentNotifications.value = _notifications.value
-            .filter { it.timestamp >= threshold }
+        // Active notifications can disappear; retain already observed items in memory for 24h.
+        _recentNotifications.value = mergeRecentNotifications(_recentNotifications.value, _notifications.value, now)
     }
     
     private fun parseNotification(sbn: StatusBarNotification): NotificationData? {

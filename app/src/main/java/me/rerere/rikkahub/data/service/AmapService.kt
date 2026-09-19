@@ -8,10 +8,17 @@ package me.rerere.rikkahub.data.service
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Call
+import okhttp3.Callback
+import okhttp3.Response
+import java.io.IOException
+import kotlin.coroutines.resumeWithException
 import org.json.JSONObject
 import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
@@ -132,10 +139,8 @@ class AmapService(
         
         return try {
             val request = Request.Builder().url(url).build()
-            val response = okHttpClient.newCall(request).execute()
-            
-            if (response.isSuccessful) {
-                val body = response.body?.string() ?: return null
+            val body = fetchAddressPayload(request)
+            run {
                 val result = Json { ignoreUnknownKeys = true }.decodeFromString<ConvertResponse>(body)
                 
                 if (result.status == "1" && result.locations != null) {
@@ -144,7 +149,9 @@ class AmapService(
                         Pair(parts[1].toDouble(), parts[0].toDouble())
                     } else null
                 } else null
-            } else null
+            }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             null
         }
@@ -166,51 +173,37 @@ class AmapService(
         
         return try {
             val request = Request.Builder().url(url).build()
-            val response = okHttpClient.newCall(request).execute()
-            
-            if (response.isSuccessful) {
-                val body = response.body?.string() ?: return AddressResult(
-                    success = false,
-                    error = "Empty response body"
-                )
-                
-                val result = Json { ignoreUnknownKeys = true }.decodeFromString<RegeoResponse>(body)
-                
-                if (result.status == "1" && result.regeocode != null) {
-                    val regeo = result.regeocode
-                    val addr = regeo.addressComponent
-                    
-                    AddressResult(
-                        success = true,
-                        formattedAddress = regeo.formatted_address,
-                        province = addr?.province,
-                        city = addr?.city ?: addr?.province,
-                        district = addr?.district,
-                        street = addr?.street,
-                        streetNumber = addr?.streetNumber,
-                        neighborhood = addr?.neighborhood?.name,
-                        building = addr?.building?.name,
-                        adcode = addr?.adcode,
-                        citycode = addr?.citycode
-                    )
-                } else {
-                    AddressResult(
-                        success = false,
-                        error = "API returned error: ${result.info} (${result.infocode})"
-                    )
-                }
-            } else {
-                AddressResult(
-                    success = false,
-                    error = "HTTP error: ${response.code}"
-                )
-            }
+            decodeAmapAddress(fetchAddressPayload(request))
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             AddressResult(
                 success = false,
-                error = "Exception: ${e.message}"
+                error = "Address request failed"
             )
         }
+    }
+
+    private suspend fun fetchAddressPayload(request: Request): String = suspendCancellableCoroutine { cont ->
+        val call = okHttpClient.newCall(request)
+        cont.invokeOnCancellation { call.cancel() }
+        call.enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                if (cont.isActive) cont.resumeWithException(e)
+            }
+
+            override fun onResponse(call: Call, response: Response) {
+                val result = runCatching {
+                    response.use {
+                        check(it.isSuccessful) { "Address HTTP error" }
+                        val source = it.body.source()
+                        check(!source.request(1_048_577)) { "Address response too large" }
+                        source.readUtf8()
+                    }
+                }
+                if (cont.isActive) cont.resumeWith(result)
+            }
+        })
     }
     
     /**

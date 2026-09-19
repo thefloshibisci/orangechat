@@ -471,14 +471,29 @@ class SettingsStore(
             Log.w(TAG, "Cannot update dummy settings")
             return
         }
+        updateMutex.withLock {
+            publishAndPersist(settings)
+        }
+    }
+
+    /** Apply a change to the latest snapshot and persist it atomically. */
+    suspend fun update(fn: (Settings) -> Settings) {
+        updateMutex.withLock {
+            publishAndPersist(fn(settingsFlow.value))
+        }
+    }
+
+    private suspend fun publishAndPersist(settings: Settings) {
+        if(settings.init) {
+            Log.w(TAG, "Cannot update dummy settings")
+            return
+        }
         pendingWrites.incrementAndGet()
         settingsFlow.value = settings
         try {
-            updateMutex.withLock {
-                val previous = settingsFlowRaw.first()
-                withContext(Dispatchers.IO) {
-                    persistSettings(settings, previous)
-                }
+            val previous = settingsFlowRaw.first()
+            withContext(Dispatchers.IO) {
+                persistSettings(settings, previous)
             }
         } finally {
             if (pendingWrites.decrementAndGet() == 0) {
@@ -659,10 +674,6 @@ class SettingsStore(
             preferences[WORKFLOW_HEADLESS_BLOCK_SENSITIVE] = settings.workflowHeadlessBlockSensitive
             preferences[AUTO_APPROVE_ALL_TOOLS] = settings.autoApproveAllTools
         }
-    }
-
-    suspend fun update(fn: (Settings) -> Settings) {
-        update(fn(settingsFlow.value))
     }
 
     suspend fun updateAssistant(assistantId: Uuid) {

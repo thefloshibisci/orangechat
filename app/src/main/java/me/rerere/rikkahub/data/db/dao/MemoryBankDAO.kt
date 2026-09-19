@@ -101,6 +101,9 @@ interface MemoryBankDAO {
     @Query("SELECT * FROM memory_bank WHERE content LIKE '%' || :keyword || '%' ORDER BY created_at DESC LIMIT :limit")
     suspend fun searchMemoriesByKeyword(keyword: String, limit: Int = 20): List<MemoryBankEntity>
 
+    @Query("SELECT * FROM memory_bank WHERE (assistant_id IS NULL OR assistant_id = :assistantId) AND content LIKE '%' || :keyword || '%' ORDER BY created_at DESC LIMIT :limit")
+    suspend fun searchScopedMemories(keyword: String, assistantId: String, limit: Int): List<MemoryBankEntity>
+
     @Query("SELECT * FROM memory_bank WHERE content LIKE '%' || :keyword || '%' AND type = :type ORDER BY created_at DESC LIMIT :limit")
     suspend fun searchMemoriesByKeywordAndType(keyword: String, type: String, limit: Int = 20): List<MemoryBankEntity>
 
