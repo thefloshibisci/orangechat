@@ -57,6 +57,13 @@ class ProactiveMessageStateTest {
     }
 
     @Test
+    fun `always respond turns control decision into a message`() {
+        val decision = parseProactiveDecision("[WAIT:30]", false, alwaysRespond = true)
+        assertTrue(decision.shouldSend)
+        assertTrue(decision.message.isNotBlank())
+    }
+
+    @Test
     fun `bare wait accepts spaces and full width colon`() {
         val decision = parseProactiveDecision("WAIT ： 90。", false)
         assertFalse(decision.shouldSend)

@@ -1226,6 +1226,7 @@ class ChatService(
                 ),
             )
         )
+        add(localTools.imageGenerationTool())
 
         val systemToolsOptions = settings.systemToolsSetting.getEnabledOptions().toMutableSet()
         if (!allowAppUsage) {

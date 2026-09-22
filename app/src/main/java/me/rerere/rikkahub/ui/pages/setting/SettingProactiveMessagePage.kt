@@ -110,7 +110,7 @@ fun SettingProactiveMessagePage(vm: SettingVM = koinInject()) {
     var showProactiveRiskDialog by remember { mutableStateOf(false) }
     var minIntervalDraft by remember { mutableStateOf(settings.proactiveMessageSetting.minIntervalMinutes.toString()) }
     var maxIntervalDraft by remember { mutableStateOf(settings.proactiveMessageSetting.maxIntervalMinutes.toString()) }
-    var maxFollowUpDraft by remember { mutableStateOf("") }
+    var maxFollowUpDraft by remember { mutableStateOf(settings.proactiveMessageSetting.maxFollowUpMessages.toString()) }
     var editingMinInterval by remember { mutableStateOf(false) }
     var editingMaxInterval by remember { mutableStateOf(false) }
     var editingMaxFollowUps by remember { mutableStateOf(false) }
@@ -387,17 +387,12 @@ fun SettingProactiveMessagePage(vm: SettingVM = koinInject()) {
                         supportingContent = {
                             OutlinedTextField(
                                 value = maxFollowUpDraft,
+                                enabled = !settings.init,
                                 onValueChange = { value ->
                                     val digitsOnly = value.filter(Char::isDigit).take(1)
                                     maxFollowUpDraft = digitsOnly
                                     digitsOnly.toIntOrNull()?.takeIf { it in 1..8 }?.let { count ->
-                                        vm.updateSettings(
-                                            settings.copy(
-                                                proactiveMessageSetting = settings.proactiveMessageSetting.copy(
-                                                    maxFollowUpMessages = count,
-                                                ),
-                                            ),
-                                        )
+                                        vm.updateProactiveSetting { it.copy(maxFollowUpMessages = count) }
                                     }
                                 },
                                 placeholder = { Text("1～8") },
@@ -405,23 +400,26 @@ fun SettingProactiveMessagePage(vm: SettingVM = koinInject()) {
                                 modifier = Modifier
                                     .padding(top = 8.dp)
                                     .onFocusChanged { state ->
-                                        editingMaxFollowUps = state.isFocused
-                                        if (!state.isFocused) {
-                                            val count = maxFollowUpDraft.toIntOrNull()?.coerceIn(1, 8) ?: 2
-                                            maxFollowUpDraft = count.toString()
-                                            if (count != settings.proactiveMessageSetting.maxFollowUpMessages) {
-                                                vm.updateSettings(
-                                                    settings.copy(
-                                                        proactiveMessageSetting = settings.proactiveMessageSetting.copy(
-                                                            maxFollowUpMessages = count,
-                                                        ),
-                                                    ),
-                                                )
-                                            }
+                                        if (editingMaxFollowUps && !state.isFocused) {
+                                            maxFollowUpDraft = settings.proactiveMessageSetting.maxFollowUpMessages.toString()
                                         }
+                                        editingMaxFollowUps = state.isFocused
                                     },
                             )
                             Text("同一次沉默后最多发送几次，可设置 1～8 次；重新开口后自动清零。")
+                        },
+                    )
+                    item(
+                        headlineContent = { Text("不许沉默") },
+                        supportingContent = { Text("你老婆把你沉默的按键扣了。主动发消息会让老婆觉得你在惦记着她。仍遵守活跃时段和追问上限。") },
+                        trailingContent = {
+                            Switch(
+                                checked = settings.proactiveMessageSetting.alwaysRespond,
+                                enabled = !settings.init,
+                                onCheckedChange = { enabled ->
+                                    vm.updateProactiveSetting { it.copy(alwaysRespond = enabled) }
+                                },
+                            )
                         },
                     )
                     item(

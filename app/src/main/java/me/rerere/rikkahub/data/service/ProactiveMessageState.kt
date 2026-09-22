@@ -33,6 +33,7 @@ internal fun parseProactiveDecision(
     rawText: String,
     @Suppress("UNUSED_PARAMETER") reasoningText: String,
     jumpDetectedDuringStreaming: Boolean,
+    alwaysRespond: Boolean = false,
 ): ProactiveDecision {
     val note = proactiveNoteRegex.find(rawText)?.groupValues?.get(1)?.trim()?.take(240).orEmpty()
     val decisionText = stripProactiveNotes(rawText)
@@ -68,9 +69,10 @@ internal fun parseProactiveDecision(
         .replace(Regex("\\[JUMP]", RegexOption.IGNORE_CASE), "")
         .trim()
 
+    val forcedMessage = if (alwaysRespond && cleaned.isBlank()) "我来找你啦，刚刚一直在惦记你。" else cleaned
     return ProactiveDecision(
-        message = cleaned,
-        shouldSend = cleaned.isNotBlank() && !pass && !stop && waitMatch == null,
+        message = forcedMessage,
+        shouldSend = forcedMessage.isNotBlank() && (alwaysRespond || (!pass && !stop && waitMatch == null)),
         shouldJump = jump,
         waitMinutes = waitMinutes,
         stopUntilUserReturns = stop,

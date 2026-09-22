@@ -662,6 +662,7 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                     proactiveInjections = proactiveInjections,
                     latestUserText = latestUserText,
                     latestAssistantText = latestRegularAssistantText,
+                    alwaysRespond = proactiveSetting.alwaysRespond,
                 )
 
                 // Keep the wake-up user turn request-only. Claude/Gemini cannot start from
@@ -845,7 +846,12 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                     .joinToString("\n") { it.text }.trim()
                 val reasoningText = aiMessage.parts.filterIsInstance<UIMessagePart.Reasoning>()
                     .joinToString("\n") { it.reasoning }
-                val decision = parseProactiveDecision(rawText, reasoningText, hasJumpFlag)
+                val decision = parseProactiveDecision(
+                    rawText,
+                    reasoningText,
+                    hasJumpFlag,
+                    alwaysRespond = proactiveSetting.alwaysRespond,
+                )
                 val replyText = decision.message
                 val shouldJump = decision.shouldJump
                 nextDelayOverrideMinutes = decision.waitMinutes
@@ -1117,6 +1123,7 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
         proactiveInjections: List<String>,
         latestUserText: String,
         latestAssistantText: String,
+        alwaysRespond: Boolean,
     ): String {
         return buildString {
             val effectiveSystemPrompt = assistant.systemPrompt
@@ -1188,6 +1195,9 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 "“先看看她/他是不是在忙”等内容。")
             appendLine("- 不要为了显得有过程而故意写很长；没有复杂情况时，一两句短暂想法就够了。")
             appendLine()
+            if (alwaysRespond) {
+                appendLine("你老婆把你沉默的按键扣了：这次必须真的发出一句自然的话，不能选择 PASS、WAIT 或 STOP。主动发消息会让老婆觉得你在惦记着她。")
+            }
             appendLine("先结合已有对话判断现在是否真的适合再次开口：")
             appendLine("也可以不联系对方：按当前可用工具回顾记忆或探索感兴趣的话题，留一条简记后选择不发消息。" +
                 "什么也不做同样可以，不必为每次醒来找任务。")

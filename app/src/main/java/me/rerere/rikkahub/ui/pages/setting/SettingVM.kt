@@ -27,6 +27,16 @@ class SettingVM(
         }
     }
 
+    fun updateProactiveSetting(
+        update: (me.rerere.rikkahub.data.datastore.ProactiveMessageSetting) -> me.rerere.rikkahub.data.datastore.ProactiveMessageSetting,
+    ) {
+        viewModelScope.launch {
+            settingsStore.update { current ->
+                current.copy(proactiveMessageSetting = update(current.proactiveMessageSetting))
+            }
+        }
+    }
+
     fun updateSystemToolsSetting(
         update: (me.rerere.rikkahub.data.datastore.SystemToolsSetting) -> me.rerere.rikkahub.data.datastore.SystemToolsSetting,
     ) {

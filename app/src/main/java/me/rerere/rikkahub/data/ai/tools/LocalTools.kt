@@ -19,14 +19,22 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import kotlinx.coroutines.flow.first
 import me.rerere.ai.core.InputSchema
 import me.rerere.ai.core.Tool
+import me.rerere.ai.provider.ImageGenerationParams
+import me.rerere.ai.provider.ProviderManager
+import me.rerere.ai.ui.ImageAspectRatio
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.data.event.AppEvent
 import me.rerere.rikkahub.data.event.AppEventBus
 import me.rerere.rikkahub.service.VoiceCallService
 import me.rerere.rikkahub.utils.readClipboardText
 import me.rerere.rikkahub.utils.writeClipboardText
+import me.rerere.rikkahub.data.datastore.findModelById
+import me.rerere.rikkahub.data.datastore.findProvider
+import me.rerere.rikkahub.data.files.FilesManager
+import java.io.File
 import java.time.ZoneId
 import java.time.ZonedDateTime
 import java.time.format.TextStyle
@@ -133,7 +141,40 @@ class LocalTools(
     private val workflowEngine: me.rerere.rikkahub.workflow.execution.WorkflowEngine,
     private val sshHostRepository: me.rerere.rikkahub.data.repository.SshHostRepository,
     private val settingsStore: me.rerere.rikkahub.data.datastore.SettingsStore,
+    private val providerManager: ProviderManager,
+    private val filesManager: FilesManager,
 ) {
+    fun imageGenerationTool(): Tool = Tool(
+        name = "generate_image",
+        description = "Generate an image from a prompt using the image model configured in My page. Use when the person asks for a picture.",
+        parameters = {
+            InputSchema.Obj(
+                properties = buildJsonObject { put("prompt", JsonPrimitive("Detailed image description")) },
+                required = listOf("prompt"),
+            )
+        },
+        execute = { args ->
+            val prompt = args.jsonObject["prompt"]?.jsonPrimitive?.contentOrNull.orEmpty()
+            if (prompt.isBlank()) {
+                listOf(UIMessagePart.Text("Image prompt is empty"))
+            } else runCatching {
+                val settings = settingsStore.settingsFlow.first()
+                val model = settings.findModelById(settings.imageGenerationModelId) ?: error("No image model configured")
+                val provider = model.findProvider(settings.providers) ?: error("Image provider not found")
+                val providerSetting = settings.providers.first { it.id == provider.id }
+                val result = providerManager.getProviderByType(provider).generateImage(
+                    providerSetting,
+                    ImageGenerationParams(model = model, prompt = prompt, numOfImages = 1, aspectRatio = ImageAspectRatio.SQUARE,
+                        customHeaders = model.customHeaders, customBody = model.customBodies),
+                )
+                result.items.mapIndexed { index, item ->
+                    val file = File(filesManager.getImagesDir(), "chat_${System.currentTimeMillis()}_$index.png")
+                    filesManager.createImageFileFromBase64(item.data, file.absolutePath)
+                    UIMessagePart.Image(file.toURI().toString())
+                }
+            }.getOrElse { listOf(UIMessagePart.Text("Image generation failed: ${it.message ?: "unknown error"}")) }
+        },
+    )
     val javascriptTool by lazy {
         Tool(
             name = "eval_javascript",
