@@ -25,7 +25,13 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         ndk {
-            abiFilters += listOf("arm64-v8a", "x86_64")
+            abiFilters += providers.gradleProperty("orangechatAbis")
+                .orNull
+                ?.split(",")
+                ?.map(String::trim)
+                ?.filter(String::isNotEmpty)
+                ?.ifEmpty { listOf("arm64-v8a", "x86_64") }
+                ?: listOf("arm64-v8a", "x86_64")
         }
     }
 
@@ -36,8 +42,18 @@ android {
             val isBuildingBundle = gradle.startParameter.taskNames.any { it.lowercase().contains("bundle") }
             isEnable = !isBuildingBundle
             reset()
-            include("arm64-v8a", "x86_64")
-            isUniversalApk = true
+            isUniversalApk = providers.gradleProperty("orangechatUniversalApk")
+                .orNull
+                ?.toBooleanStrictOrNull()
+                ?: true
+            val requestedAbis = providers.gradleProperty("orangechatAbis")
+                .orNull
+                ?.split(",")
+                ?.map(String::trim)
+                ?.filter(String::isNotEmpty)
+                ?.ifEmpty { listOf("arm64-v8a", "x86_64") }
+                ?: listOf("arm64-v8a", "x86_64")
+            include(*requestedAbis.toTypedArray())
         }
     }
 

@@ -73,18 +73,11 @@ jobs:
         run: ./gradlew :app:testDebugUnitTest :ai:testDebugUnitTest :app:compileDebugAndroidTestKotlin
 
       - name: Build APK
-        run: ./gradlew :app:assembleRelease :app:assembleDebug
+        run: ./gradlew :app:assembleRelease -PorangechatAbis=arm64-v8a -PorangechatUniversalApk=false
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: OrangeChat-personal
-          path: app/build/outputs/apk/release/*.apk
-          if-no-files-found: error
-
-      - name: Upload liquid glass APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: OrangeChat-liquidglass
-          path: app/build/outputs/apk/debug/*.apk
+          path: app/build/outputs/apk/release/*arm64-v8a*.apk
           if-no-files-found: error
