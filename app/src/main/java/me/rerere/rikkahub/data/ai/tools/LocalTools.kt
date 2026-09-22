@@ -7,6 +7,7 @@
 package me.rerere.rikkahub.data.ai.tools
  
 import android.content.Context
+import androidx.core.net.toUri
 import com.whl.quickjs.wrapper.QuickJSContext
 import com.whl.quickjs.wrapper.QuickJSObject
 import kotlinx.serialization.SerialName
@@ -35,6 +36,8 @@ import me.rerere.rikkahub.data.datastore.findModelById
 import me.rerere.rikkahub.data.datastore.findProvider
 import me.rerere.rikkahub.data.files.FilesManager
 import java.io.File
+import kotlin.coroutines.cancellation.CancellationException
+import kotlin.uuid.Uuid
 import java.time.ZoneId
 import java.time.ZonedDateTime
 import java.time.format.TextStyle
@@ -134,6 +137,16 @@ sealed class LocalToolOption {
     data object Ssh : LocalToolOption()
 }
  
+internal fun imageGenerationInputSchema() = InputSchema.Obj(
+    properties = buildJsonObject {
+        put("prompt", buildJsonObject {
+            put("type", "string")
+            put("description", "Detailed image description")
+        })
+    },
+    required = listOf("prompt"),
+)
+
 class LocalTools(
     private val context: Context,
     private val eventBus: AppEventBus,
@@ -147,12 +160,7 @@ class LocalTools(
     fun imageGenerationTool(): Tool = Tool(
         name = "generate_image",
         description = "Generate an image from a prompt using the image model configured in My page. Use when the person asks for a picture.",
-        parameters = {
-            InputSchema.Obj(
-                properties = buildJsonObject { put("prompt", JsonPrimitive("Detailed image description")) },
-                required = listOf("prompt"),
-            )
-        },
+        parameters = { imageGenerationInputSchema() },
         execute = { args ->
             val prompt = args.jsonObject["prompt"]?.jsonPrimitive?.contentOrNull.orEmpty()
             if (prompt.isBlank()) {
@@ -167,12 +175,17 @@ class LocalTools(
                     ImageGenerationParams(model = model, prompt = prompt, numOfImages = 1, aspectRatio = ImageAspectRatio.SQUARE,
                         customHeaders = model.customHeaders, customBody = model.customBodies),
                 )
-                result.items.mapIndexed { index, item ->
-                    val file = File(filesManager.getImagesDir(), "chat_${System.currentTimeMillis()}_$index.png")
+                check(result.items.isNotEmpty()) { "Image provider returned no images" }
+                val images = result.items.map { item ->
+                    val file = File(filesManager.getImagesDir(), "chat_${Uuid.random()}.png")
                     filesManager.createImageFileFromBase64(item.data, file.absolutePath)
-                    UIMessagePart.Image(file.toURI().toString())
+                    UIMessagePart.Image(file.toUri().toString())
                 }
-            }.getOrElse { listOf(UIMessagePart.Text("Image generation failed: ${it.message ?: "unknown error"}")) }
+                listOf(UIMessagePart.Text("Generated ${images.size} image(s). Images are attached to this tool result.")) + images
+            }.getOrElse {
+                if (it is CancellationException) throw it
+                listOf(UIMessagePart.Text("Image generation failed. Check the image model in My page; do not claim an image was generated."))
+            }
         },
     )
     val javascriptTool by lazy {

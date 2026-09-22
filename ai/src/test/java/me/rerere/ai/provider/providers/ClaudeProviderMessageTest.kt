@@ -358,6 +358,25 @@ class ClaudeProviderMessageTest {
 
     // ==================== Helper Functions ====================
 
+    @Test
+    fun `parallel image results remain paired in native Claude requests`() {
+        val first = createExecutedTool("image_1", "generate_image", "{}", "Generated").copy(
+            output = listOf(UIMessagePart.Text("Generated"), UIMessagePart.Image("data:image/png;base64,aGVsbG8=")),
+        )
+        val second = createExecutedTool("time_1", "time", "{}", "12:00")
+        val result = invokeBuildMessages(listOf(UIMessage(
+            role = MessageRole.ASSISTANT, parts = listOf(first, second, UIMessagePart.Text("Done")),
+        )))
+        assertEquals(listOf("assistant", "user", "assistant"),
+            result.map { it.jsonObject["role"]!!.jsonPrimitive.content })
+        val uses = result[0].jsonObject["content"]!!.jsonArray
+        val outputs = result[1].jsonObject["content"]!!.jsonArray
+        assertEquals(uses.map { it.jsonObject["id"]!!.jsonPrimitive.content },
+            outputs.map { it.jsonObject["tool_use_id"]!!.jsonPrimitive.content })
+        assertEquals(listOf("text", "image"), outputs[0].jsonObject["content"]!!.jsonArray
+            .map { it.jsonObject["type"]!!.jsonPrimitive.content })
+    }
+
     private fun createExecutedTool(
         callId: String,
         name: String,

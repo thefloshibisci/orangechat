@@ -13,6 +13,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import me.rerere.ai.core.MessageRole
 import me.rerere.ai.provider.Model
+import me.rerere.ai.provider.Modality
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.ai.util.KeyRoulette
@@ -37,14 +38,75 @@ class ChatCompletionsAPIMessageTest {
     }
 
     // Helper to invoke private buildMessages method via reflection
-    private fun invokeBuildMessages(messages: List<UIMessage>): JsonArray {
+    private fun invokeBuildMessages(
+        messages: List<UIMessage>,
+        model: Model = Model(modelId = "test-model"),
+    ): JsonArray {
         val method = ChatCompletionsAPI::class.java.getDeclaredMethod(
             "buildMessages",
             List::class.java,
             Model::class.java
         )
         method.isAccessible = true
-        return method.invoke(api, messages, Model(modelId = "test-model")) as JsonArray
+        return method.invoke(api, messages, model) as JsonArray
+    }
+
+    @Test
+    fun `parallel results must all precede image messages`() {
+        val image = UIMessagePart.Image("data:image/png;base64,aGVsbG8=")
+        val first = createExecutedTool("call_image", "screenshot", "{}", "Captured").copy(
+            output = listOf(UIMessagePart.Text("Captured"), image),
+        )
+        val second = createExecutedTool("call_time", "time", "{}", "12:00")
+        val third = first.copy(toolCallId = "call_image_2", toolName = "generate_image")
+        val original = UIMessage(
+            role = MessageRole.ASSISTANT,
+            parts = listOf(first, second, third, UIMessagePart.Text("Done")),
+        )
+        val result = invokeBuildMessages(
+            listOf(UIMessage.user("Look"), original),
+            Model(modelId = "vision", inputModalities = listOf(Modality.TEXT, Modality.IMAGE)),
+        )
+        assertEquals(listOf("user", "assistant", "tool", "tool", "tool", "user", "user", "assistant"),
+            result.map { it.jsonObject["role"]!!.jsonPrimitive.content })
+        assertEquals(listOf("call_image", "call_time", "call_image_2"),
+            result.slice(2..4).map { it.jsonObject["tool_call_id"]!!.jsonPrimitive.content })
+        assertEquals("Captured", result[2].jsonObject["content"]!!.jsonPrimitive.content)
+        assertEquals("data:image/png;base64,aGVsbG8=", result[5].jsonObject["content"]!!.jsonArray[1]
+            .jsonObject["image_url"]!!.jsonObject["url"]!!.jsonPrimitive.content)
+        assertEquals(listOf(first, second, third, UIMessagePart.Text("Done")), original.parts)
+    }
+
+    @Test
+    fun `text models retain all tool results without image messages`() {
+        val first = createExecutedTool("image", "screenshot", "{}", "Captured").copy(
+            output = listOf(UIMessagePart.Text("Captured"), UIMessagePart.Image("data:image/png;base64,aGVsbG8=")),
+        )
+        val second = createExecutedTool("time", "time", "{}", "12:00")
+        val result = invokeBuildMessages(listOf(UIMessage(
+            role = MessageRole.ASSISTANT, parts = listOf(first, second),
+        )))
+        assertEquals(listOf("assistant", "tool", "tool"),
+            result.map { it.jsonObject["role"]!!.jsonPrimitive.content })
+        assertEquals(listOf("image", "time"),
+            result.drop(1).map { it.jsonObject["tool_call_id"]!!.jsonPrimitive.content })
+    }
+
+    @Test
+    fun `image only results and failed image encoding do not interrupt subsequent results`() {
+        val first = createExecutedTool("image", "generate_image", "{}", "").copy(
+            output = listOf(UIMessagePart.Image("unsupported:image")),
+        )
+        val second = createExecutedTool("time", "time", "{}", "12:00")
+        val result = invokeBuildMessages(listOf(UIMessage(
+            role = MessageRole.ASSISTANT, parts = listOf(first, second),
+        )), Model(modelId = "vision", inputModalities = listOf(Modality.TEXT, Modality.IMAGE)))
+        assertEquals(listOf("assistant", "tool", "tool", "user"),
+            result.map { it.jsonObject["role"]!!.jsonPrimitive.content })
+        assertEquals("image", result[1].jsonObject["tool_call_id"]!!.jsonPrimitive.content)
+        assertEquals("time", result[2].jsonObject["tool_call_id"]!!.jsonPrimitive.content)
+        assertEquals("", result[1].jsonObject["content"]!!.jsonPrimitive.content)
+        assertEquals("text", result[3].jsonObject["content"]!!.jsonArray[1].jsonObject["type"]!!.jsonPrimitive.content)
     }
 
     @Test

@@ -14,6 +14,13 @@ plugins {
 android {
     namespace = "me.rerere.rikkahub"
     compileSdk = 37
+    val isBuildingBundle = gradle.startParameter.taskNames.any { it.lowercase().contains("bundle") }
+    val requestedAbis = providers.gradleProperty("orangechatAbis")
+        .orNull?.split(",")?.map(String::trim)?.filter(String::isNotEmpty)
+        ?.ifEmpty { listOf("arm64-v8a", "x86_64") }
+        ?: listOf("arm64-v8a", "x86_64")
+    val buildUniversalApk = providers.gradleProperty("orangechatUniversalApk")
+        .orNull?.toBooleanStrictOrNull() ?: true
 
     defaultConfig {
         applicationId = "me.rerere.orangechat"
@@ -25,13 +32,8 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         ndk {
-            abiFilters += providers.gradleProperty("orangechatAbis")
-                .orNull
-                ?.split(",")
-                ?.map(String::trim)
-                ?.filter(String::isNotEmpty)
-                ?.ifEmpty { listOf("arm64-v8a", "x86_64") }
-                ?: listOf("arm64-v8a", "x86_64")
+            // Split-only APKs select ABIs below; AGP rejects a second filter here.
+            if (isBuildingBundle || buildUniversalApk) abiFilters += requestedAbis
         }
     }
 
@@ -39,20 +41,9 @@ android {
         abi {
             // AppBundle tasks usually contain "bundle" in their name
             //noinspection WrongGradleMethod
-            val isBuildingBundle = gradle.startParameter.taskNames.any { it.lowercase().contains("bundle") }
             isEnable = !isBuildingBundle
             reset()
-            isUniversalApk = providers.gradleProperty("orangechatUniversalApk")
-                .orNull
-                ?.toBooleanStrictOrNull()
-                ?: true
-            val requestedAbis = providers.gradleProperty("orangechatAbis")
-                .orNull
-                ?.split(",")
-                ?.map(String::trim)
-                ?.filter(String::isNotEmpty)
-                ?.ifEmpty { listOf("arm64-v8a", "x86_64") }
-                ?: listOf("arm64-v8a", "x86_64")
+            isUniversalApk = buildUniversalApk
             include(*requestedAbis.toTypedArray())
         }
     }

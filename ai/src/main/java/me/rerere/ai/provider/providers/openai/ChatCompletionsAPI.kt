@@ -681,7 +681,6 @@ class ChatCompletionsAPI(
                     // 紧跟 tool 结果消息
                     group.tools.forEach { tool ->
                         val textOutput = tool.output.filterIsInstance<UIMessagePart.Text>().joinToString("\n") { it.text }
-                        val imageOutput = if (supportsImage) tool.output.filterIsInstance<UIMessagePart.Image>() else emptyList()
 
                         add(buildJsonObject {
                             put("role", "tool")
@@ -689,9 +688,12 @@ class ChatCompletionsAPI(
                             put("tool_call_id", tool.toolCallId)
                             put("content", textOutput)
                         })
+                    }
 
-                        // If tool output contains images, inject a user message with the images
-                        // so the AI model can "see" them (tool result content only supports text)
+                    // Finish every result in this batch before inserting user images. An image
+                    // between results breaks tool pairing in OpenAI-to-Claude gateways as well.
+                    group.tools.forEach { tool ->
+                        val imageOutput = if (supportsImage) tool.output.filterIsInstance<UIMessagePart.Image>() else emptyList()
                         if (imageOutput.isNotEmpty()) {
                             add(buildJsonObject {
                                 put("role", "user")
