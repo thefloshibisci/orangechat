@@ -644,24 +644,18 @@ class GoogleProvider(private val client: OkHttpClient, context: Context? = null)
                     })
                     partsBuffer.clear()
 
-                    // 紧跟 functionResponse
+                    // Keep function responses and returned images in one user turn. Some
+                    // Gemini-compatible gateways reject consecutive user turns here.
                     add(buildJsonObject {
                         put("role", "user")
                         putJsonArray("parts") {
                             group.tools.forEach { add(it.toFunctionResponsePart()) }
-                        }
-                    })
-
-                    // If any tool output contains images, inject a user message with the images
-                    val toolImages = group.tools.flatMap { tool ->
-                        tool.output.filterIsInstance<UIMessagePart.Image>().map { imagePart ->
-                            tool.toolName to imagePart
-                        }
-                    }
-                    if (toolImages.isNotEmpty()) {
-                        add(buildJsonObject {
-                            put("role", "user")
-                            putJsonArray("parts") {
+                            val toolImages = group.tools.flatMap { tool ->
+                                tool.output.filterIsInstance<UIMessagePart.Image>().map { imagePart ->
+                                    tool.toolName to imagePart
+                                }
+                            }
+                            if (toolImages.isNotEmpty()) {
                                 add(buildJsonObject {
                                     put("text", toolImages.joinToString(", ") { "[Tool ${it.first} returned an image]" })
                                 })
@@ -678,8 +672,8 @@ class GoogleProvider(private val client: OkHttpClient, context: Context? = null)
                                     })
                                 }
                             }
-                        })
-                    }
+                        }
+                    })
                 }
             }
         }

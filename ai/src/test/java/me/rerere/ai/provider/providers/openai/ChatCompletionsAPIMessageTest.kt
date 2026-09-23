@@ -95,6 +95,17 @@ class ChatCompletionsAPIMessageTest {
     }
 
     @Test
+    fun `single tool image stays adjacent to its tool result`() {
+        val tool = createExecutedTool("image", "take_screenshot", "{}", "Captured").copy(
+            output = listOf(UIMessagePart.Text("Captured"), UIMessagePart.Image("data:image/png;base64,aGVsbG8=")),
+        )
+        val result = invokeBuildMessages(listOf(UIMessage(role = MessageRole.ASSISTANT, parts = listOf(tool))), Model())
+        assertEquals(listOf("assistant", "tool", "user"), result.map { it.jsonObject["role"]!!.jsonPrimitive.content })
+        assertEquals("data:image/png;base64,aGVsbG8=", result[2].jsonObject["content"]!!.jsonArray[1]
+            .jsonObject["image_url"]!!.jsonObject["url"]!!.jsonPrimitive.content)
+    }
+
+    @Test
     fun `ordinary uploads still respect text only model capability`() {
         val result = invokeBuildMessages(listOf(UIMessage(
             role = MessageRole.USER,

@@ -82,9 +82,14 @@ class ToolImageRequestTest {
         val method = GoogleProvider::class.java.getDeclaredMethod("buildContents", List::class.java)
         method.isAccessible = true
         val result = method.invoke(provider, messages) as JsonArray
-        val outputs = result[2].jsonObject["parts"]!!.jsonArray
-        assertEquals(names, outputs.map { it.jsonObject["functionResponse"]!!.jsonObject["name"]!!.jsonPrimitive.content })
-        val images = result[3].jsonObject["parts"]!!.jsonArray.drop(1)
+        val userWithResults = result.first { message ->
+            message.jsonObject["role"]?.jsonPrimitive?.content == "user" &&
+                message.jsonObject["parts"]?.jsonArray?.any { it.jsonObject.containsKey("functionResponse") } == true
+        }
+        val outputs = userWithResults.jsonObject["parts"]!!.jsonArray
+        val responses = outputs.filter { it.jsonObject.containsKey("functionResponse") }
+        assertEquals(names, responses.map { it.jsonObject["functionResponse"]!!.jsonObject["name"]!!.jsonPrimitive.content })
+        val images = outputs.filter { it.jsonObject.containsKey("inlineData") }
         assertEquals(2, images.size)
         images.forEach { image ->
             val data = image.jsonObject["inlineData"]!!.jsonObject

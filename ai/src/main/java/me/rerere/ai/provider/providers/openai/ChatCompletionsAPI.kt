@@ -678,7 +678,9 @@ class ChatCompletionsAPI(
                     contentBuffer.clear()
                     reasoningPart = null // 清空，下一个 group 可能有新的 reasoning
 
-                    // 紧跟 tool 结果消息
+                    // A single image tool result must keep the legacy adjacency used by
+                    // Claude/Kimi-compatible gateways. Parallel calls still emit every tool
+                    // result first, preserving the pairing fix from f5386781.
                     group.tools.forEach { tool ->
                         val textOutput = tool.output.filterIsInstance<UIMessagePart.Text>().joinToString("\n") { it.text }
 
@@ -690,9 +692,8 @@ class ChatCompletionsAPI(
                         })
                     }
 
-                    // Finish every result in this batch before inserting user images. An image
-                    // between results breaks tool pairing in OpenAI-to-Claude gateways as well.
-                    group.tools.forEach { tool ->
+                    val imageTools = if (group.tools.size == 1) group.tools else emptyList()
+                    imageTools.forEach { tool ->
                         val imageOutput = tool.output.filterIsInstance<UIMessagePart.Image>()
                         if (imageOutput.isNotEmpty()) {
                             add(buildJsonObject {
@@ -717,6 +718,38 @@ class ChatCompletionsAPI(
                                     }
                                 }
                             })
+                        }
+                    }
+
+                    // For parallel calls, keep all tool messages contiguous and append one
+                    // multimodal user message after the complete batch.
+                    if (group.tools.size > 1) {
+                        group.tools.forEach { tool ->
+                            val imageOutput = tool.output.filterIsInstance<UIMessagePart.Image>()
+                            if (imageOutput.isNotEmpty()) {
+                                add(buildJsonObject {
+                                    put("role", "user")
+                                    putJsonArray("content") {
+                                        add(buildJsonObject {
+                                            put("type", "text")
+                                            put("text", "[Tool ${tool.toolName} returned an image]")
+                                        })
+                                        imageOutput.forEach { imagePart ->
+                                            add(buildJsonObject {
+                                                imagePart.encodeBase64().onSuccess { encodedImage ->
+                                                    put("type", "image_url")
+                                                    put("image_url", buildJsonObject {
+                                                        put("url", encodedImage.base64)
+                                                    })
+                                                }.onFailure {
+                                                    put("type", "text")
+                                                    put("text", "[Image encoding failed: ${it.message}]")
+                                                }
+                                            })
+                                        }
+                                    }
+                                })
+                            }
                         }
                     }
                 }
