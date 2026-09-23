@@ -659,16 +659,26 @@ class GoogleProvider(private val client: OkHttpClient, context: Context? = null)
                                 add(buildJsonObject {
                                     put("text", toolImages.joinToString(", ") { "[Tool ${it.first} returned an image]" })
                                 })
-                                toolImages.forEach { (_, imagePart) ->
+                                toolImages.forEach { (toolName, imagePart) ->
                                     add(buildJsonObject {
-                                        imagePart.encodeBase64(false).getOrNull()?.let { encoded ->
-                                            put("inlineData", buildJsonObject {
-                                                put("mimeType", encoded.mimeType)
-                                                put("data", encoded.base64)
-                                            })
-                                        } ?: run {
-                                            put("text", "[Image encoding failed]")
-                                        }
+                                        imagePart.encodeBase64(false).fold(
+                                            onSuccess = { encoded ->
+                                                put("inlineData", buildJsonObject {
+                                                    put("mimeType", encoded.mimeType)
+                                                    put("data", encoded.base64)
+                                                })
+                                            },
+                                            onFailure = { error ->
+                                                // Keep the failure actionable without including image bytes or
+                                                // credentials. This text is sent to Gemini so request logs can
+                                                // identify the broken file/URI path on the device.
+                                                put(
+                                                    "text",
+                                                    "[Tool $toolName image encoding failed: " +
+                                                        "${error::class.simpleName}: ${error.message ?: "no message"}]"
+                                                )
+                                            }
+                                        )
                                     })
                                 }
                             }
