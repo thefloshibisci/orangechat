@@ -634,7 +634,7 @@ class ChatCompletionsAPI(
         val filteredMessages = messages.filter { it.isValidToUpload() }
         // 纯文本模型 (如 GLM-5.2) 不接受 image_url, 收到会报 "Model only support text input"。
         // OcrTransformer 只覆盖 file: 图片, http/base64 图片会漏网; 这里在序列化层兜底,
-        // 模型不支持 IMAGE 时直接跳过 Image part, 不再发给 API。
+        // 普通上传按能力过滤；工具返回的视觉附件必须保留，不能靠可能缺失的本地标签丢弃。
         val supportsImage = model.inputModalities.contains(Modality.IMAGE)
 
         filteredMessages.forEach { message ->
@@ -693,7 +693,7 @@ class ChatCompletionsAPI(
                     // Finish every result in this batch before inserting user images. An image
                     // between results breaks tool pairing in OpenAI-to-Claude gateways as well.
                     group.tools.forEach { tool ->
-                        val imageOutput = if (supportsImage) tool.output.filterIsInstance<UIMessagePart.Image>() else emptyList()
+                        val imageOutput = tool.output.filterIsInstance<UIMessagePart.Image>()
                         if (imageOutput.isNotEmpty()) {
                             add(buildJsonObject {
                                 put("role", "user")

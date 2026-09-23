@@ -483,9 +483,8 @@ class ClaudeProvider(private val client: OkHttpClient, context: Context? = null)
                     put("data", encoded.base64)
                 })
             }.onFailure {
-                Log.w(TAG, "encode image failed: $url", it)
                 put("type", "text")
-                put("text", "")
+                put("text", "[Image unavailable: the attachment could not be read or encoded. Do not infer its contents.]")
             }
         }
 

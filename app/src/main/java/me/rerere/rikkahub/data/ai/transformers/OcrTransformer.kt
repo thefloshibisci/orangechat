@@ -58,15 +58,10 @@ object OcrTransformer : InputMessageTransformer, KoinComponent {
             return messages
         }
 
-        // 检测消息中是否包含图片: 既检查最外层 parts, 也检查 Tool.output 里的图片
-        // (camera_capture 等工具返回的图片存放在 Tool.output 中, 不在最外层 parts)
+        // Tool attachments are observations for the model, not uploads to replace with OCR.
         val hasImages = messages.any { message ->
             message.parts.any { part ->
-                when (part) {
-                    is UIMessagePart.Image -> part.url.startsWith("file:")
-                    is UIMessagePart.Tool -> part.output.any { it is UIMessagePart.Image && it.url.startsWith("file:") }
-                    else -> false
-                }
+                part is UIMessagePart.Image && part.url.startsWith("file:")
             }
         }
         if (!hasImages) return messages
@@ -74,34 +69,7 @@ object OcrTransformer : InputMessageTransformer, KoinComponent {
         return withContext(Dispatchers.IO) {
             try {
                 ctx.processingStatus.value = "正在识别图片..."
-                messages.map { message ->
-                    message.copy(
-                        parts = message.parts.map { part ->
-                            when {
-                                // 最外层图片: OCR 转文字
-                                part is UIMessagePart.Image && part.url.startsWith("file:") -> {
-                                    UIMessagePart.Text(performOcr(part))
-                                }
-
-                                // Tool.output 里的图片: 递归扫描, 把图片替换成 OCR 文字
-                                part is UIMessagePart.Tool -> {
-                                    part.copy(
-                                        output = part.output.map { outputPart ->
-                                            when {
-                                                outputPart is UIMessagePart.Image && outputPart.url.startsWith("file:") -> {
-                                                    UIMessagePart.Text(performOcr(outputPart))
-                                                }
-                                                else -> outputPart
-                                            }
-                                        }
-                                    )
-                                }
-
-                                else -> part
-                            }
-                        }
-                    )
-                }
+                transformUploadedImagesForOcr(messages, ctx.model, ::performOcr)
             } finally {
                 ctx.processingStatus.value = null
             }
@@ -154,5 +122,22 @@ object OcrTransformer : InputMessageTransformer, KoinComponent {
         return ocrResult
     }.getOrElse {
         "[ERROR, OCR failed: $it]"
+    }
+}
+
+internal suspend fun transformUploadedImagesForOcr(
+    messages: List<UIMessage>,
+    model: Model,
+    recognize: suspend (UIMessagePart.Image) -> String,
+): List<UIMessage> {
+    if (Modality.IMAGE in model.inputModalities) return messages
+    return messages.map { message ->
+        message.copy(parts = message.parts.map { part ->
+            if (part is UIMessagePart.Image && part.url.startsWith("file:")) {
+                UIMessagePart.Text(recognize(part))
+            } else {
+                part
+            }
+        })
     }
 }

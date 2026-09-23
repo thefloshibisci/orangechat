@@ -16,6 +16,7 @@ import androidx.core.net.toUri
 import me.rerere.ai.ui.UIMessagePart
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.net.URI
 
 private val supportedTypes = setOf(
     "image/jpeg",
@@ -57,10 +58,8 @@ internal fun mapExifOrientationToTransform(orientation: Int): ExifTransformType 
 
 fun UIMessagePart.Image.encodeBase64(withPrefix: Boolean = true): Result<EncodedImage> = runCatching {
     when {
-        this.url.startsWith("file://") -> {
-            val filePath =
-                this.url.toUri().path ?: throw IllegalArgumentException("Invalid file URI: ${this.url}")
-            val file = File(filePath)
+        this.url.startsWith("file:") -> {
+            val file = File(URI(url))
             if (!file.exists()) {
                 throw IllegalArgumentException("File does not exist: ${this.url}")
             }
@@ -74,9 +73,16 @@ fun UIMessagePart.Image.encodeBase64(withPrefix: Boolean = true): Result<Encoded
         }
 
         this.url.startsWith("data:") -> {
-            // 从 data URL 提取 mime type
-            val mimeType = url.substringAfter("data:").substringBefore(";")
-            EncodedImage(base64 = url, mimeType = mimeType)
+            val separator = url.indexOf(',')
+            require(separator > 0) { "Invalid image data URI" }
+            val header = url.substring(5, separator)
+            val mimeType = header.substringBefore(';')
+            require(mimeType in supportedTypes && header == "$mimeType;base64") {
+                "Unsupported image data URI encoding"
+            }
+            val data = url.substring(separator + 1)
+            require(data.isNotBlank()) { "Empty image data URI" }
+            EncodedImage(base64 = if (withPrefix) url else data, mimeType = mimeType)
         }
         this.url.startsWith("http") -> {
             // HTTP URL 无法确定 mime type，默认使用 image/png
@@ -153,7 +159,9 @@ private fun File.compressAndEncode(
         val byteArrayOutputStream = ByteArrayOutputStream()
         // 强制使用 JPEG 格式，因为很多提供商不支持 webp
         Base64OutputStream(byteArrayOutputStream, Base64.NO_WRAP).use { base64Stream ->
-            normalizedBitmap.compress(Bitmap.CompressFormat.JPEG, quality, base64Stream)
+            check(normalizedBitmap.compress(Bitmap.CompressFormat.JPEG, quality, base64Stream)) {
+                "Failed to encode image"
+            }
         }
         Pair(byteArrayOutputStream.toString(Charsets.ISO_8859_1.name()), "image/jpeg")
     } finally {

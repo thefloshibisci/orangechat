@@ -78,7 +78,7 @@ class ChatCompletionsAPIMessageTest {
     }
 
     @Test
-    fun `text models retain all tool results without image messages`() {
+    fun `tool images survive missing model image capability without breaking pairing`() {
         val first = createExecutedTool("image", "screenshot", "{}", "Captured").copy(
             output = listOf(UIMessagePart.Text("Captured"), UIMessagePart.Image("data:image/png;base64,aGVsbG8=")),
         )
@@ -86,10 +86,21 @@ class ChatCompletionsAPIMessageTest {
         val result = invokeBuildMessages(listOf(UIMessage(
             role = MessageRole.ASSISTANT, parts = listOf(first, second),
         )))
-        assertEquals(listOf("assistant", "tool", "tool"),
+        assertEquals(listOf("assistant", "tool", "tool", "user"),
             result.map { it.jsonObject["role"]!!.jsonPrimitive.content })
         assertEquals(listOf("image", "time"),
-            result.drop(1).map { it.jsonObject["tool_call_id"]!!.jsonPrimitive.content })
+            result.slice(1..2).map { it.jsonObject["tool_call_id"]!!.jsonPrimitive.content })
+        assertEquals("data:image/png;base64,aGVsbG8=", result[3].jsonObject["content"]!!.jsonArray[1]
+            .jsonObject["image_url"]!!.jsonObject["url"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `ordinary uploads still respect text only model capability`() {
+        val result = invokeBuildMessages(listOf(UIMessage(
+            role = MessageRole.USER,
+            parts = listOf(UIMessagePart.Text("Look"), UIMessagePart.Image("data:image/png;base64,aGVsbG8=")),
+        )))
+        assertEquals("Look", result.single().jsonObject["content"]!!.jsonPrimitive.content)
     }
 
     @Test
