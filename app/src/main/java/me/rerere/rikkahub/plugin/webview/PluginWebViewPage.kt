@@ -44,6 +44,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -54,6 +55,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -113,6 +115,7 @@ fun PluginWebViewPage(
     val dataStore = remember(pluginId) {
         PluginDataStore(context, pluginId)
     }
+    val scope = rememberCoroutineScope()
 
     // Overlay WebView reference for pomodoro lock screen
     var overlayWebView by remember { mutableStateOf<WebView?>(null) }
@@ -477,6 +480,7 @@ fun PluginWebViewPage(
                                 pluginLoader = pluginLoader,
                                 pluginManager = pluginManager,
                                 pluginRepository = pluginRepository,
+                                scope = scope,
                                 onPickImage = { callbackId ->
                                     pendingImageCallback = callbackId
                                     pickImageLauncher.launch(
@@ -643,7 +647,7 @@ fun PluginWebViewPage(
                                                         val cbId = params["callbackId"] ?: ""
                                                         val prompt = params["prompt"] ?: ""
                                                         val contextJson = params["context"] ?: "{}"
-                                                        CoroutineScope(Dispatchers.IO).launch {
+                                                        scope.launch(Dispatchers.IO) {
                                                             try {
                                                                 // Use the PluginWebViewClient's callAI via a simple approach
                                                                 val settingsStore: SettingsStore = org.koin.java.KoinJavaComponent.get(SettingsStore::class.java)
@@ -675,6 +679,8 @@ fun PluginWebViewPage(
                                                                 overlayWv.post {
                                                                     overlayWv.evaluateJavascript("window.__bridgeResult('$cbId', $aiResult);", null)
                                                                 }
+                                                            } catch (e: CancellationException) {
+                                                                throw e
                                                             } catch (e: Exception) {
                                                                 val err = """{"success":false,"error":"${e.message?.replace("\"", "\\\"")?.replace("\\", "\\\\")}"}"""
                                                                 overlayWv.post {
@@ -787,8 +793,16 @@ fun PluginWebViewPage(
         }
     }
 
-    DisposableEffect(Unit) {
+    DisposableEffect(pluginId, htmlEntryPath) {
         onDispose {
+            pendingImageCallback = null
+            pendingFileCallback = null
+            pendingBinaryFileCallback = null
+            pendingImportAudioCallback = null
+            pendingSaveCallbackId = null
+            pendingSaveBase64Data = null
+            webViewFileChooserCallback?.onReceiveValue(null)
+            webViewFileChooserCallback = null
             // Clean up main WebView
             webView?.destroy()
             // Clean up overlay WebView
@@ -813,6 +827,7 @@ private class PluginWebViewClient(
     private val pluginLoader: PluginLoader,
     private val pluginManager: PluginManager,
     private val pluginRepository: PluginRepository,
+    private val scope: CoroutineScope,
     private val onPickImage: (callbackId: String) -> Unit,
     private val onPickFile: (callbackId: String) -> Unit,
     private val onPickBinaryFile: (callbackId: String) -> Unit,
@@ -860,7 +875,7 @@ private class PluginWebViewClient(
 
         when (method) {
             "getPluginConfig" -> {
-                CoroutineScope(Dispatchers.IO).launch {
+                scope.launch(Dispatchers.IO) {
                     try {
                         val savedConfig = pluginRepository.getPluginConfig(pluginInfo.manifest.id)
                         val mergedConfig = mutableMapOf<String, kotlinx.serialization.json.JsonElement>()
@@ -887,6 +902,8 @@ private class PluginWebViewClient(
                                 "window.__bridgeResult('${params["callbackId"]}', $result);", null
                             )
                         }
+                    } catch (e: CancellationException) {
+                        throw e
                     } catch (e: Exception) {
                         Log.e(TAG, "Failed to get plugin config", e)
                         webView.post {
@@ -1145,7 +1162,7 @@ private class PluginWebViewClient(
             "callTool" -> {
                 val toolName = params["toolName"] ?: ""
                 val toolParams = params["params"] ?: "{}"
-                CoroutineScope(Dispatchers.Main).launch {
+                scope.launch(Dispatchers.Main) {
                     try {
                         val result = callPluginTool(toolName, toolParams)
                         webView.post {
@@ -1153,6 +1170,8 @@ private class PluginWebViewClient(
                                 "window.__bridgeResult('${params["callbackId"]}', ${result});", null
                             )
                         }
+                    } catch (e: CancellationException) {
+                        throw e
                     } catch (e: Exception) {
                         val errorResult = """{"success":false,"error":"${e.message}"}"""
                         webView.post {
@@ -1189,7 +1208,7 @@ private class PluginWebViewClient(
                     return
                 }
 
-                CoroutineScope(Dispatchers.IO).launch {
+                scope.launch(Dispatchers.IO) {
                     try {
                         val aiResult = callAI(prompt, contextJson)
                         webView.post {
@@ -1197,6 +1216,8 @@ private class PluginWebViewClient(
                                 "window.__bridgeResult('$callbackId', $aiResult);", null
                             )
                         }
+                    } catch (e: CancellationException) {
+                        throw e
                     } catch (e: Exception) {
                         Log.e(TAG, "callAI failed", e)
                         val errorResult = """{"success":false,"error":"${e.message?.replace("\"", "\\\"")?.replace("\\", "\\\\")}"}"""
@@ -1214,7 +1235,7 @@ private class PluginWebViewClient(
                 val hookName = params["hookName"] ?: ""
                 val hookContextJson = params["context"] ?: "{}"
 
-                CoroutineScope(Dispatchers.IO).launch {
+                scope.launch(Dispatchers.IO) {
                     try {
                         val hookResult = handleHookTrigger(webView, hookName, hookContextJson)
                         webView.post {
@@ -1222,6 +1243,8 @@ private class PluginWebViewClient(
                                 "window.__bridgeResult('$callbackId', $hookResult);", null
                             )
                         }
+                    } catch (e: CancellationException) {
+                        throw e
                     } catch (e: Exception) {
                         Log.e(TAG, "notifyHook failed", e)
                         val errorResult = """{"success":false,"error":"${e.message?.replace("\"", "\\\"")?.replace("\\", "\\\\")}"}"""

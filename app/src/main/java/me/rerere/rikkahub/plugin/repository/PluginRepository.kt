@@ -47,6 +47,21 @@ class PluginRepository(
 
     private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "plugin_settings")
 
+    private val foldersKey = stringPreferencesKey("plugin_folders")
+    private val assignmentsKey = stringPreferencesKey("plugin_folder_assignments")
+
+    private fun decodeFolders(prefs: Preferences): List<PluginFolder> {
+        val jsonStr = prefs[foldersKey] ?: "[]"
+        return runCatching { json.decodeFromString<List<PluginFolder>>(jsonStr) }
+            .getOrDefault(emptyList())
+    }
+
+    private fun decodeFolderAssignments(prefs: Preferences): Map<String, String> {
+        val jsonStr = prefs[assignmentsKey] ?: "{}"
+        return runCatching { json.decodeFromString<Map<String, String>>(jsonStr) }
+            .getOrDefault(emptyMap())
+    }
+
     /**
      * 获取插件配置
      */
@@ -169,8 +184,8 @@ class PluginRepository(
             PluginSettingsExport(
                 enabled = enabledMap,
                 configs = configMap,
-                folders = getFolders(),
-                assignments = getFolderAssignments()
+                folders = decodeFolders(prefs),
+                assignments = decodeFolderAssignments(prefs)
             )
         }.first()
     }
@@ -198,22 +213,16 @@ class PluginRepository(
      */
     suspend fun getFolders(): List<PluginFolder> {
         return context.dataStore.data.map { prefs ->
-            val key = stringPreferencesKey("plugin_folders")
-            val jsonStr = prefs[key] ?: "[]"
-            try {
-                json.decodeFromString<List<PluginFolder>>(jsonStr)
-            } catch (e: Exception) {
-                emptyList()
-            }
+            decodeFolders(prefs)
         }.first()
     }
 
     /**
      * 保存文件夹列表
      */
-    private suspend fun saveFolders(folders: List<PluginFolder>) {
+    private suspend fun updateFolders(transform: (List<PluginFolder>) -> List<PluginFolder>) {
         context.dataStore.edit { prefs ->
-            prefs[stringPreferencesKey("plugin_folders")] = json.encodeToString(folders)
+            prefs[foldersKey] = json.encodeToString(transform(decodeFolders(prefs)))
         }
     }
 
@@ -221,26 +230,29 @@ class PluginRepository(
      * 添加文件夹
      */
     suspend fun addFolder(name: String): PluginFolder {
-        val folders = getFolders().toMutableList()
-        val nextSort = (folders.maxOfOrNull { it.sortOrder } ?: 0) + 1
-        val folder = PluginFolder(
+        var createdFolder = PluginFolder(
             id = Uuid.random().toString(),
             name = name.trim(),
-            sortOrder = nextSort
+            sortOrder = 0
         )
-        folders.add(folder)
-        saveFolders(folders)
-        return folder
+        context.dataStore.edit { prefs ->
+            val folders = decodeFolders(prefs)
+            val nextSort = (folders.maxOfOrNull { it.sortOrder } ?: 0) + 1
+            createdFolder = createdFolder.copy(sortOrder = nextSort)
+            prefs[foldersKey] = json.encodeToString(folders + createdFolder)
+        }
+        return createdFolder
     }
 
     /**
      * 重命名文件夹
      */
     suspend fun renameFolder(folderId: String, newName: String) {
-        val folders = getFolders().map { folder ->
-            if (folder.id == folderId) folder.copy(name = newName.trim()) else folder
+        updateFolders { folders ->
+            folders.map { folder ->
+                if (folder.id == folderId) folder.copy(name = newName.trim()) else folder
+            }
         }
-        saveFolders(folders)
     }
 
     /**
@@ -248,20 +260,23 @@ class PluginRepository(
      * 同时清除该文件夹下所有插件的 folderId 关联
      */
     suspend fun deleteFolder(folderId: String) {
-        val folders = getFolders().filterNot { it.id == folderId }
-        saveFolders(folders)
-        // 清除该文件夹下插件的归属
-        val assignments = getFolderAssignments().toMutableMap()
-        val toRemove = assignments.entries.filter { it.value == folderId }.map { it.key }
-        toRemove.forEach { assignments.remove(it) }
-        saveFolderAssignments(assignments)
+        context.dataStore.edit { prefs ->
+            prefs[foldersKey] = json.encodeToString(
+                decodeFolders(prefs).filterNot { it.id == folderId }
+            )
+            prefs[assignmentsKey] = json.encodeToString(
+                decodeFolderAssignments(prefs).filterValues { it != folderId }
+            )
+        }
     }
 
     /**
      * 更新文件夹排序
      */
     suspend fun updateFolderOrder(folders: List<PluginFolder>) {
-        saveFolders(folders)
+        context.dataStore.edit { prefs ->
+            prefs[foldersKey] = json.encodeToString(folders)
+        }
     }
 
     // ==================== 插件-文件夹关联 ====================
@@ -272,23 +287,8 @@ class PluginRepository(
      */
     suspend fun getFolderAssignments(): Map<String, String> {
         return context.dataStore.data.map { prefs ->
-            val key = stringPreferencesKey("plugin_folder_assignments")
-            val jsonStr = prefs[key] ?: "{}"
-            try {
-                json.decodeFromString<Map<String, String>>(jsonStr)
-            } catch (e: Exception) {
-                emptyMap()
-            }
+            decodeFolderAssignments(prefs)
         }.first()
-    }
-
-    /**
-     * 保存全部插件-文件夹关联
-     */
-    private suspend fun saveFolderAssignments(assignments: Map<String, String>) {
-        context.dataStore.edit { prefs ->
-            prefs[stringPreferencesKey("plugin_folder_assignments")] = json.encodeToString(assignments)
-        }
     }
 
     /**
@@ -296,19 +296,23 @@ class PluginRepository(
      * folderId 为 null 表示移出文件夹（回到未分组）
      */
     suspend fun setPluginFolder(pluginId: String, folderId: String?) {
-        val assignments = getFolderAssignments().toMutableMap()
-        if (folderId == null) {
-            assignments.remove(pluginId)
-        } else {
-            assignments[pluginId] = folderId
+        context.dataStore.edit { prefs ->
+            val assignments = decodeFolderAssignments(prefs).toMutableMap()
+            if (folderId == null) {
+                assignments.remove(pluginId)
+            } else {
+                assignments[pluginId] = folderId
+            }
+            prefs[assignmentsKey] = json.encodeToString(assignments)
         }
-        saveFolderAssignments(assignments)
     }
 
     /**
      * 获取插件的文件夹归属
      */
     suspend fun getPluginFolder(pluginId: String): String? {
-        return getFolderAssignments()[pluginId]
+        return context.dataStore.data.map { prefs ->
+            decodeFolderAssignments(prefs)[pluginId]
+        }.first()
     }
 }
