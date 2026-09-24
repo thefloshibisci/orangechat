@@ -14,6 +14,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
@@ -52,8 +53,7 @@ class PluginManager(
     val folders: StateFlow<List<PluginFolder>> = _folders.asStateFlow()
 
     /**
-     * 用于跟踪首次初始化是否完成
-     * 解决竞态条件：ChatService 在插件还没加载完时就调用 getTools()
+     * 首次清单和配置索引就绪；不等待插件脚本执行。
      */
     private val initializationDeferred = CompletableDeferred<Unit>()
     private val lifecycleMutex = Mutex()
@@ -70,8 +70,7 @@ class PluginManager(
     }
 
     /**
-     * 等待插件初始化完成
-     * 在需要确保插件已加载的场景调用（如 ChatService 发送消息前）
+     * 等待插件清单就绪。具体工具执行由各自运行时排队。
      */
     suspend fun awaitInitialization() {
         initializationDeferred.await()
@@ -105,13 +104,14 @@ class PluginManager(
                 )
             }
             val activePlugins = pluginsWithConfig.associateBy { it.manifest.id }
-            loader.getAllLoadedPlugins()
-                .filter { loaded -> activePlugins[loaded.id]?.isEnabled != true }
-                .forEach { loaded -> loader.unloadPlugin(loaded.id) }
+            loader.getRuntimeIds()
+                .filter { activePlugins[it]?.isEnabled != true }
+                .forEach(loader::unloadPlugin)
 
             _plugins.value = pluginsWithConfig
             pluginsWithConfig.filter { it.isEnabled }.forEach { plugin ->
-                if (loader.getLoadedPlugin(plugin.manifest.id) == null) {
+                val id = plugin.manifest.id
+                if (loader.getLoadedPlugin(id) == null && !loader.isLoading(id)) {
                     loadPlugin(plugin)
                 }
             }
@@ -125,22 +125,15 @@ class PluginManager(
         _folders.value = repository.getFolders().sortedBy { it.sortOrder }
     }
 
-    private suspend fun loadPlugin(plugin: PluginInfo) {
-        loader.loadPlugin(plugin).fold(
-            onSuccess = {
-                // 加载成功时清除之前的错误信息
-                updatePluginState(plugin.manifest.id) {
-                    it.copy(loadError = null)
-                }
-            },
-            onFailure = { error ->
-                // 加载失败时不自动禁用插件，保留 isEnabled = true 和错误信息
-                // 这样下次 refreshPlugins() 时可以自动重试加载
-                updatePluginState(plugin.manifest.id) {
-                    it.copy(loadError = error.message)
-                }
+    private fun loadPlugin(plugin: PluginInfo) {
+        loader.loadPlugin(plugin) { result ->
+            updatePluginState(plugin.manifest.id) {
+                it.copy(loadError = result.exceptionOrNull()?.let { error ->
+                    error.message ?: error.javaClass.simpleName
+                })
             }
-        )
+            DailySummaryService.rescheduleIfEnabled(context)
+        }
     }
  
     /**
@@ -206,6 +199,7 @@ class PluginManager(
                 repository.setPluginFolder(pluginId, null)
                 withContext(Dispatchers.IO) { PluginDataStore(context, pluginId).deleteAll() }
                 refreshPluginsInternal()
+                Unit
             }
         }
     }
@@ -223,17 +217,13 @@ class PluginManager(
                     }
                     return@withLock
                 }
-                // 重新加载插件（先清除错误状态）
-                val pluginToLoad = plugin.copy(isEnabled = true, loadError = null)
-                loader.unloadPlugin(pluginId)
-                loadPlugin(pluginToLoad)
-            } else {
-                loader.unloadPlugin(pluginId)
             }
             repository.setPluginEnabled(pluginId, enabled)
+            loader.unloadPlugin(pluginId)
             updatePluginState(pluginId) {
-                it.copy(isEnabled = enabled, loadError = if (enabled) it.loadError else null)
+                it.copy(isEnabled = enabled, loadError = null)
             }
+            if (enabled) loadPlugin(plugin.copy(isEnabled = true, loadError = null))
             DailySummaryService.rescheduleIfEnabled(context)
         }
     }
@@ -262,6 +252,7 @@ class PluginManager(
         lifecycleMutex.withLock {
             loader.unloadAll()
             refreshPluginsInternal()
+            Unit
         }
     }
  
@@ -315,6 +306,7 @@ class PluginManager(
             repository.deleteFolder(folderId)
             refreshFolders()
             refreshPluginsInternal()
+            Unit
         }
     }
 
@@ -330,8 +322,10 @@ class PluginManager(
     }
 
     private fun updatePluginState(pluginId: String, transform: (PluginInfo) -> PluginInfo) {
-        _plugins.value = _plugins.value.map { plugin ->
-            if (plugin.manifest.id == pluginId) transform(plugin) else plugin
+        _plugins.update { plugins ->
+            plugins.map { plugin ->
+                if (plugin.manifest.id == pluginId) transform(plugin) else plugin
+            }
         }
     }
 }

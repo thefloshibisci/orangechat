@@ -41,6 +41,11 @@ data class PluginInfo(
 
     val folderId: String? = null
 ) {
+    // Runtime errors must not hide the page used to configure or repair a plugin.
+    fun hasPageShortcut(): Boolean = isEnabled && with(manifest) {
+        ui != null || customPageWebView != null || customPage == "memory_bank"
+    }
+
     /**
      * 获取配置值，如果不存在则返回默认值
      */

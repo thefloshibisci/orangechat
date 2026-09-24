@@ -87,7 +87,6 @@ import me.rerere.rikkahub.data.repository.ConversationRepository
 import me.rerere.rikkahub.service.ChatService
 import me.rerere.rikkahub.plugin.data.PluginDataStore
 import me.rerere.rikkahub.plugin.loader.PluginLoader
-import me.rerere.rikkahub.plugin.loader.LoadedPlugin
 import me.rerere.rikkahub.plugin.manager.PluginManager
 import me.rerere.rikkahub.plugin.model.PluginHookConfig
 import me.rerere.rikkahub.plugin.model.PluginInfo
@@ -1811,18 +1810,22 @@ private class PluginWebViewClient(
 
     private suspend fun callPluginTool(toolName: String, params: String): String {
         return try {
-            val loadedPlugin: LoadedPlugin? = pluginLoader.getAllLoadedPlugins().find { plugin: LoadedPlugin ->
-                plugin.info.manifest.tools.any { toolDef -> toolDef.name == toolName }
+            pluginManager.awaitInitialization()
+            val candidates = pluginManager.plugins.value.filter { plugin ->
+                plugin.isEnabled && plugin.loadError == null &&
+                    plugin.manifest.tools.any { it.name == toolName }
             }
+            val target = candidates.find { it.manifest.id == pluginInfo.manifest.id }
+                ?: candidates.firstOrNull()
 
-            if (loadedPlugin == null) {
-                return """{"success":false,"error":"Tool not found: $toolName"}"""
+            if (target == null) {
+                return JSONObject().put("success", false).put("error", "Tool not found: $toolName").toString()
             }
 
             val jsonParams = Json.parseToJsonElement(params)
 
             val result = pluginLoader.callTool(
-                pluginId = loadedPlugin.id,
+                pluginId = target.manifest.id,
                 toolName = toolName,
                 params = jsonParams
             )
@@ -1832,11 +1835,13 @@ private class PluginWebViewClient(
                     Json.encodeToString(kotlinx.serialization.json.JsonElement.serializer(), jsonElement)
                 },
                 onFailure = { error: Throwable ->
-                    """{"success":false,"error":"${error.message}"}"""
+                    JSONObject().put("success", false).put("error", error.message ?: "Plugin call failed").toString()
                 }
             )
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
-            """{"success":false,"error":"${e.message}"}"""
+            JSONObject().put("success", false).put("error", e.message ?: "Plugin call failed").toString()
         }
     }
 }

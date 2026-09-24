@@ -36,6 +36,8 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -91,7 +93,23 @@ fun PluginDetailPage(
     onNavigateToDeclarativeUI: (pluginId: String) -> Unit = {},
     viewModel: PluginViewModel = koinViewModel()
 ) {
-    val plugin = viewModel.getPlugin(pluginId)
+    val plugins by viewModel.plugins.collectAsState()
+    val isLoading by viewModel.isLoading.collectAsState()
+    val operationState by viewModel.operationState.collectAsState()
+    val snackbarHostState = remember { SnackbarHostState() }
+    val plugin = plugins.find { it.manifest.id == pluginId }
+
+    LaunchedEffect(operationState) {
+        val message = when (val state = operationState) {
+            is PluginViewModel.OperationState.Success -> state.message
+            is PluginViewModel.OperationState.Error -> state.message
+            else -> null
+        }
+        if (message != null) {
+            snackbarHostState.showSnackbar(message)
+            viewModel.resetOperationState()
+        }
+    }
 
     if (plugin == null) {
         Column(
@@ -99,7 +117,8 @@ fun PluginDetailPage(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center
         ) {
-            Text("插件不存在")
+            Text(if (isLoading) "正在读取插件…" else "插件不存在")
+            TextButton(onClick = onNavigateBack) { Text("返回") }
         }
         return
     }
@@ -116,6 +135,7 @@ fun PluginDetailPage(
 
     Scaffold(
         containerColor = settingsScaffoldContainerColor(),
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
                 title = { Text("插件详情") },

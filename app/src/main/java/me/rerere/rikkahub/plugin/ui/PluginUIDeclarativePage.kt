@@ -56,6 +56,7 @@ import androidx.compose.material3.TextButton
 import me.rerere.rikkahub.ui.theme.TopAppBar
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -116,8 +117,10 @@ fun PluginUIDeclarativePage(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val dataStore = remember(pluginId) { PluginDataStore(context, pluginId) }
-    val loadedPlugin = remember(pluginId) { pluginManager.getPlugin(pluginId) }
-    val uiDeclaration = remember(pluginId) { loadedPlugin?.manifest?.ui } ?: run {
+    val plugins by pluginManager.plugins.collectAsState()
+    val isLoading by pluginManager.isLoading.collectAsState()
+    val loadedPlugin = plugins.find { it.manifest.id == pluginId }
+    val uiDeclaration = loadedPlugin?.manifest?.ui ?: run {
         Scaffold(
             containerColor = settingsScaffoldContainerColor(),
             topBar = {
@@ -132,7 +135,7 @@ fun PluginUIDeclarativePage(
             }
         ) {
             Box(modifier = Modifier.fillMaxSize().padding(it), contentAlignment = Alignment.Center) {
-                Text("No UI declaration found for this plugin")
+                Text(if (isLoading) "正在读取插件…" else "No UI declaration found for this plugin")
             }
         }
         return

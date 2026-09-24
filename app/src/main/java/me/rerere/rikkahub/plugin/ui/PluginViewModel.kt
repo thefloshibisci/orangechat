@@ -9,6 +9,7 @@ package me.rerere.rikkahub.plugin.ui
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -164,7 +165,13 @@ class PluginViewModel(
      */
     fun togglePlugin(pluginId: String, enabled: Boolean) {
         viewModelScope.launch {
-            pluginManager.togglePlugin(pluginId, enabled)
+            try {
+                pluginManager.togglePlugin(pluginId, enabled)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _operationState.value = OperationState.Error(e.message ?: "切换插件失败")
+            }
         }
     }
 
@@ -173,7 +180,14 @@ class PluginViewModel(
      */
     fun updatePluginConfig(pluginId: String, config: Map<String, JsonElement>) {
         viewModelScope.launch {
-            pluginManager.updatePluginConfig(pluginId, config)
+            try {
+                pluginManager.updatePluginConfig(pluginId, config)
+                _operationState.value = OperationState.Success("配置已保存")
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _operationState.value = OperationState.Error(e.message ?: "保存配置失败")
+            }
         }
     }
 

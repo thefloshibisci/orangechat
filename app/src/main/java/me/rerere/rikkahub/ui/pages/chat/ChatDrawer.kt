@@ -141,11 +141,7 @@ fun ChatDrawerContent(
     val repo = koinInject<ConversationRepository>()
     val pluginManager = koinInject<PluginManager>()
     val plugins by pluginManager.plugins.collectAsStateWithLifecycle()
-    val pagePlugins = plugins.filter { plugin ->
-        plugin.isEnabled && plugin.loadError == null && with(plugin.manifest) {
-            ui != null || customPageWebView != null || customPage != null
-        }
-    }
+    val pagePlugins = plugins.filter { it.hasPageShortcut() }
 
     val activity = context as ComponentActivity
     val drawerVm: ChatDrawerVM = koinViewModel(viewModelStoreOwner = activity)

@@ -8,14 +8,13 @@ package me.rerere.rikkahub.plugin.loader
  
 import android.content.Context
 import android.util.Log
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.supervisorScope
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import me.rerere.ai.provider.ProviderSetting
-import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.datastore.findModelById
 import me.rerere.rikkahub.data.datastore.findProvider
@@ -23,10 +22,6 @@ import me.rerere.rikkahub.data.service.MemoryBankService
 import me.rerere.rikkahub.plugin.data.PluginDataStore
 import me.rerere.rikkahub.plugin.model.PluginInfo
 import okhttp3.OkHttpClient
-import java.util.concurrent.Executors
-import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicBoolean
-import kotlinx.coroutines.asCoroutineDispatcher
 import kotlin.uuid.Uuid
  
 /**
@@ -42,53 +37,29 @@ class PluginLoader(
  
     companion object {
         private const val TAG = "PluginLoader"
-        /**
-         * 单个插件 hook 执行的协程级超时。
-         *
-         * 设为略大于 nativeFetch 的最长超时上限 (15s), 避免协程层先于网络层触发,
-         * 误把"请求还在正常进行"报成"超时"。
-         *
-         * 重要限制 (如实说明): 这层 withTimeoutOrNull 只能让"等待这次 hook 调用结果"
-         * 提前放弃, 无法真正打断 QuickJS 引擎内部正在执行的同步 JS 代码 (比如
-         * nativeFetch 内部还在跑的 OkHttp 请求)。因为 callEvent 全程跑在单线程
-         * pluginDispatcher 上, 即使外层已放弃等待, 这个单线程仍会被卡住的那次调用
-         * 占用, 直到底层请求真正结束 (最长 15s)。期间排在后面的其它 hook 调用、
-         * 以及 callTool (也走这个 dispatcher) 都要继续排队。这是 QuickJS 单线程
-         * 模型的本质限制, 核心阻塞问题已由 ChatService 改为 fire-and-forget 解决,
-         * 这一层只是给"事件处理"一个明确失败信号和日志, 不是彻底防死锁。
-         */
-        private const val HOOK_TIMEOUT_MS = 16_500L
+        private const val CALL_TIMEOUT_MS = 16_500L
     }
  
-    // 单线程调度器，确保所有 QuickJS 操作在同一线程执行
-    private val pluginDispatcher = Executors.newSingleThreadExecutor { r ->
-        Thread(r, "plugin-quickjs").apply { isDaemon = true }
-    }.asCoroutineDispatcher()
-    private val closed = AtomicBoolean(false)
- 
-    // 已加载的插件缓存
-    private val loadedPlugins = ConcurrentHashMap<String, LoadedPlugin>()
+    private val runtimes = PluginRuntimeRegistry<LoadedPlugin> { plugin ->
+        runCatching { plugin.sandbox.destroy() }
+            .onFailure { Log.e(TAG, "Failed to destroy plugin ${plugin.id}", it) }
+    }
  
     /**
      * 加载插件
      */
-    suspend fun loadPlugin(pluginInfo: PluginInfo): Result<LoadedPlugin> = withContext(pluginDispatcher) {
-        check(!closed.get()) { "Plugin loader is closed" }
+    fun loadPlugin(pluginInfo: PluginInfo, onResult: (Result<LoadedPlugin>) -> Unit) {
+        runtimes.load(pluginInfo.manifest.id, { createPlugin(pluginInfo) }, onResult)
+    }
+
+    private fun createPlugin(pluginInfo: PluginInfo): LoadedPlugin {
         var sandbox: PluginSandbox? = null
         try {
-            if (loadedPlugins.containsKey(pluginInfo.manifest.id)) {
-                doUnloadPlugin(pluginInfo.manifest.id)
-            }
- 
-            if (!pluginInfo.isEnabled) {
-                return@withContext Result.failure(IllegalStateException("Plugin is disabled"))
-            }
+            check(pluginInfo.isEnabled) { "Plugin is disabled" }
  
             val entryFile = pluginInfo.getEntryFile()
             if (entryFile == null || !entryFile.isFile) {
-                return@withContext Result.failure(
-                    IllegalStateException("Entry file not found: ${pluginInfo.manifest.entry}")
-                )
+                error("Entry file not found: ${pluginInfo.manifest.entry}")
             }
  
             // 为此插件创建独立的 PluginDataStore，并注入沙箱
@@ -120,98 +91,68 @@ class PluginLoader(
                 }
             }
  
-            loadedPlugins[pluginInfo.manifest.id] = loadedPlugin
-            Result.success(loadedPlugin)
-        } catch (e: Exception) {
+            return loadedPlugin
+        } catch (e: Throwable) {
             runCatching { sandbox?.destroy() }
             Log.e(TAG, "Failed to load plugin ${pluginInfo.manifest.id}", e)
-            Result.failure(e)
+            throw e
         }
     }
- 
-    private fun doUnloadPlugin(pluginId: String) {
-        loadedPlugins.remove(pluginId)?.let { plugin ->
-            plugin.sandbox.destroy()
-            Log.d(TAG, "Unloaded plugin: $pluginId")
-        }
-    }
- 
-    suspend fun unloadPlugin(pluginId: String) = withContext(pluginDispatcher) {
-        doUnloadPlugin(pluginId)
-    }
- 
-    suspend fun reloadPlugin(pluginInfo: PluginInfo): Result<LoadedPlugin> = loadPlugin(pluginInfo)
- 
-    fun getLoadedPlugin(pluginId: String): LoadedPlugin? = loadedPlugins[pluginId]
- 
-    fun getAllLoadedPlugins(): List<LoadedPlugin> = loadedPlugins.values.toList()
- 
-    fun getEnabledPlugins(): List<LoadedPlugin> = loadedPlugins.values.filter { it.info.isEnabled }
+
+    fun unloadPlugin(pluginId: String) = runtimes.remove(pluginId)
+
+    fun isLoading(pluginId: String): Boolean = runtimes.isLoading(pluginId)
+
+    fun getRuntimeIds(): Set<String> = runtimes.ids()
+
+    fun getLoadedPlugin(pluginId: String): LoadedPlugin? = runtimes.get(pluginId)
+
+    fun getAllLoadedPlugins(): List<LoadedPlugin> = runtimes.values()
+
+    fun getEnabledPlugins(): List<LoadedPlugin> = runtimes.values().filter { it.info.isEnabled }
  
     /**
      * 调用插件工具
      */
     suspend fun callTool(pluginId: String, toolName: String, params: JsonElement): Result<JsonElement> {
-        return withContext(pluginDispatcher) {
-            if (closed.get()) return@withContext Result.failure(IllegalStateException("Plugin loader is closed"))
-            try {
-                val plugin = loadedPlugins[pluginId]
-                    ?: return@withContext Result.failure(IllegalStateException("Plugin not loaded: $pluginId"))
- 
-                if (!plugin.hasTool(toolName)) {
-                    return@withContext Result.failure(IllegalArgumentException("Tool not found: $toolName"))
-                }
- 
-                val result = plugin.sandbox.callFunction(toolName, params)
-                Result.success(result)
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to call tool=$toolName in plugin=$pluginId", e)
-                Result.failure(e)
-            }
+        return runtimes.call(pluginId, CALL_TIMEOUT_MS) { plugin ->
+            require(plugin.hasTool(toolName)) { "Tool not found: $toolName" }
+            plugin.sandbox.callFunction(toolName, params)
         }
     }
  
     /**
      * 触发插件事件
      *
-     * 对订阅了该事件的每个插件 hook, 在单线程 pluginDispatcher 上串行执行。
-     * 每次调用包一层 [HOOK_TIMEOUT_MS] 超时, 超时后记录警告并跳过, 继续处理
-     * 同批次其它插件的 hook, 不让单个插件拖累整批。
+     * 同一插件的操作保持串行，不同插件互不等待。
+     * 超时停止等待结果；底层同步 JS 返回后才会回收其执行线程。
      */
     suspend fun callEvent(event: String, params: JsonElement) {
-        withContext(pluginDispatcher) {
-            if (closed.get()) return@withContext
-            for (plugin in loadedPlugins.values) {
-                if (!plugin.info.isEnabled) continue
-                val matchingHooks = plugin.info.manifest.hooks.filter { it.event == event }
-                for (hook in matchingHooks) {
-                    try {
-                        if (!plugin.sandbox.hasFunction(hook.handler)) {
-                            Log.w(TAG, "Hook handler '${hook.handler}' not found in plugin ${plugin.id}")
-                            continue
+        supervisorScope {
+            // Include pending loads so events emitted just after startup are not lost.
+            runtimes.ids().map { pluginId ->
+                async {
+                    runtimes.call(pluginId, CALL_TIMEOUT_MS) { plugin ->
+                        plugin.info.manifest.hooks.filter { it.event == event }.forEach { hook ->
+                            runCatching {
+                                require(plugin.sandbox.hasFunction(hook.handler)) {
+                                    "Hook handler '${hook.handler}' not found in plugin $pluginId"
+                                }
+                                plugin.sandbox.callFunction(hook.handler, params)
+                            }.onFailure {
+                                Log.e(TAG, "Failed to handle event='$event' in $pluginId.${hook.handler}", it)
+                            }
                         }
-                        val completed = withTimeoutOrNull(HOOK_TIMEOUT_MS) {
-                            plugin.sandbox.callFunction(hook.handler, params)
-                        }
-                        if (completed == null) {
-                            Log.w(
-                                TAG,
-                                "Plugin hook timed out after ${HOOK_TIMEOUT_MS}ms: " +
-                                    "plugin=${plugin.id}, handler='${hook.handler}', event='$event'"
-                            )
-                        } else {
-                            Log.d(TAG, "Event '$event' handled by plugin ${plugin.id}.${hook.handler}")
-                        }
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Failed to handle event='$event' in plugin=${plugin.id}.${hook.handler}", e)
+                    }.onFailure {
+                        Log.e(TAG, "Failed to handle event='$event' in plugin=$pluginId", it)
                     }
                 }
-            }
+            }.awaitAll()
         }
     }
  
     fun getPluginsWithDailyCron(): List<Pair<LoadedPlugin, String>> {
-        return loadedPlugins.values.filter { it.info.isEnabled }.flatMap { plugin ->
+        return getEnabledPlugins().flatMap { plugin ->
             plugin.info.manifest.hooks
                 .filter { it.event == "daily_cron" }
                 .map { hook -> plugin to hook.handler }
@@ -259,16 +200,8 @@ class PluginLoader(
         return config
     }
  
-    suspend fun unloadAll() = withContext(pluginDispatcher) {
-        loadedPlugins.keys.toList().forEach { doUnloadPlugin(it) }
-    }
+    fun unloadAll() = runtimes.clear()
 
     /** Release the QuickJS thread and all sandboxes when the host process is torn down. */
-    suspend fun close() {
-        if (!closed.compareAndSet(false, true)) return
-        withContext(pluginDispatcher) {
-            loadedPlugins.keys.toList().forEach { doUnloadPlugin(it) }
-        }
-        pluginDispatcher.close()
-    }
+    fun close() = runtimes.close()
 }

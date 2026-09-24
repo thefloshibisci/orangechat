@@ -15,7 +15,7 @@ import me.rerere.ai.core.InputSchema
 import me.rerere.ai.core.Tool
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.data.ai.tools.ToolNaming
-import me.rerere.rikkahub.plugin.loader.LoadedPlugin
+import me.rerere.rikkahub.plugin.model.PluginInfo
 import me.rerere.rikkahub.plugin.loader.PluginLoader
 import me.rerere.rikkahub.plugin.manager.PluginManager
 import me.rerere.rikkahub.plugin.model.PluginToolDefinition
@@ -40,8 +40,8 @@ class PluginToolProvider(
     suspend fun getTools(): List<Tool> {
         // 等待插件初始化完成，避免竞态条件导致工具列表为空
         pluginManager.awaitInitialization()
-        return pluginLoader.getAllLoadedPlugins().flatMap { plugin ->
-            plugin.info.manifest.tools.map { toolDef ->
+        return availablePlugins().flatMap { plugin ->
+            plugin.manifest.tools.map { toolDef ->
                 createTool(plugin, toolDef)
             }
         }
@@ -52,8 +52,8 @@ class PluginToolProvider(
      */
     suspend fun getPluginTools(pluginId: String): List<Tool> {
         pluginManager.awaitInitialization()
-        val plugin = pluginLoader.getLoadedPlugin(pluginId) ?: return emptyList()
-        return plugin.info.manifest.tools.map { toolDef ->
+        val plugin = availablePlugins().find { it.manifest.id == pluginId } ?: return emptyList()
+        return plugin.manifest.tools.map { toolDef ->
             createTool(plugin, toolDef)
         }
     }
@@ -61,9 +61,13 @@ class PluginToolProvider(
     /**
      * 创建Tool对象
      */
-    private fun createTool(plugin: LoadedPlugin, toolDef: PluginToolDefinition): Tool {
+    private fun availablePlugins(): List<PluginInfo> = pluginManager.plugins.value.filter {
+        it.isEnabled && it.loadError == null
+    }
+
+    private fun createTool(plugin: PluginInfo, toolDef: PluginToolDefinition): Tool {
         return Tool(
-            name = ToolNaming.buildPluginToolName(plugin.id, toolDef.name),
+            name = ToolNaming.buildPluginToolName(plugin.manifest.id, toolDef.name),
             description = buildDescription(plugin, toolDef),
             needsApproval = true,
             parameters = {
@@ -81,11 +85,11 @@ class PluginToolProvider(
     /**
      * 构建工具描述
      */
-    private fun buildDescription(plugin: LoadedPlugin, toolDef: PluginToolDefinition): String {
+    private fun buildDescription(plugin: PluginInfo, toolDef: PluginToolDefinition): String {
         val sb = StringBuilder()
         sb.appendLine(toolDef.description)
         sb.appendLine()
-        sb.appendLine("Provided by plugin: ${plugin.info.manifest.name} (${plugin.info.manifest.id})")
+        sb.appendLine("Provided by plugin: ${plugin.manifest.name} (${plugin.manifest.id})")
         return sb.toString().trim()
     }
 
@@ -120,12 +124,12 @@ class PluginToolProvider(
      * 执行工具
      */
     private suspend fun executeTool(
-        plugin: LoadedPlugin,
+        plugin: PluginInfo,
         toolDef: PluginToolDefinition,
         params: JsonElement
     ): List<UIMessagePart> {
         val result = pluginLoader.callTool(
-            pluginId = plugin.id,
+            pluginId = plugin.manifest.id,
             toolName = toolDef.name,
             params = params
         )
@@ -156,15 +160,14 @@ class PluginToolProvider(
         // 等待插件初始化完成，避免竞态条件
         pluginManager.awaitInitialization()
 
-        val pluginsWithTools = pluginLoader.getAllLoadedPlugins()
-            .filter { it.info.manifest.tools.isNotEmpty() }
+        val pluginsWithTools = availablePlugins().filter { it.manifest.tools.isNotEmpty() }
 
         // 只保留"主动性引导"这句话 + 插件名字列表,
         // 不再逐条重复每个工具的 name/description——完整的工具定义
         // (含 name/description/参数 schema) 已独立存在于发给模型的 tools 参数里,
         // 在这里重复列一遍是纯粹的体积浪费。
         val overview = if (pluginsWithTools.isNotEmpty()) {
-            val pluginNames = pluginsWithTools.joinToString("、") { it.info.manifest.name }
+            val pluginNames = pluginsWithTools.joinToString("、") { it.manifest.name }
             "你当前装载了以下插件提供的工具（完整工具列表和参数见 tools 定义）：${pluginNames}。" +
                 "不要只在用户明确点名某个工具时才使用——只要对话场景与某个工具的用途相关，就应该主动考虑调用它，而不是被动等待用户指示。" +
                 "部分工具绑定的是持续性的人设/系统状态（例如经营、社交、记录类），更需要你自己记得在合适的时机调用，而不是等用户提醒。"
@@ -172,11 +175,11 @@ class PluginToolProvider(
             null
         }
 
-        val manualTemplates = pluginLoader.getAllLoadedPlugins().mapNotNull { plugin ->
-            val manifest = plugin.info.manifest
+        val manualTemplates = availablePlugins().mapNotNull { plugin ->
+            val manifest = plugin.manifest
             val promptTemplate = manifest.promptTemplate ?: return@mapNotNull null
             // 检查 inject_as_prompt 配置是否开启
-            val injectConfig = plugin.info.config["inject_as_prompt"]
+            val injectConfig = plugin.config["inject_as_prompt"]
             val shouldInject = when (injectConfig) {
                 is kotlinx.serialization.json.JsonPrimitive -> {
                     injectConfig.content == "true"
@@ -196,18 +199,18 @@ class PluginToolProvider(
      * 获取工具统计信息
      */
     fun getToolStats(): ToolStats {
-        val plugins = pluginLoader.getAllLoadedPlugins()
-        val totalTools = plugins.sumOf { it.info.manifest.tools.size }
+        val plugins = availablePlugins()
+        val totalTools = plugins.sumOf { it.manifest.tools.size }
 
         return ToolStats(
             totalPlugins = plugins.size,
             totalTools = totalTools,
             pluginDetails = plugins.map { plugin ->
                 PluginToolDetail(
-                    pluginId = plugin.id,
-                    pluginName = plugin.info.manifest.name,
-                    toolCount = plugin.info.manifest.tools.size,
-                    toolNames = plugin.info.manifest.tools.map { it.name }
+                    pluginId = plugin.manifest.id,
+                    pluginName = plugin.manifest.name,
+                    toolCount = plugin.manifest.tools.size,
+                    toolNames = plugin.manifest.tools.map { it.name }
                 )
             }
         )
