@@ -24,6 +24,8 @@ import me.rerere.rikkahub.plugin.data.PluginDataStore
 import me.rerere.rikkahub.plugin.model.PluginInfo
 import okhttp3.OkHttpClient
 import java.util.concurrent.Executors
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlin.uuid.Uuid
  
@@ -62,14 +64,17 @@ class PluginLoader(
     private val pluginDispatcher = Executors.newSingleThreadExecutor { r ->
         Thread(r, "plugin-quickjs").apply { isDaemon = true }
     }.asCoroutineDispatcher()
+    private val closed = AtomicBoolean(false)
  
     // 已加载的插件缓存
-    private val loadedPlugins = mutableMapOf<String, LoadedPlugin>()
+    private val loadedPlugins = ConcurrentHashMap<String, LoadedPlugin>()
  
     /**
      * 加载插件
      */
     suspend fun loadPlugin(pluginInfo: PluginInfo): Result<LoadedPlugin> = withContext(pluginDispatcher) {
+        check(!closed.get()) { "Plugin loader is closed" }
+        var sandbox: PluginSandbox? = null
         try {
             if (loadedPlugins.containsKey(pluginInfo.manifest.id)) {
                 doUnloadPlugin(pluginInfo.manifest.id)
@@ -80,7 +85,7 @@ class PluginLoader(
             }
  
             val entryFile = pluginInfo.getEntryFile()
-            if (!entryFile.exists()) {
+            if (entryFile == null || !entryFile.isFile) {
                 return@withContext Result.failure(
                     IllegalStateException("Entry file not found: ${pluginInfo.manifest.entry}")
                 )
@@ -89,25 +94,26 @@ class PluginLoader(
             // 为此插件创建独立的 PluginDataStore，并注入沙箱
             val dataStore = PluginDataStore(context, pluginInfo.manifest.id)
 
-            val sandbox = PluginSandbox(context, okHttpClient, memoryBankService, dataStore)
-            sandbox.allowedHosts = pluginInfo.manifest.allowedHosts
-            sandbox.initialize()
+            val pluginSandbox = PluginSandbox(context, okHttpClient, memoryBankService, dataStore)
+            sandbox = pluginSandbox
+            pluginSandbox.allowedHosts = pluginInfo.manifest.allowedHosts
+            pluginSandbox.initialize()
  
             val resolvedConfig = resolveModelConfig(pluginInfo)
-            sandbox.injectConfig(resolvedConfig)
- 
-            sandbox.evaluateFile(entryFile)
+            pluginSandbox.injectConfig(resolvedConfig)
+
+            pluginSandbox.evaluateFile(entryFile)
  
             val loadedPlugin = LoadedPlugin(
                 info = pluginInfo,
-                sandbox = sandbox
+                sandbox = pluginSandbox
             )
- 
-            val exportedNames = sandbox.getExportedFunctionNames()
+
+            val exportedNames = pluginSandbox.getExportedFunctionNames()
             Log.i(TAG, "Plugin ${pluginInfo.manifest.id} exported functions: $exportedNames")
  
             pluginInfo.manifest.tools.forEach { tool ->
-                if (!sandbox.hasFunction(tool.name)) {
+                if (!pluginSandbox.hasFunction(tool.name)) {
                     Log.w(TAG, "Tool '${tool.name}' declared in manifest but not found in exports (available: $exportedNames)")
                 } else {
                     Log.i(TAG, "Tool '${tool.name}' registered successfully")
@@ -117,6 +123,7 @@ class PluginLoader(
             loadedPlugins[pluginInfo.manifest.id] = loadedPlugin
             Result.success(loadedPlugin)
         } catch (e: Exception) {
+            runCatching { sandbox?.destroy() }
             Log.e(TAG, "Failed to load plugin ${pluginInfo.manifest.id}", e)
             Result.failure(e)
         }
@@ -146,6 +153,7 @@ class PluginLoader(
      */
     suspend fun callTool(pluginId: String, toolName: String, params: JsonElement): Result<JsonElement> {
         return withContext(pluginDispatcher) {
+            if (closed.get()) return@withContext Result.failure(IllegalStateException("Plugin loader is closed"))
             try {
                 val plugin = loadedPlugins[pluginId]
                     ?: return@withContext Result.failure(IllegalStateException("Plugin not loaded: $pluginId"))
@@ -172,6 +180,7 @@ class PluginLoader(
      */
     suspend fun callEvent(event: String, params: JsonElement) {
         withContext(pluginDispatcher) {
+            if (closed.get()) return@withContext
             for (plugin in loadedPlugins.values) {
                 if (!plugin.info.isEnabled) continue
                 val matchingHooks = plugin.info.manifest.hooks.filter { it.event == event }
@@ -238,7 +247,9 @@ class PluginLoader(
  
                     config[field.name] = JsonPrimitive(model.modelId)
                     config["${field.name}_base_url"] = JsonPrimitive(baseUrl)
-                    config["${field.name}_api_key"] = JsonPrimitive(apiKey)
+                    if (pluginInfo.manifest.permissions.contains("provider_credentials")) {
+                        config["${field.name}_api_key"] = JsonPrimitive(apiKey)
+                    }
                     Log.d(TAG, "Resolved model config '${field.name}': modelId=${model.modelId}, baseUrl=$baseUrl")
                 } catch (e: Exception) {
                     Log.w(TAG, "Failed to resolve model config '${field.name}': ${e.message}")
@@ -250,5 +261,14 @@ class PluginLoader(
  
     suspend fun unloadAll() = withContext(pluginDispatcher) {
         loadedPlugins.keys.toList().forEach { doUnloadPlugin(it) }
+    }
+
+    /** Release the QuickJS thread and all sandboxes when the host process is torn down. */
+    suspend fun close() {
+        if (!closed.compareAndSet(false, true)) return
+        withContext(pluginDispatcher) {
+            loadedPlugins.keys.toList().forEach { doUnloadPlugin(it) }
+        }
+        pluginDispatcher.close()
     }
 }

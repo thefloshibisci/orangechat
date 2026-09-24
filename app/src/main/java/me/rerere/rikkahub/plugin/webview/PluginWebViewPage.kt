@@ -53,6 +53,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -63,11 +64,13 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import me.rerere.rikkahub.data.files.SafeFileResolver
 import me.rerere.ai.core.MessageRole
 import me.rerere.ai.provider.ProviderManager
 import me.rerere.ai.provider.TextGenerationParams
@@ -133,6 +136,7 @@ fun PluginWebViewPage(
     val dataStore = remember(pluginId) {
         PluginDataStore(context, pluginId)
     }
+    val scope = rememberCoroutineScope()
 
     // Overlay WebView reference for pomodoro lock screen
     var overlayWebView by remember { mutableStateOf<WebView?>(null) }
@@ -363,7 +367,8 @@ fun PluginWebViewPage(
                         }
 
                         // Duplicate detection: existing in music/ OR already seen in this batch
-                        val targetFile = File(musicDir, fileName)
+                        val targetFile = dataStore.resolveDataFile("music/$fileName")
+                            ?: throw SecurityException("Invalid file name")
                         if (targetFile.exists() || seenInBatch.contains(fileName)) {
                             val escapedDup = fileName.replace("\\", "\\\\").replace("'", "\\'")
                             if (duplicates.isNotEmpty()) duplicates.append(",")
@@ -557,6 +562,7 @@ fun PluginWebViewPage(
                                         }
                                     }
                                 },
+                                scope = scope,
                                 onPickImage = { callbackId ->
                                     pendingImageCallback = callbackId
                                     pickImageLauncher.launch(
@@ -723,7 +729,7 @@ fun PluginWebViewPage(
                                                         val cbId = params["callbackId"] ?: ""
                                                         val prompt = params["prompt"] ?: ""
                                                         val contextJson = params["context"] ?: "{}"
-                                                        CoroutineScope(Dispatchers.IO).launch {
+                                                        scope.launch(Dispatchers.IO) {
                                                             try {
                                                                 // Use the PluginWebViewClient's callAI via a simple approach
                                                                 val settingsStore: SettingsStore = org.koin.java.KoinJavaComponent.get(SettingsStore::class.java)
@@ -755,6 +761,8 @@ fun PluginWebViewPage(
                                                                 overlayWv.post {
                                                                     overlayWv.evaluateJavascript("window.__bridgeResult('$cbId', $aiResult);", null)
                                                                 }
+                                                            } catch (e: CancellationException) {
+                                                                throw e
                                                             } catch (e: Exception) {
                                                                 val err = """{"success":false,"error":"${e.message?.replace("\"", "\\\"")?.replace("\\", "\\\\")}"}"""
                                                                 overlayWv.post {
@@ -881,8 +889,8 @@ fun PluginWebViewPage(
                             // 禁用原生长按选择菜单 - 通过CSS/JS控制，不再用原生拦截
                             // （原生setOnLongClickListener会阻止批注模式的文字选择）
 
-                            val htmlFile = File(pluginInfo.directory, htmlEntryPath)
-                            if (htmlFile.exists()) {
+                            val htmlFile = SafeFileResolver.resolveInside(pluginInfo.directory, htmlEntryPath)
+                            if (htmlFile?.isFile == true) {
                                 loadUrl("file://${htmlFile.absolutePath}")
                             } else {
                                 loadData(
@@ -903,8 +911,16 @@ fun PluginWebViewPage(
         }
     }
 
-    DisposableEffect(Unit) {
+    DisposableEffect(pluginId, htmlEntryPath) {
         onDispose {
+            pendingImageCallback = null
+            pendingFileCallback = null
+            pendingBinaryFileCallback = null
+            pendingImportAudioCallback = null
+            pendingSaveCallbackId = null
+            pendingSaveBase64Data = null
+            webViewFileChooserCallback?.onReceiveValue(null)
+            webViewFileChooserCallback = null
             // Clean up main WebView
             webView?.destroy()
             // Clean up overlay WebView
@@ -935,6 +951,7 @@ private class PluginWebViewClient(
     private val initialConversationId: String,
     private val isWatchFullscreen: () -> Boolean,
     private val onCaptureWatchFrame: (callbackId: String, left: Int, top: Int, width: Int, height: Int) -> Unit,
+    private val scope: CoroutineScope,
     private val onPickImage: (callbackId: String) -> Unit,
     private val onPickFile: (callbackId: String) -> Unit,
     private val onPickBinaryFile: (callbackId: String) -> Unit,
@@ -1031,7 +1048,7 @@ private class PluginWebViewClient(
             }
 
             "getPluginConfig" -> {
-                CoroutineScope(Dispatchers.IO).launch {
+                scope.launch(Dispatchers.IO) {
                     try {
                         val savedConfig = pluginRepository.getPluginConfig(pluginInfo.manifest.id)
                         val mergedConfig = mutableMapOf<String, kotlinx.serialization.json.JsonElement>()
@@ -1058,6 +1075,8 @@ private class PluginWebViewClient(
                                 "window.__bridgeResult('${params["callbackId"]}', $result);", null
                             )
                         }
+                    } catch (e: CancellationException) {
+                        throw e
                     } catch (e: Exception) {
                         Log.e(TAG, "Failed to get plugin config", e)
                         webView.post {
@@ -1137,8 +1156,8 @@ private class PluginWebViewClient(
                 val fileName = params["fileName"] ?: ""
                 val base64Data = params["data"] ?: ""
                 try {
-                    val dir = dataStore.getDataDir()
-                    val file = File(dir, fileName)
+                    val file = dataStore.resolveDataFile(fileName)
+                        ?: throw SecurityException("Invalid data file path")
                     val bytes = Base64.decode(base64Data, Base64.DEFAULT)
                     file.writeBytes(bytes)
                     webView.post {
@@ -1158,8 +1177,8 @@ private class PluginWebViewClient(
             "readFile" -> {
                 val fileName = params["fileName"] ?: ""
                 try {
-                    val dir = dataStore.getDataDir()
-                    val file = File(dir, fileName)
+                    val file = dataStore.resolveDataFile(fileName)
+                        ?: throw SecurityException("Invalid data file path")
                     if (file.exists()) {
                         val bytes = file.readBytes()
                         val base64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
@@ -1186,9 +1205,8 @@ private class PluginWebViewClient(
 
             "listFiles" -> {
                 val dirPath = params["dir"] ?: ""
-                val baseDir = if (dirPath.isEmpty()) dataStore.getDataDir()
-                              else File(dataStore.getDataDir(), dirPath)
-                val files = if (baseDir.exists() && baseDir.isDirectory) {
+                val baseDir = dataStore.resolveDataFile(dirPath)
+                val files = if (baseDir?.exists() == true && baseDir.isDirectory) {
                     baseDir.listFiles()?.map { it.name } ?: emptyList()
                 } else emptyList()
                 val jsonArray = JSONArray(files)
@@ -1201,9 +1219,8 @@ private class PluginWebViewClient(
 
             "deleteFile" -> {
                 val fileName = params["fileName"] ?: ""
-                val dir = dataStore.getDataDir()
-                val file = File(dir, fileName)
-                val result = file.delete()
+                val file = dataStore.resolveDataFile(fileName)
+                val result = file?.delete() == true
                 webView.post {
                     webView.evaluateJavascript(
                         "window.__bridgeResult('${params["callbackId"]}', $result);", null
@@ -1216,7 +1233,9 @@ private class PluginWebViewClient(
                 val title = params["title"] ?: ""
                 val artist = params["artist"] ?: ""
                 try {
-                    MusicPlayerService.play(webView.context, filePath, title, artist)
+                    val safeFile = dataStore.resolveDataFile(filePath)?.takeIf { it.isFile }
+                        ?: throw SecurityException("Invalid music file path")
+                    MusicPlayerService.play(webView.context, safeFile.absolutePath, title, artist)
                     webView.post {
                         webView.evaluateJavascript(
                             "window.__bridgeResult('${params["callbackId"]}', {success:true});", null
@@ -1316,7 +1335,7 @@ private class PluginWebViewClient(
             "callTool" -> {
                 val toolName = params["toolName"] ?: ""
                 val toolParams = params["params"] ?: "{}"
-                CoroutineScope(Dispatchers.Main).launch {
+                scope.launch(Dispatchers.Main) {
                     try {
                         val result = callPluginTool(toolName, toolParams)
                         webView.post {
@@ -1324,6 +1343,8 @@ private class PluginWebViewClient(
                                 "window.__bridgeResult('${params["callbackId"]}', ${result});", null
                             )
                         }
+                    } catch (e: CancellationException) {
+                        throw e
                     } catch (e: Exception) {
                         val errorResult = """{"success":false,"error":"${e.message}"}"""
                         webView.post {
@@ -1360,7 +1381,7 @@ private class PluginWebViewClient(
                     return
                 }
 
-                CoroutineScope(Dispatchers.IO).launch {
+                scope.launch(Dispatchers.IO) {
                     try {
                         val aiResult = callAI(prompt, contextJson)
                         webView.post {
@@ -1368,6 +1389,8 @@ private class PluginWebViewClient(
                                 "window.__bridgeResult('$callbackId', $aiResult);", null
                             )
                         }
+                    } catch (e: CancellationException) {
+                        throw e
                     } catch (e: Exception) {
                         Log.e(TAG, "callAI failed", e)
                         val errorResult = """{"success":false,"error":"${e.message?.replace("\"", "\\\"")?.replace("\\", "\\\\")}"}"""
@@ -1533,7 +1556,7 @@ private class PluginWebViewClient(
                 val hookName = params["hookName"] ?: ""
                 val hookContextJson = params["context"] ?: "{}"
 
-                CoroutineScope(Dispatchers.IO).launch {
+                scope.launch(Dispatchers.IO) {
                     try {
                         val hookResult = handleHookTrigger(webView, hookName, hookContextJson)
                         webView.post {
@@ -1541,6 +1564,8 @@ private class PluginWebViewClient(
                                 "window.__bridgeResult('$callbackId', $hookResult);", null
                             )
                         }
+                    } catch (e: CancellationException) {
+                        throw e
                     } catch (e: Exception) {
                         Log.e(TAG, "notifyHook failed", e)
                         val errorResult = """{"success":false,"error":"${e.message?.replace("\"", "\\\"")?.replace("\\", "\\\\")}"}"""
@@ -1631,8 +1656,9 @@ private class PluginWebViewClient(
             )
             return
         }
-        CoroutineScope(Dispatchers.IO).launch {
+        scope.launch(Dispatchers.IO) {
             val result = runCatching { block() }.getOrElse { error ->
+                if (error is CancellationException) throw error
                 Log.e(TAG, "Conversation sync bridge failed", error)
                 JSONObject()
                     .put("success", false)

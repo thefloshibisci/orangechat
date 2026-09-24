@@ -26,6 +26,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
 import me.rerere.common.android.appTempFolder
 import com.whl.quickjs.android.QuickJSLoader
 import me.rerere.rikkahub.di.appModule
@@ -40,6 +41,7 @@ import me.rerere.rikkahub.data.service.DeviceEventAiTriggerService
 import me.rerere.rikkahub.data.service.DeviceEventTrackingService
 import me.rerere.rikkahub.data.service.ProactiveMessageService
 import me.rerere.rikkahub.data.service.SupabaseSyncService
+import me.rerere.rikkahub.data.sync.DatabaseBackupCoordinator
 import me.rerere.rikkahub.service.ChatService
 import me.rerere.rikkahub.service.WebServerService
 import me.rerere.rikkahub.utils.CrashHandler
@@ -70,6 +72,8 @@ class RikkaHubApp : Application() {
     override fun onCreate() {
         super.onCreate()
         INSTANCE = this
+        runCatching { DatabaseBackupCoordinator.applyPendingRestore(this) }
+            .onFailure { Log.e(TAG, "Failed to apply pending database restore", it) }
         startKoin {
             androidLogger()
             androidContext(this@RikkaHubApp)
@@ -354,6 +358,9 @@ class RikkaHubApp : Application() {
     }
 
     override fun onTerminate() {
+        runCatching {
+            runBlocking { get<me.rerere.rikkahub.plugin.loader.PluginLoader>().close() }
+        }.onFailure { Log.e(TAG, "Failed to close plugin runtime", it) }
         super.onTerminate()
         get<AppScope>().cancel()
         stopService(Intent(this, WebServerService::class.java))

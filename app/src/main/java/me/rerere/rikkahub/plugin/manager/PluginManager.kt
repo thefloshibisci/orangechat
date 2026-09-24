@@ -8,19 +8,21 @@ package me.rerere.rikkahub.plugin.manager
  
 import android.content.Context
 import android.net.Uri
+import me.rerere.rikkahub.AppScope
 import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import kotlinx.serialization.encodeToString
-import kotlinx.serialization.json.Json
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.JsonElement
 import me.rerere.rikkahub.data.security.SecurityAuditRepository
 import me.rerere.rikkahub.data.service.DailySummaryService
 import me.rerere.rikkahub.plugin.loader.PluginLoader
+import me.rerere.rikkahub.plugin.data.PluginDataStore
 import me.rerere.rikkahub.plugin.model.PluginFolder
 import me.rerere.rikkahub.plugin.model.PluginInfo
 import me.rerere.rikkahub.plugin.model.PluginManifest
@@ -37,13 +39,9 @@ class PluginManager(
     private val scanner: PluginScanner,
     private val loader: PluginLoader,
     private val repository: PluginRepository,
+    private val appScope: AppScope,
     private val auditRepo: SecurityAuditRepository? = null,
 ) {
-    private val json = Json {
-        ignoreUnknownKeys = true
-        isLenient = true
-    }
- 
     private val _plugins = MutableStateFlow<List<PluginInfo>>(emptyList())
     val plugins: StateFlow<List<PluginInfo>> = _plugins.asStateFlow()
  
@@ -58,9 +56,10 @@ class PluginManager(
      * 解决竞态条件：ChatService 在插件还没加载完时就调用 getTools()
      */
     private val initializationDeferred = CompletableDeferred<Unit>()
+    private val lifecycleMutex = Mutex()
 
     init {
-        CoroutineScope(Dispatchers.IO).launch {
+        appScope.launch(Dispatchers.IO) {
             try {
                 refreshFolders()
                 refreshPlugins()
@@ -79,14 +78,20 @@ class PluginManager(
     }
  
     suspend fun refreshPlugins() {
+        lifecycleMutex.withLock {
+            refreshPluginsInternal()
+        }
+    }
+
+    private suspend fun refreshPluginsInternal() {
         _isLoading.value = true
         try {
-            val scannedPlugins = scanner.scanPlugins()
-            val assignments = repository.getFolderAssignments()
+            val scannedPlugins = withContext(Dispatchers.IO) { scanner.scanPlugins() }
+            val savedSettings = repository.exportPluginSettings()
             val pluginsWithConfig = scannedPlugins.map { plugin ->
-                val savedConfig = repository.getPluginConfig(plugin.manifest.id)
-                val isEnabled = repository.isPluginEnabled(plugin.manifest.id)
-                val folderId = assignments[plugin.manifest.id]
+                val savedConfig = savedSettings.configs[plugin.manifest.id].orEmpty()
+                val isEnabled = plugin.isEnabled && (savedSettings.enabled[plugin.manifest.id] ?: true)
+                val folderId = savedSettings.assignments[plugin.manifest.id]
                 plugin.copy(config = savedConfig, isEnabled = isEnabled, folderId = folderId)
             }
             // 审计：记录完整性校验失败的插件
@@ -99,6 +104,11 @@ class PluginManager(
                     status = "blocked",
                 )
             }
+            val activePlugins = pluginsWithConfig.associateBy { it.manifest.id }
+            loader.getAllLoadedPlugins()
+                .filter { loaded -> activePlugins[loaded.id]?.isEnabled != true }
+                .forEach { loaded -> loader.unloadPlugin(loaded.id) }
+
             _plugins.value = pluginsWithConfig
             pluginsWithConfig.filter { it.isEnabled }.forEach { plugin ->
                 if (loader.getLoadedPlugin(plugin.manifest.id) == null) {
@@ -138,7 +148,7 @@ class PluginManager(
      */
     suspend fun previewPlugin(uri: Uri): Result<android.util.Pair<PluginManifest, java.io.File>> {
         return try {
-            scanner.previewFromZip(uri).map { (manifest, tempDir) ->
+            withContext(Dispatchers.IO) { scanner.previewFromZip(uri) }.map { (manifest, tempDir) ->
                 android.util.Pair(manifest, tempDir)
             }
         } catch (e: Exception) {
@@ -150,74 +160,93 @@ class PluginManager(
      * 确认导入插件（在 previewPlugin 后调用）
      */
     suspend fun confirmImport(manifest: PluginManifest, tempDir: java.io.File): Result<PluginInfo> {
-        return try {
-            val result = scanner.completeImport(manifest, tempDir)
-            result.fold(
-                onSuccess = { pluginInfo ->
-                    repository.savePlugin(pluginInfo)
-                    loadPlugin(pluginInfo)
-                    refreshPlugins()
-                    Result.success(pluginInfo)
-                },
-                onFailure = { error -> Result.failure(error) }
-            )
-        } catch (e: Exception) {
-            Result.failure(e)
+        return lifecycleMutex.withLock {
+            try {
+                val result = withContext(Dispatchers.IO) { scanner.completeImport(manifest, tempDir) }
+                result.fold(
+                    onSuccess = { pluginInfo ->
+                        repository.savePlugin(pluginInfo)
+                        loader.unloadPlugin(pluginInfo.manifest.id)
+                        refreshPluginsInternal()
+                        Result.success(pluginInfo)
+                    },
+                    onFailure = { error -> Result.failure(error) }
+                )
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
         }
     }
 
     suspend fun importPlugin(uri: Uri): Result<PluginInfo> {
-        return try {
-            val result = scanner.importFromZip(uri)
-            result.fold(
-                onSuccess = { pluginInfo ->
-                    repository.savePlugin(pluginInfo)
-                    loadPlugin(pluginInfo)
-                    refreshPlugins()
-                    Result.success(pluginInfo)
-                },
-                onFailure = { error -> Result.failure(error) }
-            )
-        } catch (e: Exception) {
-            Result.failure(e)
+        return lifecycleMutex.withLock {
+            try {
+                val result = withContext(Dispatchers.IO) { scanner.importFromZip(uri) }
+                result.fold(
+                    onSuccess = { pluginInfo ->
+                        repository.savePlugin(pluginInfo)
+                        loader.unloadPlugin(pluginInfo.manifest.id)
+                        refreshPluginsInternal()
+                        Result.success(pluginInfo)
+                    },
+                    onFailure = { error -> Result.failure(error) }
+                )
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
         }
     }
  
-    suspend fun deletePlugin(pluginId: String): Boolean {
-        return try {
-            loader.unloadPlugin(pluginId)
-            val deleted = scanner.deletePlugin(pluginId)
-            repository.removePlugin(pluginId)
-            repository.setPluginFolder(pluginId, null)
-            refreshPlugins()
-            deleted
-        } catch (e: Exception) {
-            false
+    suspend fun deletePlugin(pluginId: String): Result<Unit> {
+        return lifecycleMutex.withLock {
+            runCatching {
+                loader.unloadPlugin(pluginId)
+                withContext(Dispatchers.IO) { scanner.deletePlugin(pluginId).getOrThrow() }
+                repository.removePlugin(pluginId)
+                repository.setPluginFolder(pluginId, null)
+                withContext(Dispatchers.IO) { PluginDataStore(context, pluginId).deleteAll() }
+                refreshPluginsInternal()
+            }
         }
     }
  
     suspend fun togglePlugin(pluginId: String, enabled: Boolean) {
-        val plugin = _plugins.value.find { it.manifest.id == pluginId } ?: return
-        if (enabled) {
-            // 重新加载插件（先清除错误状态）
-            val pluginToLoad = plugin.copy(isEnabled = true, loadError = null)
-            loader.unloadPlugin(pluginId)
-            loadPlugin(pluginToLoad)
-        } else {
-            loader.unloadPlugin(pluginId)
+        lifecycleMutex.withLock {
+            val plugin = _plugins.value.find { it.manifest.id == pluginId } ?: return@withLock
+            if (enabled) {
+                val checked = withContext(Dispatchers.IO) { scanner.loadPluginInfo(plugin.directory) }
+                if (checked?.isEnabled != true) {
+                    loader.unloadPlugin(pluginId)
+                    repository.setPluginEnabled(pluginId, false)
+                    updatePluginState(pluginId) {
+                        it.copy(isEnabled = false, loadError = checked?.loadError ?: "Plugin files are missing")
+                    }
+                    return@withLock
+                }
+                // 重新加载插件（先清除错误状态）
+                val pluginToLoad = plugin.copy(isEnabled = true, loadError = null)
+                loader.unloadPlugin(pluginId)
+                loadPlugin(pluginToLoad)
+            } else {
+                loader.unloadPlugin(pluginId)
+            }
+            repository.setPluginEnabled(pluginId, enabled)
+            updatePluginState(pluginId) {
+                it.copy(isEnabled = enabled, loadError = if (enabled) it.loadError else null)
+            }
+            DailySummaryService.rescheduleIfEnabled(context)
         }
-        repository.setPluginEnabled(pluginId, enabled)
-        updatePluginState(pluginId) { it.copy(isEnabled = enabled, loadError = null) }
-        DailySummaryService.rescheduleIfEnabled(context)
     }
  
     suspend fun updatePluginConfig(pluginId: String, config: Map<String, JsonElement>) {
-        repository.savePluginConfig(pluginId, config)
-        updatePluginState(pluginId) { it.copy(config = config) }
-        val plugin = _plugins.value.find { it.manifest.id == pluginId }
-        if (plugin?.isEnabled == true) {
-            loader.unloadPlugin(pluginId)
-            loadPlugin(plugin.copy(config = config))
+        lifecycleMutex.withLock {
+            repository.savePluginConfig(pluginId, config)
+            updatePluginState(pluginId) { it.copy(config = config) }
+            val plugin = _plugins.value.find { it.manifest.id == pluginId }
+            if (plugin?.isEnabled == true) {
+                loader.unloadPlugin(pluginId)
+                loadPlugin(plugin.copy(config = config))
+            }
         }
     }
  
@@ -230,8 +259,10 @@ class PluginManager(
     fun getPlugin(pluginId: String): PluginInfo? = _plugins.value.find { it.manifest.id == pluginId }
  
     suspend fun reloadAllPlugins() {
-        loader.unloadAll()
-        refreshPlugins()
+        lifecycleMutex.withLock {
+            loader.unloadAll()
+            refreshPluginsInternal()
+        }
     }
  
     /**
@@ -243,45 +274,55 @@ class PluginManager(
     }
  
     suspend fun importPlugin(uri: Uri, folderId: String?): Result<PluginInfo> {
-        return try {
-            val result = scanner.importFromZip(uri)
-            result.fold(
-                onSuccess = { pluginInfo ->
-                    repository.savePlugin(pluginInfo)
-                    if (folderId != null) {
-                        repository.setPluginFolder(pluginInfo.manifest.id, folderId)
-                    }
-                    loadPlugin(pluginInfo)
-                    refreshPlugins()
-                    Result.success(pluginInfo)
-                },
-                onFailure = { error -> Result.failure(error) }
-            )
-        } catch (e: Exception) {
-            Result.failure(e)
+        return lifecycleMutex.withLock {
+            try {
+                val result = withContext(Dispatchers.IO) { scanner.importFromZip(uri) }
+                result.fold(
+                    onSuccess = { pluginInfo ->
+                        repository.savePlugin(pluginInfo)
+                        if (folderId != null) {
+                            repository.setPluginFolder(pluginInfo.manifest.id, folderId)
+                        }
+                        loader.unloadPlugin(pluginInfo.manifest.id)
+                        refreshPluginsInternal()
+                        Result.success(pluginInfo)
+                    },
+                    onFailure = { error -> Result.failure(error) }
+                )
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
         }
     }
 
     suspend fun createFolder(name: String): PluginFolder {
-        val folder = repository.addFolder(name)
-        refreshFolders()
-        return folder
+        return lifecycleMutex.withLock {
+            val folder = repository.addFolder(name)
+            refreshFolders()
+            folder
+        }
     }
 
     suspend fun renameFolder(folderId: String, newName: String) {
-        repository.renameFolder(folderId, newName)
-        refreshFolders()
+        lifecycleMutex.withLock {
+            repository.renameFolder(folderId, newName)
+            refreshFolders()
+        }
     }
 
     suspend fun deleteFolder(folderId: String) {
-        repository.deleteFolder(folderId)
-        refreshFolders()
-        refreshPlugins()
+        lifecycleMutex.withLock {
+            repository.deleteFolder(folderId)
+            refreshFolders()
+            refreshPluginsInternal()
+        }
     }
 
     suspend fun movePluginToFolder(pluginId: String, folderId: String?) {
-        repository.setPluginFolder(pluginId, folderId)
-        updatePluginState(pluginId) { it.copy(folderId = folderId) }
+        lifecycleMutex.withLock {
+            repository.setPluginFolder(pluginId, folderId)
+            updatePluginState(pluginId) { it.copy(folderId = folderId) }
+        }
     }
 
     fun getPluginsByFolder(folderId: String?): List<PluginInfo> {

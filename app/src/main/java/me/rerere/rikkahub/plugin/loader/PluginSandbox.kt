@@ -7,6 +7,7 @@
 package me.rerere.rikkahub.plugin.loader
  
 import android.content.Context
+import android.net.Uri
 import android.util.Log
 import com.whl.quickjs.wrapper.JSCallFunction
 import com.whl.quickjs.wrapper.QuickJSContext
@@ -325,16 +326,21 @@ function fetch(url, options) {
     private fun nativeFetch(url: String, optionsJson: String): String {
         Log.d(TAG, "nativeFetch: $url")
         return try {
-            // 域名白名单检查
-            if (allowedHosts.isNotEmpty() && !allowedHosts.contains("*")) {
-                val host = java.net.URL(url).host
-                val isAllowed = allowedHosts.any { allowed ->
+            // 域名白名单检查：空列表明确表示禁止网络；重定向在下方关闭，避免跳到未授权域名。
+            val parsedUrl = Uri.parse(url)
+            val scheme = parsedUrl.scheme?.lowercase()
+            val host = parsedUrl.host?.lowercase()?.trimEnd('.')
+            val normalizedAllowedHosts = allowedHosts
+                .map { it.trim().lowercase().trimEnd('.') }
+                .filter { it.isNotBlank() }
+            val isAllowed = scheme in setOf("http", "https") &&
+                !host.isNullOrBlank() &&
+                ("*" in normalizedAllowedHosts || normalizedAllowedHosts.any { allowed ->
                     host == allowed || host.endsWith(".$allowed")
-                }
-                if (!isAllowed) {
-                    Log.w(TAG, "nativeFetch blocked: host='$host' not in allowedHosts=$allowedHosts")
-                    return """{"success":false,"error":"Network request to '$host' is not allowed. Please add it to manifest.allowedHosts."}"""
-                }
+                })
+            if (!isAllowed) {
+                Log.w(TAG, "nativeFetch blocked: host='$host' not in allowedHosts=$allowedHosts")
+                return """{"success":false,"error":"Network request to '${host ?: "unknown"}' is not allowed. Please add it to manifest.allowedHosts."}"""
             }
 
             val options = json.parseToJsonElement(optionsJson) as? JsonObject ?: JsonObject(emptyMap())
@@ -370,27 +376,31 @@ function fetch(url, options) {
                 .connectTimeout(15, TimeUnit.SECONDS)
                 .readTimeout(15, TimeUnit.SECONDS)
                 .writeTimeout(15, TimeUnit.SECONDS)
+                .followRedirects(false)
+                .followSslRedirects(false)
                 .build()
  
             val response = fetchClient.newCall(requestBuilder.build()).execute()
-            val responseBody = response.body?.string() ?: ""
-            val statusCode = response.code
-            val responseHeaders = response.headers
- 
-            val headersJson = responseHeaders.names().associateWith { name ->
-                responseHeaders.values(name).joinToString(", ")
+            response.use {
+                val responseBody = it.body.string()
+                val statusCode = it.code
+                val responseHeaders = it.headers
+
+                val headersJson = responseHeaders.names().associateWith { name ->
+                    responseHeaders.values(name).joinToString(", ")
+                }
+
+                val result = buildString {
+                    append("{\"success\":true,")
+                    append("\"status\":$statusCode,")
+                    append("\"ok\":${statusCode in 200..299},")
+                    append("\"headers\":${json.encodeToString(JsonObject.serializer(), JsonObject(headersJson.mapValues { JsonPrimitive(it.value) }))},")
+                    append("\"body\":${json.encodeToString(JsonPrimitive(responseBody))}")
+                    append("}")
+                }
+                Log.d(TAG, "nativeFetch response: status=$statusCode, bodyLength=${responseBody.length}")
+                result
             }
- 
-            val result = buildString {
-                append("{\"success\":true,")
-                append("\"status\":$statusCode,")
-                append("\"ok\":${statusCode in 200..299},")
-                append("\"headers\":${json.encodeToString(JsonObject.serializer(), JsonObject(headersJson.mapValues { JsonPrimitive(it.value) }))},")
-                append("\"body\":${json.encodeToString(JsonPrimitive(responseBody))}")
-                append("}")
-            }
-            Log.d(TAG, "nativeFetch response: status=$statusCode, bodyLength=${responseBody.length}")
-            result
         } catch (e: Exception) {
             Log.e(TAG, "nativeFetch failed: url=$url", e)
             """{"success":false,"error":${escapeJson(e.message ?: "Unknown error")}}"""
@@ -411,7 +421,9 @@ function fetch(url, options) {
                     if (filePath.isBlank()) {
                         """{"success":false,"error":"filePath is required"}"""
                     } else {
-                        MusicPlayerService.play(context, filePath, title, artist)
+                        val safeFile = dataStore?.resolveDataFile(filePath)?.takeIf { it.isFile }
+                            ?: throw SecurityException("Invalid music file path")
+                        MusicPlayerService.play(context, safeFile.absolutePath, title, artist)
                         """{"success":true}"""
                     }
                 }
@@ -711,6 +723,7 @@ function fetch(url, options) {
                         if (id < 0) {
                             """{"success":false,"error":"id is required"}"""
                         } else {
+                            service.deleteMemory(id)
                             """{"success":true,"id":$id}"""
                         }
                     }

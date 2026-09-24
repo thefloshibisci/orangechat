@@ -8,6 +8,7 @@ package me.rerere.rikkahub.plugin.ui
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -109,8 +110,9 @@ class PluginViewModel(
      * 取消导入预览
      */
     fun cancelImportPreview() {
-        _pendingImport.value?.tempDir?.deleteRecursively()
+        val directory = _pendingImport.value?.tempDir
         _pendingImport.value = null
+        viewModelScope.launch(Dispatchers.IO) { directory?.deleteRecursively() }
     }
 
     /**
@@ -146,12 +148,11 @@ class PluginViewModel(
         viewModelScope.launch {
             _operationState.value = OperationState.Loading
             try {
-                val success = pluginManager.deletePlugin(pluginId)
-                _operationState.value = if (success) {
-                    OperationState.Success("Plugin deleted")
-                } else {
-                    OperationState.Error("Failed to delete plugin")
-                }
+                val result = pluginManager.deletePlugin(pluginId)
+                _operationState.value = result.fold(
+                    onSuccess = { OperationState.Success("插件已删除") },
+                    onFailure = { OperationState.Error(it.message ?: "删除插件失败") }
+                )
             } catch (e: Exception) {
                 _operationState.value = OperationState.Error(e.message ?: "Unknown error")
             }

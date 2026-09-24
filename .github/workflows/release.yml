@@ -12,6 +12,25 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Download color utilities
+        run: git submodule update --init --depth 1 material3/material-color-utilities
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: pnpm
+          cache-dependency-path: web-ui/pnpm-lock.yaml
+
+      - name: Install web dependencies
+        working-directory: web-ui
+        run: pnpm install --frozen-lockfile
+
       - name: Set up JDK
         uses: actions/setup-java@v4
         with:

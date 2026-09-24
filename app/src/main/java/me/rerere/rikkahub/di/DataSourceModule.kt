@@ -29,6 +29,7 @@ import me.rerere.rikkahub.data.api.RikkaHubAPI
 import me.rerere.rikkahub.data.api.SponsorAPI
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.db.AppDatabase
+import me.rerere.rikkahub.data.sync.DatabaseBackupCoordinator
 import me.rerere.rikkahub.data.db.fts.MessageFtsManager
 import me.rerere.rikkahub.data.db.fts.SimpleDictManager
 import me.rerere.rikkahub.data.db.migrations.Migration_6_7
@@ -134,6 +135,8 @@ val dataSourceModule = module {
     single {
         get<AppDatabase>().conversationDao()
     }
+
+    single { DatabaseBackupCoordinator(context = get(), database = get()) }
 
     single {
         get<AppDatabase>().memoryDao()
@@ -275,7 +278,8 @@ val dataSourceModule = module {
             json = get(),
             context = get(),
             httpClient = get(),
-            pluginRepository = get()
+            pluginRepository = get(),
+            databaseBackupCoordinator = get()
         )
     }
 
@@ -299,7 +303,8 @@ val dataSourceModule = module {
             settingsStore = get(),
             json = get(),
             context = get(),
-            httpClient = get()
+            httpClient = get(),
+            databaseBackupCoordinator = get()
         )
     }
 
