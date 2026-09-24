@@ -59,6 +59,7 @@ import me.rerere.hugeicons.stroke.Folder01
 import me.rerere.hugeicons.stroke.PlusSign
 import me.rerere.hugeicons.stroke.Reload
 import me.rerere.rikkahub.R
+import me.rerere.rikkahub.plugin.loader.PluginNetworkPolicy
 import me.rerere.rikkahub.plugin.model.PluginFolder
 import me.rerere.rikkahub.plugin.model.PluginInfo
 import me.rerere.rikkahub.ui.components.ui.RiskConfirmDialog
@@ -157,7 +158,7 @@ fun PluginManagePage(
                             Text("• $perm", style = MaterialTheme.typography.bodySmall)
                         }
                     }
-                    if (manifest.allowedHosts.isNotEmpty()) {
+                    if (!PluginNetworkPolicy(manifest.allowedHosts).allowsAllHosts) {
                         Text("")
                         Text("允许访问的网络域名:", style = MaterialTheme.typography.labelLarge)
                         manifest.allowedHosts.forEach { host ->
@@ -165,7 +166,7 @@ fun PluginManagePage(
                         }
                     } else {
                         Text("")
-                        Text("• 不允许任何网络访问", style = MaterialTheme.typography.bodySmall)
+                        Text("• 允许联网（不限域名）", style = MaterialTheme.typography.bodySmall)
                     }
                 }
             },

@@ -7,7 +7,6 @@
 package me.rerere.rikkahub.plugin.loader
  
 import android.content.Context
-import android.net.Uri
 import android.util.Log
 import com.whl.quickjs.wrapper.JSCallFunction
 import com.whl.quickjs.wrapper.QuickJSContext
@@ -25,6 +24,7 @@ import me.rerere.rikkahub.data.service.MemoryBankService
 import me.rerere.rikkahub.plugin.data.PluginDataStore
 import me.rerere.rikkahub.plugin.webview.MusicPlayerService
 import okhttp3.OkHttpClient
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.Request
 import org.json.JSONObject
 import java.io.File
@@ -53,7 +53,7 @@ class PluginSandbox(
     /**
      * 插件允许访问的网络域名白名单。
      * 由宿主在加载插件时根据 manifest.allowedHosts 注入。
-     * 空列表表示禁止所有外部网络请求。
+     * 未声明或空列表默认允许联网；非空列表限制可访问的域名。
      */
     var allowedHosts: List<String> = emptyList()
  
@@ -326,19 +326,10 @@ function fetch(url, options) {
     private fun nativeFetch(url: String, optionsJson: String): String {
         Log.d(TAG, "nativeFetch: $url")
         return try {
-            // 域名白名单检查：空列表明确表示禁止网络；重定向在下方关闭，避免跳到未授权域名。
-            val parsedUrl = Uri.parse(url)
-            val scheme = parsedUrl.scheme?.lowercase()
-            val host = parsedUrl.host?.lowercase()?.trimEnd('.')
-            val normalizedAllowedHosts = allowedHosts
-                .map { it.trim().lowercase().trimEnd('.') }
-                .filter { it.isNotBlank() }
-            val isAllowed = scheme in setOf("http", "https") &&
-                !host.isNullOrBlank() &&
-                ("*" in normalizedAllowedHosts || normalizedAllowedHosts.any { allowed ->
-                    host == allowed || host.endsWith(".$allowed")
-                })
-            if (!isAllowed) {
+            val parsedUrl = url.toHttpUrlOrNull()
+            val host = parsedUrl?.host
+            val networkPolicy = PluginNetworkPolicy(allowedHosts)
+            if (parsedUrl == null || !networkPolicy.allows(parsedUrl)) {
                 Log.w(TAG, "nativeFetch blocked: host='$host' not in allowedHosts=$allowedHosts")
                 return """{"success":false,"error":"Network request to '${host ?: "unknown"}' is not allowed. Please add it to manifest.allowedHosts."}"""
             }
@@ -348,7 +339,7 @@ function fetch(url, options) {
             val headers = options["headers"] as? JsonObject
             val body = options["body"] as? JsonPrimitive
  
-            val requestBuilder = Request.Builder().url(url)
+            val requestBuilder = Request.Builder().url(parsedUrl)
  
             headers?.forEach { (key, value) ->
                 val headerValue = (value as? JsonPrimitive)?.contentOrNull ?: return@forEach
@@ -376,8 +367,9 @@ function fetch(url, options) {
                 .connectTimeout(15, TimeUnit.SECONDS)
                 .readTimeout(15, TimeUnit.SECONDS)
                 .writeTimeout(15, TimeUnit.SECONDS)
-                .followRedirects(false)
-                .followSslRedirects(false)
+                // Explicit host restrictions must not be bypassed by a redirect.
+                .followRedirects(networkPolicy.allowsAllHosts)
+                .followSslRedirects(networkPolicy.allowsAllHosts)
                 .build()
  
             val response = fetchClient.newCall(requestBuilder.build()).execute()
