@@ -1,4 +1,4 @@
-﻿/*
+/*
  * 橘瓣 OrangeChat
  * 衍生自 RikkaHub (https://github.com/rikkahub/rikkahub)，原作者 RE
  * 本项目基于 GNU AGPL v3 开源，详见根目录 LICENSE 文件
@@ -6,12 +6,7 @@
 
 package me.rerere.rikkahub.plugin.ui
 
-import android.content.Intent
 import android.net.Uri
-import android.os.Build
-import android.os.Environment
-import android.provider.Settings
-import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
@@ -22,16 +17,13 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -49,7 +41,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -58,14 +49,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
-import androidx.lifecycle.compose.LocalLifecycleOwner
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.Delete02
 import me.rerere.hugeicons.stroke.Folder01
@@ -76,8 +62,6 @@ import me.rerere.rikkahub.plugin.model.PluginFolder
 import me.rerere.rikkahub.plugin.model.PluginInfo
 import me.rerere.rikkahub.ui.components.ui.RiskConfirmDialog
 import org.koin.androidx.compose.koinViewModel
-
-private const val TAG = "PluginManagePage"
 
 /**
  * 插件管理页面（文件夹列表页）
@@ -90,7 +74,6 @@ fun PluginManagePage(
     onNavigateToDetail: (String) -> Unit,
     viewModel: PluginViewModel = koinViewModel()
 ) {
-    val context = LocalContext.current
     val plugins by viewModel.plugins.collectAsState()
     val folders by viewModel.folders.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
@@ -99,22 +82,9 @@ fun PluginManagePage(
     val pendingImport by viewModel.pendingImport.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
 
-    val hasStoragePermission = remember { mutableStateOf(checkStoragePermission()) }
-
     var showCreateFolderDialog by remember { mutableStateOf(false) }
     var showRenameFolderDialog by remember { mutableStateOf<PluginFolder?>(null) }
     var showDeleteFolderConfirm by remember { mutableStateOf<PluginFolder?>(null) }
-
-    val lifecycleOwner = LocalLifecycleOwner.current
-    DisposableEffect(lifecycleOwner) {
-        val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) {
-                hasStoragePermission.value = checkStoragePermission()
-            }
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
-    }
 
     val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
@@ -156,11 +126,7 @@ fun PluginManagePage(
         }
     }
 
-    LaunchedEffect(hasStoragePermission.value) {
-        if (hasStoragePermission.value) {
-            viewModel.refreshPlugins()
-        }
-    }
+    LaunchedEffect(Unit) { viewModel.refreshPlugins() }
 
     pendingImport?.let { pending ->
         val manifest = pending.manifest
@@ -219,22 +185,18 @@ fun PluginManagePage(
             TopAppBar(
                 title = { Text("插件管理") },
                 actions = {
-                    if (hasStoragePermission.value) {
-                        IconButton(onClick = { viewModel.refreshPlugins() }) {
-                            Icon(imageVector = HugeIcons.Reload, contentDescription = "刷新")
-                        }
+                    IconButton(onClick = { viewModel.refreshPlugins() }) {
+                        Icon(imageVector = HugeIcons.Reload, contentDescription = "刷新")
                     }
                 }
             )
         },
         floatingActionButton = {
-            if (hasStoragePermission.value) {
-                ExtendedFloatingActionButton(
-                    onClick = { showCreateFolderDialog = true },
-                    icon = { Icon(HugeIcons.PlusSign, null) },
-                    text = { Text("新建文件夹") }
-                )
-            }
+            ExtendedFloatingActionButton(
+                onClick = { showCreateFolderDialog = true },
+                icon = { Icon(HugeIcons.PlusSign, null) },
+                text = { Text("新建文件夹") }
+            )
         },
         snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { padding ->
@@ -243,11 +205,7 @@ fun PluginManagePage(
                 .fillMaxSize()
                 .padding(padding)
         ) {
-            if (!hasStoragePermission.value) {
-                StoragePermissionGate(
-                    onGrantClick = { openStoragePermissionSettings(context) }
-                )
-            } else if (isLoading && plugins.isEmpty() && folders.isEmpty()) {
+            if (isLoading && plugins.isEmpty() && folders.isEmpty()) {
                 CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
             } else {
                 PluginFolderContent(
@@ -634,56 +592,4 @@ private fun RenameFolderDialog(
             }
         }
     )
-}
-
-private fun checkStoragePermission(): Boolean {
-    return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-        Environment.isExternalStorageManager()
-    } else {
-        true
-    }
-}
-
-private fun openStoragePermissionSettings(context: android.content.Context) {
-    try {
-        val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
-            data = Uri.fromParts("package", context.packageName, null)
-        }
-        context.startActivity(intent)
-    } catch (e: Exception) {
-        Log.e(TAG, "openStoragePermissionSettings: precise intent failed, pkg=${context.packageName}", e)
-        try {
-            context.startActivity(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
-        } catch (ex: Exception) {
-            Log.e(TAG, "openStoragePermissionSettings: fallback intent also failed", ex)
-        }
-    }
-}
-
-@Composable
-private fun StoragePermissionGate(onGrantClick: () -> Unit) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = 48.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-    ) {
-        Text(
-            text = "需要存储权限加载插件",
-            style = MaterialTheme.typography.titleMedium,
-            textAlign = TextAlign.Center
-        )
-        Spacer(modifier = Modifier.height(8.dp))
-        Text(
-            text = "插件存放在外部存储目录，需要授予「所有文件访问权限」才能加载和管理插件",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.Center
-        )
-        Spacer(modifier = Modifier.height(24.dp))
-        Button(onClick = onGrantClick) {
-            Text("授予权限")
-        }
-    }
 }
