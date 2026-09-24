@@ -8,15 +8,13 @@ package me.rerere.rikkahub.plugin.manager
  
 import android.content.Context
 import android.net.Uri
+import me.rerere.rikkahub.AppScope
 import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import kotlinx.serialization.encodeToString
-import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import me.rerere.rikkahub.data.security.SecurityAuditRepository
 import me.rerere.rikkahub.data.service.DailySummaryService
@@ -38,13 +36,9 @@ class PluginManager(
     private val scanner: PluginScanner,
     private val loader: PluginLoader,
     private val repository: PluginRepository,
+    private val appScope: AppScope,
     private val auditRepo: SecurityAuditRepository? = null,
 ) {
-    private val json = Json {
-        ignoreUnknownKeys = true
-        isLenient = true
-    }
- 
     private val _plugins = MutableStateFlow<List<PluginInfo>>(emptyList())
     val plugins: StateFlow<List<PluginInfo>> = _plugins.asStateFlow()
  
@@ -61,7 +55,7 @@ class PluginManager(
     private val initializationDeferred = CompletableDeferred<Unit>()
 
     init {
-        CoroutineScope(Dispatchers.IO).launch {
+        appScope.launch(Dispatchers.IO) {
             try {
                 refreshFolders()
                 refreshPlugins()
@@ -86,7 +80,7 @@ class PluginManager(
             val assignments = repository.getFolderAssignments()
             val pluginsWithConfig = scannedPlugins.map { plugin ->
                 val savedConfig = repository.getPluginConfig(plugin.manifest.id)
-                val isEnabled = repository.isPluginEnabled(plugin.manifest.id)
+                val isEnabled = plugin.isEnabled && repository.isPluginEnabled(plugin.manifest.id)
                 val folderId = assignments[plugin.manifest.id]
                 plugin.copy(config = savedConfig, isEnabled = isEnabled, folderId = folderId)
             }
@@ -100,6 +94,11 @@ class PluginManager(
                     status = "blocked",
                 )
             }
+            val activePlugins = pluginsWithConfig.associateBy { it.manifest.id }
+            loader.getAllLoadedPlugins()
+                .filter { loaded -> activePlugins[loaded.id]?.isEnabled != true }
+                .forEach { loaded -> loader.unloadPlugin(loaded.id) }
+
             _plugins.value = pluginsWithConfig
             pluginsWithConfig.filter { it.isEnabled }.forEach { plugin ->
                 if (loader.getLoadedPlugin(plugin.manifest.id) == null) {

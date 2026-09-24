@@ -59,6 +59,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import me.rerere.rikkahub.data.files.SafeFileResolver
 import me.rerere.ai.core.MessageRole
 import me.rerere.ai.provider.ProviderManager
 import me.rerere.ai.provider.TextGenerationParams
@@ -342,7 +343,8 @@ fun PluginWebViewPage(
                         }
 
                         // Duplicate detection: existing in music/ OR already seen in this batch
-                        val targetFile = File(musicDir, fileName)
+                        val targetFile = dataStore.resolveDataFile("music/$fileName")
+                            ?: throw SecurityException("Invalid file name")
                         if (targetFile.exists() || seenInBatch.contains(fileName)) {
                             val escapedDup = fileName.replace("\\", "\\\\").replace("'", "\\'")
                             if (duplicates.isNotEmpty()) duplicates.append(",")
@@ -763,8 +765,8 @@ fun PluginWebViewPage(
                             // 禁用原生长按选择菜单 - 通过CSS/JS控制，不再用原生拦截
                             // （原生setOnLongClickListener会阻止批注模式的文字选择）
 
-                            val htmlFile = File(pluginInfo.directory, htmlEntryPath)
-                            if (htmlFile.exists()) {
+                            val htmlFile = SafeFileResolver.resolveInside(pluginInfo.directory, htmlEntryPath)
+                            if (htmlFile?.isFile == true) {
                                 loadUrl("file://${htmlFile.absolutePath}")
                             } else {
                                 loadData(
@@ -964,8 +966,8 @@ private class PluginWebViewClient(
                 val fileName = params["fileName"] ?: ""
                 val base64Data = params["data"] ?: ""
                 try {
-                    val dir = dataStore.getDataDir()
-                    val file = File(dir, fileName)
+                    val file = dataStore.resolveDataFile(fileName)
+                        ?: throw SecurityException("Invalid data file path")
                     val bytes = Base64.decode(base64Data, Base64.DEFAULT)
                     file.writeBytes(bytes)
                     webView.post {
@@ -985,8 +987,8 @@ private class PluginWebViewClient(
             "readFile" -> {
                 val fileName = params["fileName"] ?: ""
                 try {
-                    val dir = dataStore.getDataDir()
-                    val file = File(dir, fileName)
+                    val file = dataStore.resolveDataFile(fileName)
+                        ?: throw SecurityException("Invalid data file path")
                     if (file.exists()) {
                         val bytes = file.readBytes()
                         val base64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
@@ -1013,9 +1015,8 @@ private class PluginWebViewClient(
 
             "listFiles" -> {
                 val dirPath = params["dir"] ?: ""
-                val baseDir = if (dirPath.isEmpty()) dataStore.getDataDir()
-                              else File(dataStore.getDataDir(), dirPath)
-                val files = if (baseDir.exists() && baseDir.isDirectory) {
+                val baseDir = dataStore.resolveDataFile(dirPath)
+                val files = if (baseDir?.exists() == true && baseDir.isDirectory) {
                     baseDir.listFiles()?.map { it.name } ?: emptyList()
                 } else emptyList()
                 val jsonArray = JSONArray(files)
@@ -1028,9 +1029,8 @@ private class PluginWebViewClient(
 
             "deleteFile" -> {
                 val fileName = params["fileName"] ?: ""
-                val dir = dataStore.getDataDir()
-                val file = File(dir, fileName)
-                val result = file.delete()
+                val file = dataStore.resolveDataFile(fileName)
+                val result = file?.delete() == true
                 webView.post {
                     webView.evaluateJavascript(
                         "window.__bridgeResult('${params["callbackId"]}', $result);", null
@@ -1043,7 +1043,9 @@ private class PluginWebViewClient(
                 val title = params["title"] ?: ""
                 val artist = params["artist"] ?: ""
                 try {
-                    MusicPlayerService.play(webView.context, filePath, title, artist)
+                    val safeFile = dataStore.resolveDataFile(filePath)?.takeIf { it.isFile }
+                        ?: throw SecurityException("Invalid music file path")
+                    MusicPlayerService.play(webView.context, safeFile.absolutePath, title, artist)
                     webView.post {
                         webView.evaluateJavascript(
                             "window.__bridgeResult('${params["callbackId"]}', {success:true});", null

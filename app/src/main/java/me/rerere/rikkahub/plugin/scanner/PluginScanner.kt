@@ -10,6 +10,7 @@ import android.content.Context
 import android.net.Uri
 import android.os.Environment
 import kotlinx.serialization.json.Json
+import me.rerere.rikkahub.data.files.SafeFileResolver
 import me.rerere.rikkahub.data.security.SecurityAuditRepository
 import me.rerere.rikkahub.plugin.model.PluginInfo
 import me.rerere.rikkahub.plugin.model.PluginManifest
@@ -98,6 +99,8 @@ class PluginScanner(
         return try {
             val content = manifestFile.readText()
             val manifest = json.decodeFromString(PluginManifest.serializer(), content)
+            validateManifest(manifest, pluginDir)
+            require(manifest.id == pluginDir.name) { "插件目录与清单 ID 不一致" }
 
             // 完整性校验：若存在 .integrity 文件则验证，失败则禁用并标记错误
             val integrityFile = File(pluginDir, ".integrity")
@@ -146,31 +149,35 @@ class PluginScanner(
      * 调用方确认后应调用 [completeImport] 完成导入；取消时应清理临时目录。
      */
     suspend fun previewFromZip(uri: Uri): Result<Pair<PluginManifest, File>> {
+        val tempFile = File(context.cacheDir, "plugin_preview_${System.currentTimeMillis()}.zip")
+        var tempDir: File? = null
         return try {
-            val tempFile = File(context.cacheDir, "plugin_preview_${System.currentTimeMillis()}.zip")
             context.contentResolver.openInputStream(uri)?.use { input ->
                 FileOutputStream(tempFile).use { output ->
                     input.copyTo(output)
                 }
             } ?: return Result.failure(IllegalStateException("无法读取文件"))
 
-            val tempDir = File(context.cacheDir, "plugin_preview_${System.currentTimeMillis()}")
-            unzip(tempFile, tempDir)
+            val extractedDir = File(context.cacheDir, "plugin_preview_${System.currentTimeMillis()}")
+            tempDir = extractedDir
+            unzip(tempFile, extractedDir)
 
-            val manifestFile = findManifest(tempDir)
+            val manifestFile = findManifest(extractedDir)
                 ?: run {
-                    tempFile.delete()
-                    tempDir.deleteRecursively()
+                    extractedDir.deleteRecursively()
                     return Result.failure(IllegalArgumentException("找不到 manifest.json"))
                 }
 
             val manifest = json.decodeFromString(PluginManifest.serializer(), manifestFile.readText())
-            validatePluginId(manifest.id)
+            validateManifest(manifest, manifestFile.parentFile)
 
-            // 预览阶段保留 tempFile 和 tempDir，供后续 completeImport 使用
-            Result.success(manifest to tempDir)
+            // 预览阶段只保留解压目录，供后续 completeImport 使用
+            Result.success(manifest to extractedDir)
         } catch (e: Exception) {
+            tempDir?.deleteRecursively()
             Result.failure(e)
+        } finally {
+            tempFile.delete()
         }
     }
 
@@ -188,14 +195,20 @@ class PluginScanner(
                     return Result.failure(IllegalArgumentException("找不到 manifest.json"))
                 }
 
-            val entryFile = File(manifestFile.parentFile, manifest.entry)
-            if (!entryFile.exists()) {
+            val actualManifest = json.decodeFromString<PluginManifest>(manifestFile.readText())
+            require(actualManifest == manifest) {
+                "插件预览内容已变化，请重新选择文件"
+            }
+            val manifestRoot = manifestFile.parentFile ?: throw IllegalArgumentException("插件目录无效")
+            validateManifest(actualManifest, manifestRoot)
+            val entryFile = SafeFileResolver.resolveInside(manifestRoot, manifest.entry)
+            if (entryFile == null || !entryFile.isFile) {
                 tempDir.deleteRecursively()
                 return Result.failure(IllegalArgumentException("找不到入口文件: ${manifest.entry}"))
             }
 
             val pluginDir = File(pluginsDir, manifest.id)
-            installPluginDirectory(manifestFile.parentFile, pluginDir)
+            installPluginDirectory(manifestRoot, pluginDir)
             tempDir.deleteRecursively()
 
             // 写入完整性校验和
@@ -224,9 +237,10 @@ class PluginScanner(
      * 从ZIP文件导入插件（旧版一次性导入，保留用于兼容）
      */
     suspend fun importFromZip(uri: Uri): Result<PluginInfo> {
+        val tempFile = File(context.cacheDir, "plugin_import_${System.currentTimeMillis()}.zip")
+        var tempDir: File? = null
         return try {
             // 1. 复制到临时文件
-            val tempFile = File(context.cacheDir, "plugin_import_${System.currentTimeMillis()}.zip")
             context.contentResolver.openInputStream(uri)?.use { input ->
                 FileOutputStream(tempFile).use { output ->
                     input.copyTo(output)
@@ -234,43 +248,48 @@ class PluginScanner(
             } ?: return Result.failure(IllegalStateException("无法读取文件"))
 
             // 2. 解压到临时目录
-            val tempDir = File(context.cacheDir, "plugin_import_${System.currentTimeMillis()}")
-            unzip(tempFile, tempDir)
+            val extractedDir = File(context.cacheDir, "plugin_import_${System.currentTimeMillis()}")
+            tempDir = extractedDir
+            unzip(tempFile, extractedDir)
 
             // 3. 查找manifest.json
-            val manifestFile = findManifest(tempDir)
+            val manifestFile = findManifest(extractedDir)
                 ?: return Result.failure(IllegalArgumentException("找不到 manifest.json"))
 
             // 4. 解析manifest
             val content = manifestFile.readText()
             val manifest = json.decodeFromString(PluginManifest.serializer(), content)
-            validatePluginId(manifest.id)
+            val manifestRoot = manifestFile.parentFile ?: throw IllegalArgumentException("插件目录无效")
+            validateManifest(manifest, manifestRoot)
 
             // 5. 验证入口文件
-            val entryFile = File(manifestFile.parentFile, manifest.entry)
-            if (!entryFile.exists()) {
+            val entryFile = SafeFileResolver.resolveInside(manifestRoot, manifest.entry)
+            if (entryFile == null || !entryFile.isFile) {
                 tempFile.delete()
-                tempDir.deleteRecursively()
+                extractedDir.deleteRecursively()
                 return Result.failure(IllegalArgumentException("找不到入口文件: ${manifest.entry}"))
             }
 
             // 6. 安全安装；同 ID 插件视为升级，失败时恢复旧版
             val pluginDir = File(pluginsDir, manifest.id)
-            installPluginDirectory(manifestFile.parentFile, pluginDir)
+            installPluginDirectory(manifestRoot, pluginDir)
             runCatching {
                 File(pluginDir, ".integrity").writeText(computePluginChecksum(pluginDir))
             }
 
             // 7. 清理临时文件
             tempFile.delete()
-            tempDir.deleteRecursively()
+            extractedDir.deleteRecursively()
 
             // 9. 返回插件信息
             loadPluginInfo(pluginDir)?.let { Result.success(it) }
                 ?: Result.failure(IllegalStateException("无法加载插件信息"))
 
         } catch (e: Exception) {
+            tempDir?.deleteRecursively()
             Result.failure(e)
+        } finally {
+            tempFile.delete()
         }
     }
 
@@ -378,9 +397,29 @@ class PluginScanner(
             .sortedBy { it.relativeTo(dir).path.replace('\\', '/') }
             .forEach { file ->
                 digest.update(file.relativeTo(dir).path.replace('\\', '/').toByteArray(Charsets.UTF_8))
-                digest.update(file.readBytes())
+                file.inputStream().buffered().use { input ->
+                    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                    while (true) {
+                        val count = input.read(buffer)
+                        if (count <= 0) break
+                        digest.update(buffer, 0, count)
+                    }
+                }
             }
         return digest.digest().joinToString("") { "%02x".format(it) }
+    }
+
+    private fun validateManifest(manifest: PluginManifest, pluginRoot: File?) {
+        require(pluginRoot != null && pluginRoot.isDirectory) { "插件目录无效" }
+        validatePluginId(manifest.id)
+        require(SafeFileResolver.resolveInside(pluginRoot, manifest.entry)?.isFile == true) {
+            "入口文件路径无效: ${manifest.entry}"
+        }
+        manifest.customPageWebView?.let { page ->
+            require(SafeFileResolver.resolveInside(pluginRoot, page.entry)?.isFile == true) {
+                "管理页面路径无效: ${page.entry}"
+            }
+        }
     }
 
     private fun validatePluginId(pluginId: String) {

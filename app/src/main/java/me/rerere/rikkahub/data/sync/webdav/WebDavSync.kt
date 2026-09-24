@@ -14,6 +14,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import me.rerere.rikkahub.data.files.FileFolders
 import me.rerere.rikkahub.data.files.SkillPaths
+import me.rerere.rikkahub.data.files.SafeFileResolver
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.datastore.WebDavConfig
@@ -316,13 +317,15 @@ class WebDavSync(
                                         Log.i(TAG, "restoreFromBackupFile: Created upload directory")
                                     }
 
-                                    val targetFile = File(uploadFolder, fileName)
+                                    val targetFile = SafeFileResolver.resolveInside(uploadFolder, fileName)
+                                        ?: throw Exception("Invalid upload file path: ${zipEntry.name}")
                                     Log.i(
                                         TAG,
                                         "restoreFromBackupFile: Restoring file ${zipEntry.name} to ${targetFile.absolutePath}"
                                     )
 
                                     try {
+                                        targetFile.parentFile?.mkdirs()
                                         FileOutputStream(targetFile).use { outputStream ->
                                             zipIn.copyTo(outputStream)
                                         }

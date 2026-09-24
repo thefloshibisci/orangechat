@@ -8,7 +8,9 @@ package me.rerere.rikkahub.plugin.data
 
 import android.content.Context
 import android.content.SharedPreferences
+import me.rerere.rikkahub.data.files.SafeFileResolver
 import org.json.JSONArray
+import java.io.File
 
 /**
  * 插件数据存储，每个插件独立命名空间
@@ -59,18 +61,22 @@ class PluginDataStore(
 
     /** 清理插件卸载后留下的配置和文件数据。 */
     fun deleteAll() {
-        clearAll()
-        java.io.File(context.filesDir, "plugin_data/$pluginId").deleteRecursively()
+        prefs.edit().clear().commit()
+        File(context.filesDir, "plugin_data/$pluginId").deleteRecursively()
     }
 
     /**
      * 获取插件数据目录（用于存储图片等文件）
      */
-    fun getDataDir(): java.io.File {
-        val dir = java.io.File(context.filesDir, "plugin_data/$pluginId")
+    fun getDataDir(): File {
+        val dir = File(context.filesDir, "plugin_data/$pluginId")
         if (!dir.exists()) dir.mkdirs()
         return dir
     }
+
+    /** Resolve a plugin-owned file while keeping it inside the plugin data directory. */
+    fun resolveDataFile(relativePath: String): File? =
+        SafeFileResolver.resolveInside(getDataDir(), relativePath, allowRoot = true)
 
     /**
      * 获取所有数据作为 JSON 对象

@@ -24,6 +24,7 @@ import me.rerere.rikkahub.plugin.data.PluginDataStore
 import me.rerere.rikkahub.plugin.model.PluginInfo
 import okhttp3.OkHttpClient
 import java.util.concurrent.Executors
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlin.uuid.Uuid
  
@@ -64,12 +65,13 @@ class PluginLoader(
     }.asCoroutineDispatcher()
  
     // 已加载的插件缓存
-    private val loadedPlugins = mutableMapOf<String, LoadedPlugin>()
+    private val loadedPlugins = ConcurrentHashMap<String, LoadedPlugin>()
  
     /**
      * 加载插件
      */
     suspend fun loadPlugin(pluginInfo: PluginInfo): Result<LoadedPlugin> = withContext(pluginDispatcher) {
+        var sandbox: PluginSandbox? = null
         try {
             if (loadedPlugins.containsKey(pluginInfo.manifest.id)) {
                 doUnloadPlugin(pluginInfo.manifest.id)
@@ -80,7 +82,7 @@ class PluginLoader(
             }
  
             val entryFile = pluginInfo.getEntryFile()
-            if (!entryFile.exists()) {
+            if (entryFile == null || !entryFile.isFile) {
                 return@withContext Result.failure(
                     IllegalStateException("Entry file not found: ${pluginInfo.manifest.entry}")
                 )
@@ -89,25 +91,26 @@ class PluginLoader(
             // 为此插件创建独立的 PluginDataStore，并注入沙箱
             val dataStore = PluginDataStore(context, pluginInfo.manifest.id)
 
-            val sandbox = PluginSandbox(context, okHttpClient, memoryBankService, dataStore)
-            sandbox.allowedHosts = pluginInfo.manifest.allowedHosts
-            sandbox.initialize()
+            val pluginSandbox = PluginSandbox(context, okHttpClient, memoryBankService, dataStore)
+            sandbox = pluginSandbox
+            pluginSandbox.allowedHosts = pluginInfo.manifest.allowedHosts
+            pluginSandbox.initialize()
  
             val resolvedConfig = resolveModelConfig(pluginInfo)
-            sandbox.injectConfig(resolvedConfig)
- 
-            sandbox.evaluateFile(entryFile)
+            pluginSandbox.injectConfig(resolvedConfig)
+
+            pluginSandbox.evaluateFile(entryFile)
  
             val loadedPlugin = LoadedPlugin(
                 info = pluginInfo,
-                sandbox = sandbox
+                sandbox = pluginSandbox
             )
- 
-            val exportedNames = sandbox.getExportedFunctionNames()
+
+            val exportedNames = pluginSandbox.getExportedFunctionNames()
             Log.i(TAG, "Plugin ${pluginInfo.manifest.id} exported functions: $exportedNames")
  
             pluginInfo.manifest.tools.forEach { tool ->
-                if (!sandbox.hasFunction(tool.name)) {
+                if (!pluginSandbox.hasFunction(tool.name)) {
                     Log.w(TAG, "Tool '${tool.name}' declared in manifest but not found in exports (available: $exportedNames)")
                 } else {
                     Log.i(TAG, "Tool '${tool.name}' registered successfully")
@@ -117,6 +120,7 @@ class PluginLoader(
             loadedPlugins[pluginInfo.manifest.id] = loadedPlugin
             Result.success(loadedPlugin)
         } catch (e: Exception) {
+            runCatching { sandbox?.destroy() }
             Log.e(TAG, "Failed to load plugin ${pluginInfo.manifest.id}", e)
             Result.failure(e)
         }

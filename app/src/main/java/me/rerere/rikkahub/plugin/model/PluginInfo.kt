@@ -7,6 +7,7 @@
 package me.rerere.rikkahub.plugin.model
 
 import kotlinx.serialization.json.JsonElement
+import me.rerere.rikkahub.data.files.SafeFileResolver
 import java.io.File
 
 /**
@@ -55,5 +56,5 @@ data class PluginInfo(
     /**
      * 获取入口文件的完整路径
      */
-    fun getEntryFile(): File = File(directory, manifest.entry)
+    fun getEntryFile(): File? = SafeFileResolver.resolveInside(directory, manifest.entry)
 }

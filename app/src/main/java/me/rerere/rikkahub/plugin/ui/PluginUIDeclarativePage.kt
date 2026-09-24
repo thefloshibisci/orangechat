@@ -153,7 +153,8 @@ fun PluginUIDeclarativePage(
                     inputStream?.use { stream ->
                         val bytes = stream.readBytes()
                         val fileName = "img_${System.currentTimeMillis()}.png"
-                        val file = File(dataStore.getDataDir(), fileName)
+                        val file = dataStore.resolveDataFile(fileName)
+                            ?: throw SecurityException("Invalid plugin file path")
                         file.writeBytes(bytes)
                         imagePickerTarget?.let { target ->
                             formValues = formValues.toMutableMap().apply {
@@ -317,7 +318,7 @@ fun PluginUIDeclarativePage(
                         val obj = JSONObject(it)
                         if (obj.has("imageFile")) {
                             val fileName = obj.getString("imageFile")
-                            File(dataStore.getDataDir(), fileName).delete()
+                            dataStore.resolveDataFile(fileName)?.delete()
                         }
                     }
                 } catch (_: Exception) {}
@@ -325,7 +326,7 @@ fun PluginUIDeclarativePage(
             "file_delete" -> {
                 val fileNameTemplate = action.params["fileName"]?.jsonPrimitive?.contentOrNull ?: ""
                 val fileName = resolveTemplate(fileNameTemplate, fieldValues)
-                File(dataStore.getDataDir(), fileName).delete()
+                dataStore.resolveDataFile(fileName)?.delete()
             }
             "call_js_function" -> {
                 // 调用插件导出的 JS 函数，params 默认为整个表单 JSON (${form})
