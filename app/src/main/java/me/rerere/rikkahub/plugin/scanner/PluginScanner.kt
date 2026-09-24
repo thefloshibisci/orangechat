@@ -267,12 +267,16 @@ class PluginScanner(
     /**
      * 删除插件
      */
-    fun deletePlugin(pluginId: String): Boolean {
-        val pluginDir = File(pluginsDir, pluginId)
-        return if (pluginDir.exists()) {
-            pluginDir.deleteRecursively()
-        } else {
-            false
+    fun deletePlugin(pluginId: String): Result<Unit> {
+        return runCatching {
+            require(pluginId.isNotBlank() && pluginId != "." && pluginId != "..") { "插件 ID 无效" }
+            val root = pluginsDir.canonicalFile
+            val pluginDir = File(root, pluginId).canonicalFile
+            require(pluginDir.path.startsWith(root.path + File.separator)) { "插件路径无效" }
+            if (!pluginDir.exists()) throw java.io.IOException("插件目录不存在: ${pluginDir.name}")
+            if (!pluginDir.deleteRecursively() || pluginDir.exists()) {
+                throw java.io.IOException("插件目录删除失败，请检查存储权限或文件占用: ${pluginDir.path}")
+            }
         }
     }
 
@@ -291,7 +295,11 @@ class PluginScanner(
         ZipInputStream(zipFile.inputStream().buffered()).use { zis ->
             var entry: java.util.zip.ZipEntry? = zis.nextEntry
             while (entry != null) {
-                val file = File(destDir, entry.name)
+                val file = File(destDir, entry.name).canonicalFile
+                val root = destDir.canonicalFile
+                if (file != root && !file.path.startsWith(root.path + File.separator)) {
+                    throw java.io.IOException("ZIP 条目越过插件目录: ${entry.name}")
+                }
                 if (entry.isDirectory) {
                     file.mkdirs()
                 } else {

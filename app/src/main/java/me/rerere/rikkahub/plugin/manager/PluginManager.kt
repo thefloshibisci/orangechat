@@ -21,6 +21,7 @@ import kotlinx.serialization.json.JsonElement
 import me.rerere.rikkahub.data.security.SecurityAuditRepository
 import me.rerere.rikkahub.data.service.DailySummaryService
 import me.rerere.rikkahub.plugin.loader.PluginLoader
+import me.rerere.rikkahub.plugin.data.PluginDataStore
 import me.rerere.rikkahub.plugin.model.PluginFolder
 import me.rerere.rikkahub.plugin.model.PluginInfo
 import me.rerere.rikkahub.plugin.model.PluginManifest
@@ -183,16 +184,14 @@ class PluginManager(
         }
     }
  
-    suspend fun deletePlugin(pluginId: String): Boolean {
-        return try {
+    suspend fun deletePlugin(pluginId: String): Result<Unit> {
+        return runCatching {
             loader.unloadPlugin(pluginId)
-            val deleted = scanner.deletePlugin(pluginId)
+            scanner.deletePlugin(pluginId).getOrThrow()
             repository.removePlugin(pluginId)
             repository.setPluginFolder(pluginId, null)
+            PluginDataStore(context, pluginId).deleteAll()
             refreshPlugins()
-            deleted
-        } catch (e: Exception) {
-            false
         }
     }
  

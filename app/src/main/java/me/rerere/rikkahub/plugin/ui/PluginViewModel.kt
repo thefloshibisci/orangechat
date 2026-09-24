@@ -146,12 +146,11 @@ class PluginViewModel(
         viewModelScope.launch {
             _operationState.value = OperationState.Loading
             try {
-                val success = pluginManager.deletePlugin(pluginId)
-                _operationState.value = if (success) {
-                    OperationState.Success("Plugin deleted")
-                } else {
-                    OperationState.Error("Failed to delete plugin")
-                }
+                val result = pluginManager.deletePlugin(pluginId)
+                _operationState.value = result.fold(
+                    onSuccess = { OperationState.Success("插件已删除") },
+                    onFailure = { OperationState.Error(it.message ?: "删除插件失败") }
+                )
             } catch (e: Exception) {
                 _operationState.value = OperationState.Error(e.message ?: "Unknown error")
             }

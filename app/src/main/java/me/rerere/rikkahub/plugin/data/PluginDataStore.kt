@@ -57,6 +57,12 @@ class PluginDataStore(
         prefs.edit().clear().apply()
     }
 
+    /** 清理插件卸载后留下的配置和文件数据。 */
+    fun deleteAll() {
+        clearAll()
+        java.io.File(context.filesDir, "plugin_data/$pluginId").deleteRecursively()
+    }
+
     /**
      * 获取插件数据目录（用于存储图片等文件）
      */
