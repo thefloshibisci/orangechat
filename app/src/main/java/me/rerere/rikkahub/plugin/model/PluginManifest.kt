@@ -100,6 +100,7 @@ data class PluginManifest(
      * 插件权限声明
      * 支持的权限:
      * - "ai_chat": 允许插件调用 AI 生成文本（Bridge.callAI）
+     * - "provider_credentials": 允许 QuickJS 插件读取所选模型的 API key 配置（谨慎授予）
      * - "disable_native_selection": 禁用 WebView 原生长按选择菜单，由 JS 自行处理选区
      */
     val permissions: List<String> = emptyList(),

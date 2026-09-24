@@ -25,6 +25,7 @@ import me.rerere.rikkahub.plugin.model.PluginInfo
 import okhttp3.OkHttpClient
 import java.util.concurrent.Executors
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlin.uuid.Uuid
  
@@ -63,6 +64,7 @@ class PluginLoader(
     private val pluginDispatcher = Executors.newSingleThreadExecutor { r ->
         Thread(r, "plugin-quickjs").apply { isDaemon = true }
     }.asCoroutineDispatcher()
+    private val closed = AtomicBoolean(false)
  
     // 已加载的插件缓存
     private val loadedPlugins = ConcurrentHashMap<String, LoadedPlugin>()
@@ -71,6 +73,7 @@ class PluginLoader(
      * 加载插件
      */
     suspend fun loadPlugin(pluginInfo: PluginInfo): Result<LoadedPlugin> = withContext(pluginDispatcher) {
+        check(!closed.get()) { "Plugin loader is closed" }
         var sandbox: PluginSandbox? = null
         try {
             if (loadedPlugins.containsKey(pluginInfo.manifest.id)) {
@@ -150,6 +153,7 @@ class PluginLoader(
      */
     suspend fun callTool(pluginId: String, toolName: String, params: JsonElement): Result<JsonElement> {
         return withContext(pluginDispatcher) {
+            if (closed.get()) return@withContext Result.failure(IllegalStateException("Plugin loader is closed"))
             try {
                 val plugin = loadedPlugins[pluginId]
                     ?: return@withContext Result.failure(IllegalStateException("Plugin not loaded: $pluginId"))
@@ -176,6 +180,7 @@ class PluginLoader(
      */
     suspend fun callEvent(event: String, params: JsonElement) {
         withContext(pluginDispatcher) {
+            if (closed.get()) return@withContext
             for (plugin in loadedPlugins.values) {
                 if (!plugin.info.isEnabled) continue
                 val matchingHooks = plugin.info.manifest.hooks.filter { it.event == event }
@@ -240,7 +245,9 @@ class PluginLoader(
  
                     config[field.name] = JsonPrimitive(model.modelId)
                     config["${field.name}_base_url"] = JsonPrimitive(baseUrl)
-                    config["${field.name}_api_key"] = JsonPrimitive(apiKey)
+                    if (pluginInfo.manifest.permissions.contains("provider_credentials")) {
+                        config["${field.name}_api_key"] = JsonPrimitive(apiKey)
+                    }
                     Log.d(TAG, "Resolved model config '${field.name}': modelId=${model.modelId}, baseUrl=$baseUrl")
                 } catch (e: Exception) {
                     Log.w(TAG, "Failed to resolve model config '${field.name}': ${e.message}")
@@ -252,5 +259,14 @@ class PluginLoader(
  
     suspend fun unloadAll() = withContext(pluginDispatcher) {
         loadedPlugins.keys.toList().forEach { doUnloadPlugin(it) }
+    }
+
+    /** Release the QuickJS thread and all sandboxes when the host process is torn down. */
+    suspend fun close() {
+        if (!closed.compareAndSet(false, true)) return
+        withContext(pluginDispatcher) {
+            loadedPlugins.keys.toList().forEach { doUnloadPlugin(it) }
+        }
+        pluginDispatcher.close()
     }
 }

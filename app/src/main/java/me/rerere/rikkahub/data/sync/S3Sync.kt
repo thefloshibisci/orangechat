@@ -38,6 +38,7 @@ class S3Sync(
     private val json: Json,
     private val context: Context,
     private val httpClient: HttpClient,
+    private val databaseBackupCoordinator: DatabaseBackupCoordinator,
 ) {
     private fun getS3Client(config: S3Config): S3Client {
         return S3Client(config, httpClient)
@@ -133,19 +134,11 @@ class S3Sync(
 
             // Backup database files
             if (config.items.contains(S3Config.BackupItem.DATABASE)) {
-                val dbFile = context.getDatabasePath("rikka_hub")
-                if (dbFile.exists()) {
-                    addFileToZip(zipOut, dbFile, "rikka_hub.db")
-                }
-
-                val walFile = File(dbFile.parentFile, "rikka_hub-wal")
-                if (walFile.exists()) {
-                    addFileToZip(zipOut, walFile, "rikka_hub-wal")
-                }
-
-                val shmFile = File(dbFile.parentFile, "rikka_hub-shm")
-                if (shmFile.exists()) {
-                    addFileToZip(zipOut, shmFile, "rikka_hub-shm")
+                val snapshot = databaseBackupCoordinator.createConsistentSnapshot()
+                try {
+                    addFileToZip(zipOut, snapshot, "rikka_hub.db")
+                } finally {
+                    snapshot.delete()
                 }
             }
 
@@ -187,6 +180,9 @@ class S3Sync(
 
     private suspend fun restoreFromBackupFile(backupFile: File, config: S3Config) = withContext(Dispatchers.IO) {
         Log.i(TAG, "restoreFromBackupFile: Starting restore from ${backupFile.absolutePath}")
+        if (config.items.contains(S3Config.BackupItem.DATABASE)) {
+            databaseBackupCoordinator.beginRestore()
+        }
 
         ZipInputStream(FileInputStream(backupFile)).use { zipIn ->
             var entry: ZipEntry?
@@ -211,35 +207,8 @@ class S3Sync(
 
                         "rikka_hub.db", "rikka_hub-wal", "rikka_hub-shm" -> {
                             if (config.items.contains(S3Config.BackupItem.DATABASE)) {
-                                val dbFile = when (zipEntry.name) {
-                                    "rikka_hub.db" -> context.getDatabasePath("rikka_hub")
-                                    "rikka_hub-wal" -> File(
-                                        context.getDatabasePath("rikka_hub").parentFile,
-                                        "rikka_hub-wal"
-                                    )
-
-                                    "rikka_hub-shm" -> File(
-                                        context.getDatabasePath("rikka_hub").parentFile,
-                                        "rikka_hub-shm"
-                                    )
-
-                                    else -> null
-                                }
-
-                                dbFile?.let { targetFile ->
-                                    Log.i(
-                                        TAG,
-                                        "restoreFromBackupFile: Restoring ${zipEntry.name} to ${targetFile.absolutePath}"
-                                    )
-                                    targetFile.parentFile?.mkdirs()
-                                    FileOutputStream(targetFile).use { outputStream ->
-                                        zipIn.copyTo(outputStream)
-                                    }
-                                    Log.i(
-                                        TAG,
-                                        "restoreFromBackupFile: Restored ${zipEntry.name} (${targetFile.length()} bytes)"
-                                    )
-                                }
+                                databaseBackupCoordinator.stageRestorePart(zipEntry.name, zipIn)
+                                Log.i(TAG, "restoreFromBackupFile: Staged ${zipEntry.name} for next launch")
                             }
                         }
 
@@ -289,6 +258,10 @@ class S3Sync(
                     zipIn.closeEntry()
                 }
             }
+        }
+
+        if (config.items.contains(S3Config.BackupItem.DATABASE)) {
+            databaseBackupCoordinator.commitStagedRestore()
         }
 
         Log.i(TAG, "restoreFromBackupFile: Restore completed successfully")
