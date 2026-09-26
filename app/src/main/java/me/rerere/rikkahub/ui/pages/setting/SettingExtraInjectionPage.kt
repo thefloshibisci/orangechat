@@ -167,7 +167,7 @@ internal fun ExtraInjectionSettingsContent(
                     }
                     injectionToggle("当前屏幕文字", option.screenTextContextInjectionEnabled, enabled,
                         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) "当前系统不支持屏幕 OCR，需要 Android 11 或更高版本。"
-                        else "需无障碍服务；本地 OCR，最多 4000 字。识别文字会发送给聊天模型，不在后台截屏。") { value ->
+                        else "需无障碍服务；本地 OCR 失败时尝试读取同一窗口的可见界面文字，最多 4000 字。文字会发送给聊天模型，不在后台截屏。") { value ->
                         updateSystemToolsSetting { it.copy(screenTextContextInjectionEnabled = value) }
                     }
                     injectionToggle("最近通知", option.notificationsContextInjectionEnabled, enabled,

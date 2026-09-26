@@ -53,7 +53,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.util.fastForEach
+import androidx.compose.ui.util.fastForEachIndexed
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.model.Assistant
@@ -322,19 +322,11 @@ private fun AssistantMemoryContent(
             }
         }
 
-        memories.fastForEach { memory ->
-            key(memory.id) {
-                MemoryItem(
-                    memory = memory,
-                    onEditMemory = {
-                        memoryDialogState.open(it)
-                    },
-                    onDeleteMemory = {
-                        pendingDeleteMemory = it
-                    }
-                )
-            }
-        }
+        AssistantMemoryList(
+            memories = memories,
+            onEditMemory = { memoryDialogState.open(it) },
+            onDeleteMemory = { pendingDeleteMemory = it },
+        )
     }
 
     RikkaConfirmDialog(
@@ -439,8 +431,27 @@ private fun ExternalMemoryPickerDialog(
 }
 
 @Composable
+internal fun AssistantMemoryList(
+    memories: List<AssistantMemory>,
+    onEditMemory: (AssistantMemory) -> Unit,
+    onDeleteMemory: (AssistantMemory) -> Unit,
+) {
+    memories.fastForEachIndexed { index, memory ->
+        key(memory.id) {
+            MemoryItem(
+                memory = memory,
+                displayNumber = index + 1,
+                onEditMemory = onEditMemory,
+                onDeleteMemory = onDeleteMemory,
+            )
+        }
+    }
+}
+
+@Composable
 private fun MemoryItem(
     memory: AssistantMemory,
+    displayNumber: Int,
     onEditMemory: (AssistantMemory) -> Unit,
     onDeleteMemory: (AssistantMemory) -> Unit
 ) {
@@ -460,7 +471,7 @@ private fun MemoryItem(
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 Text(
-                    text = "#${memory.id}",
+                    text = "#$displayNumber",
                     style = MaterialTheme.typography.titleMediumEmphasized,
                 )
                 Text(

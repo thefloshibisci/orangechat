@@ -51,3 +51,11 @@
 -keepattributes Signature, InnerClasses, EnclosingMethod
 -keep class com.fasterxml.jackson.** { *; }
 -keep class com.auth0.jwt.** { *; }
+
+# Bundled screen OCR uses Dynamite reflection, JNI callbacks and generated proto schemas.
+# Keep this engine's runtime intact in optimized release builds (debug does not run R8).
+-keep class com.google.android.gms.dynamite.descriptors.com.google.mlkit.dynamite.text.** { *; }
+-keep class com.google.mlkit.vision.text.bundled.** { *; }
+-keep class com.google.mlkit.vision.text.pipeline.** { *; }
+-keep class com.google.android.libraries.vision.visionkit.pipeline.** { *; }
+-keep class com.google.android.gms.internal.mlkit_vision_text_bundled_common.** { *; }

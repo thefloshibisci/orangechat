@@ -6,63 +6,38 @@
 
 package me.rerere.rikkahub.data.ai.transformers
 
-import kotlin.time.Instant
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toInstant
 import me.rerere.ai.core.MessageRole
 import me.rerere.ai.ui.UIMessage
-import me.rerere.rikkahub.utils.toLocalDateTime
-import java.time.ZoneId
-import java.time.format.TextStyle
-import java.util.Locale
-import kotlin.time.Clock
-import kotlin.time.toJavaInstant
+import me.rerere.rikkahub.data.model.Assistant
 
 private const val DEFAULT_REPLY_GAP_THRESHOLD_SECONDS = 3600L
 
-/** 当前时间是全局开关；回复间隔恢复为每个助手独立设置。 */
+/** Current time belongs exclusively to ExtraInfoInjectionCollector; reply gaps are assistant-scoped. */
 object TimeReminderTransformer : InputMessageTransformer {
     override suspend fun transform(
         ctx: TransformerContext,
         messages: List<UIMessage>,
     ): List<UIMessage> {
-        val setting = ctx.settings.systemToolsSetting
-        return applyExtraTimeContext(
-            messages = messages,
-            // The request-scoped collector now owns current time; keep reply-gap behavior here.
-            currentTimeEnabled = setting.timeContextInjectionEnabled && !setting.extraInfoInjectionEnabled,
-            replyIntervalEnabled = ctx.assistant.enableTimeReminder,
-            thresholdSeconds = ctx.assistant.timeReminderIntervalMinutes.coerceAtLeast(1) * 60L,
-            currentInstant = Clock.System.now(),
-        )
+        return transformReplyIntervals(messages, ctx.assistant)
     }
 }
 
-internal fun applyExtraTimeContext(
+internal fun transformReplyIntervals(messages: List<UIMessage>, assistant: Assistant): List<UIMessage> =
+    applyReplyIntervalContext(
+        messages = messages,
+        enabled = assistant.enableTimeReminder,
+        thresholdSeconds = assistant.timeReminderIntervalMinutes.coerceAtLeast(1) * 60L,
+    )
+
+internal fun applyReplyIntervalContext(
     messages: List<UIMessage>,
-    currentTimeEnabled: Boolean,
-    replyIntervalEnabled: Boolean,
+    enabled: Boolean,
     thresholdSeconds: Long = DEFAULT_REPLY_GAP_THRESHOLD_SECONDS,
-    currentInstant: Instant = Clock.System.now(),
 ): List<UIMessage> {
-    if (messages.isEmpty()) return messages
-    if (!currentTimeEnabled && !replyIntervalEnabled) return messages
-
-    val withReplyIntervals = if (replyIntervalEnabled) {
-        insertReplyIntervalReminders(messages, thresholdSeconds)
-    } else {
-        messages
-    }
-
-    val latestUserIndex = withReplyIntervals.indexOfLast { it.role == MessageRole.USER }
-    if (latestUserIndex == -1) return withReplyIntervals
-
-    return buildList(withReplyIntervals.size + if (currentTimeEnabled) 1 else 0) {
-        withReplyIntervals.forEachIndexed { index, message ->
-            if (index == latestUserIndex && currentTimeEnabled) add(buildCurrentTimeContext(currentInstant))
-            add(message)
-        }
-    }
+    if (!enabled || messages.isEmpty()) return messages
+    return insertReplyIntervalReminders(messages, thresholdSeconds)
 }
 
 private fun insertReplyIntervalReminders(
@@ -90,16 +65,6 @@ private fun insertReplyIntervalReminders(
             ),
         )
     }
-}
-
-private fun buildCurrentTimeContext(instant: Instant): UIMessage {
-    val javaInstant = instant.toJavaInstant()
-    val dayOfWeek = javaInstant.atZone(ZoneId.systemDefault()).dayOfWeek
-        .getDisplayName(TextStyle.FULL, Locale.getDefault())
-    val timeStr = javaInstant.toLocalDateTime()
-    return UIMessage.user(
-        "<time_context>当前本地时间：$dayOfWeek，$timeStr</time_context>",
-    )
 }
 
 private fun formatGap(seconds: Long): String {

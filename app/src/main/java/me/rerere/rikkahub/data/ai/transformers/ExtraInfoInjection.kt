@@ -14,17 +14,12 @@ import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.os.BatteryManager
 import android.os.Process
-import android.os.Build
 import androidx.core.content.ContextCompat
-import com.google.mlkit.vision.common.InputImage
-import com.google.mlkit.vision.text.TextRecognition
-import com.google.mlkit.vision.text.chinese.ChineseTextRecognizerOptions
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.async
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -79,7 +74,7 @@ class ExtraInfoInjectionCollector(
         .build()
     private data class Item(
         val name: String,
-        val collect: suspend () -> String,
+        val collect: suspend () -> ExtraInfoCollectionResult,
     )
 
     suspend fun collect(
@@ -92,45 +87,50 @@ class ExtraInfoInjectionCollector(
         val option = settings.systemToolsSetting
         if (!option.extraInfoInjectionEnabled) return@coroutineScope null
 
+        val timeoutMillis = option.extraInfoInjectionTimeoutSeconds.coerceIn(1, 120) * 1_000L
         val items = buildList {
-            if (option.timeContextInjectionEnabled) add(Item("当前时间", ::currentTime))
-            if (option.batteryContextInjectionEnabled) add(Item("电池信息", ::battery))
-            if (option.weatherContextInjectionEnabled) add(Item("当前天气", ::weather))
+            fun source(name: String, collect: suspend () -> String) {
+                add(Item(name) { collectExtraInfoItem(timeoutMillis, collect) })
+            }
+            if (option.shouldInjectTimeContext(proactive)) source("当前时间", ::currentTime)
+            if (option.batteryContextInjectionEnabled) source("电池信息", ::battery)
+            if (option.weatherContextInjectionEnabled) source("当前天气", ::weather)
             if (option.locationContextInjectionEnabled) {
-                add(Item("当前位置") {
+                source("当前位置") {
                     location(settings, false)
-                })
-                if (option.preciseLocationContextInjectionEnabled) add(Item("详细地址") {
+                }
+                if (option.preciseLocationContextInjectionEnabled) source("详细地址") {
                     location(settings, true)
-                })
+                }
             }
             if (option.currentScreenAppContextInjectionEnabled) {
-                add(Item("当前屏幕应用", ::currentScreenApp))
+                source("当前屏幕应用", ::currentScreenApp)
             }
             if (option.recentAppUsageContextInjectionEnabled) {
-                add(Item("最近应用使用情况", ::recentAppUsage))
+                source("最近应用使用情况", ::recentAppUsage)
             }
             if (option.screenTextContextInjectionEnabled) add(Item("当前屏幕文字") {
-                if (proactive) throw ExtraInfoUnavailable(ExtraInfoIssue.BACKGROUND_SCREEN)
-                screenText()
+                collectExtraInfoResult(timeoutMillis) {
+                    if (proactive) throw ExtraInfoUnavailable(ExtraInfoIssue.BACKGROUND_SCREEN)
+                    readCurrentScreenText()
+                }
             })
-            if (option.notificationsContextInjectionEnabled) add(Item("最近通知", ::notifications))
+            if (option.notificationsContextInjectionEnabled) source("最近通知", ::notifications)
             if (option.memoryContextInjectionEnabled) {
-                add(Item("相关记忆") {
+                source("相关记忆") {
                     memories(
                         assistantId = assistantId,
                         queryText = queryText,
                         limit = option.memoryContextInjectionLimit.coerceIn(1, 20),
                     )
-                })
+                }
             }
         }
         if (items.isEmpty()) return@coroutineScope null
 
-        val timeoutMillis = option.extraInfoInjectionTimeoutSeconds.coerceIn(1, 120) * 1_000L
         val results = supervisorScope {
             items.map { item ->
-                async(Dispatchers.IO) { item.name to collectExtraInfoItem(timeoutMillis, item.collect) }
+                async(Dispatchers.IO) { item.name to item.collect() }
             }.awaitAll()
         }
         ExtraInfoDiagnostics.publish(proactive, results)
@@ -262,53 +262,6 @@ class ExtraInfoInjectionCollector(
                 "使用 ${service.formatUsageTime(entry.totalTimeInForeground)}，最后使用 $lastUsed"
         }
     }
-
-    private suspend fun screenText(): String {
-        val service = RikkaAccessibilityService.instance
-            ?: throw ExtraInfoUnavailable(ExtraInfoIssue.ACCESSIBILITY)
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) throw ExtraInfoUnavailable(ExtraInfoIssue.OCR_UNSUPPORTED)
-        var screenshot = service.captureScreenshot(android.view.Display.DEFAULT_DISPLAY)
-        if (screenshot is RikkaAccessibilityService.ScreenshotOutcome.Failure && screenshot.reason == "rate_limited") {
-            delay(350)
-            screenshot = service.captureScreenshot(android.view.Display.DEFAULT_DISPLAY)
-        }
-        return when (val capture = screenshot) {
-            is RikkaAccessibilityService.ScreenshotOutcome.Failure -> {
-                throw ExtraInfoUnavailable(when (capture.reason) {
-                    "no_access", "secure_window" -> ExtraInfoIssue.SCREEN_PROTECTED
-                    "rate_limited" -> ExtraInfoIssue.SCREEN_BUSY
-                    else -> ExtraInfoIssue.SCREEN_FAILED
-                })
-            }
-
-            is RikkaAccessibilityService.ScreenshotOutcome.Success -> {
-                recognizeScreenText(capture.bitmap).take(4_000)
-            }
-        }
-    }
-
-    private suspend fun recognizeScreenText(bitmap: android.graphics.Bitmap): String =
-        suspendCancellableCoroutine { continuation ->
-            val recognizer = TextRecognition.getClient(
-                ChineseTextRecognizerOptions.Builder().build(),
-            )
-            // ML Kit still owns the bitmap after coroutine cancellation until its task completes.
-            try {
-                recognizer.process(InputImage.fromBitmap(bitmap, 0))
-                    .addOnCompleteListener { task ->
-                        recognizer.close()
-                        bitmap.recycle()
-                        if (continuation.isActive) {
-                            if (task.isSuccessful) continuation.resume(task.result.text.trim())
-                            else continuation.resumeWithException(task.exception ?: IOException("OCR failed"))
-                        }
-                    }
-            } catch (error: Exception) {
-                recognizer.close()
-                bitmap.recycle()
-                if (continuation.isActive) continuation.resumeWithException(error)
-            }
-        }
 
     private fun notifications(): String {
         val componentName = android.content.ComponentName(

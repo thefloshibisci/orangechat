@@ -11,6 +11,21 @@ import org.junit.Test
 import kotlin.uuid.Uuid
 
 class ExtraInfoRequestTest {
+    @Test fun `switching master off discards cached time and never collects on retry`() = runBlocking {
+        val cache = ExtraInfoRequestCache()
+        val conversation = Uuid.random()
+        val assistant = Uuid.random()
+        val user = UIMessage.user("hello")
+        val enabled = SystemToolsSetting(timeContextInjectionEnabled = true)
+        assertEquals("old time", cache.resolve(conversation, assistant, user, enabled, true) { "old time" })
+        for (allowCollection in listOf(false, true)) {
+            val result = cache.resolve(conversation, assistant, user,
+                enabled.copy(extraInfoInjectionEnabled = false), allowCollection) { error("must not collect") }
+            assertNull(result)
+            assertEquals(listOf(user), attachExtraInfoToRequest(listOf(user), user.id, result))
+        }
+    }
+
     @Test fun `request-only injection leaves system history ids and tool chain unchanged`() {
         val user = UIMessage.user("question")
         val tool = UIMessage(role = MessageRole.ASSISTANT, parts = listOf(

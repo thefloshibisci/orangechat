@@ -254,7 +254,7 @@ class ProactiveMessageService {
 
     fun buildProactiveContext(settings: Settings, idleMinutes: Int): String = buildString {
         appendLine("距离聊天中的那个人最后一次开口：${formatIdleMinutes(idleMinutes)}")
-        if (settings.systemToolsSetting.timeContextInjectionEnabled) {
+        if (settings.systemToolsSetting.shouldInjectTimeContext(proactive = true)) {
             val sdf = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss EEEE", java.util.Locale.getDefault())
             appendLine("当前本地时间：${sdf.format(java.util.Date())}")
         }
@@ -549,7 +549,7 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 )
                 trace.event(
                     "proactive_context",
-                    "idleIncluded=true currentTimeIncluded=${settings.systemToolsSetting.timeContextInjectionEnabled}",
+                    "idleIncluded=true currentTimeIncluded=${settings.systemToolsSetting.shouldInjectTimeContext(proactive = true)}",
                 )
 
                 val rawHistoryMessages = conversation?.currentMessages?.let {

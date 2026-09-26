@@ -20,8 +20,7 @@ data class SystemToolsSetting(
     val ocrApiUrl: String = "",
     val ocrModel: String = "",
 
-    // Lightweight time context injection. This is deliberately independent
-    // from individual assistants so the user has one predictable switch.
+    // Time is a source under the extra-info master switch, independent of assistant reply gaps.
     val timeContextInjectionEnabled: Boolean = false,
     // One-shot context collection before a normal chat request. Each source is opt-in.
     val extraInfoInjectionEnabled: Boolean = true,
@@ -112,6 +111,10 @@ data class SystemToolsSetting(
     // Fingerprint: verify_fingerprint 工具, 弹出系统指纹/人脸验证框验证用户身份
     val fingerprintEnabled: Boolean = false,
 ) {
+    fun shouldInjectTimeContext(proactive: Boolean = false): Boolean =
+        extraInfoInjectionEnabled && timeContextInjectionEnabled &&
+            (!proactive || extraInfoInProactiveEnabled)
+
     fun getEnabledOptions(): Set<me.rerere.rikkahub.data.ai.tools.SystemToolOption> {
         val options = mutableSetOf<me.rerere.rikkahub.data.ai.tools.SystemToolOption>()
         if (locationAccess || locationExploreEnabled) options.add(me.rerere.rikkahub.data.ai.tools.SystemToolOption.Location)
