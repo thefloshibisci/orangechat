@@ -54,6 +54,12 @@
 
 # Bundled screen OCR uses Dynamite reflection, JNI callbacks and generated proto schemas.
 # Keep this engine's runtime intact in optimized release builds (debug does not run R8).
+# ML Kit discovers these registrars by manifest class name and invokes their public
+# no-argument constructors. Keeping only the class name leaves an uninstantiable
+# registrar in release DEX, so getClient cannot resolve its components.
+-keep class com.google.mlkit.** implements com.google.firebase.components.ComponentRegistrar {
+    public <init>();
+}
 -keep class com.google.android.gms.dynamite.descriptors.com.google.mlkit.dynamite.text.** { *; }
 -keep class com.google.mlkit.vision.text.bundled.** { *; }
 -keep class com.google.mlkit.vision.text.pipeline.** { *; }
