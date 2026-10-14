@@ -1544,7 +1544,11 @@ private class PluginWebViewClient(
                         // Calling take_screenshot again captures the chat/WebView instead and can
                         // override the valid frame with stale UI text (for example old OCR tests).
                         // Keep tools available as a fallback only when no frame was attached.
-                        enableTools = !attachedFrame,
+                        // Automatic co-watch messages deliberately suppress tools because the exact
+                        // video frame is already attached. Manual plugin messages (for example the
+                        // NAI studio sending an img2img base image) must keep the normal tool surface;
+                        // otherwise the assistant receives the image but cannot call nai_draw.
+                        enableTools = !(isAutomaticWatchMessage && attachedFrame),
                     )
                     JSONObject().put("success", true).put("status", "accepted")
                 }
