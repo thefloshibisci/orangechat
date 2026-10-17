@@ -92,7 +92,7 @@ fun BackupPage(vm: BackupVM = koinViewModel()) {
                 Tab(
                     selected = pagerState.currentPage == 3,
                     onClick = { scope.launch { pagerState.animateScrollToPage(3) } },
-                    text = { Text(stringResource(R.string.backup_page_reminder)) }
+                    text = { Text("自动备份 / 提醒") }
                 )
             }
 

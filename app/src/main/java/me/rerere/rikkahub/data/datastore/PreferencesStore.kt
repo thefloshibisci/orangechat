@@ -167,6 +167,7 @@ class SettingsStore(
 
         // 备份提醒
         val BACKUP_REMINDER_CONFIG = stringPreferencesKey("backup_reminder_config")
+        val AUTO_BACKUP_CONFIG = stringPreferencesKey("auto_backup_config")
 
         // 统计
         val LAUNCH_COUNT = intPreferencesKey("launch_count")
@@ -330,6 +331,9 @@ class SettingsStore(
                 backupReminderConfig = preferences[BACKUP_REMINDER_CONFIG]?.let {
                     JsonInstant.decodeFromString(it)
                 } ?: BackupReminderConfig(),
+                autoBackupConfig = preferences[AUTO_BACKUP_CONFIG]?.let {
+                    JsonInstant.decodeFromString<AutoBackupConfig>(it)
+                } ?: AutoBackupConfig(),
                 launchCount = preferences[LAUNCH_COUNT] ?: 0,
                 sponsorAlertDismissedAt = preferences[SPONSOR_ALERT_DISMISSED_AT] ?: 0,
                 systemToolsSetting = preferences.readPlaintextOrMigrate(SYSTEM_TOOLS_SETTING, SystemToolsSetting()) { JsonInstant.decodeFromString(it) },
@@ -636,6 +640,7 @@ class SettingsStore(
             }
             preferences[WEB_SERVER_LOCALHOST_ONLY] = settings.webServerLocalhostOnly
             preferences[BACKUP_REMINDER_CONFIG] = JsonInstant.encodeToString(settings.backupReminderConfig)
+            preferences[AUTO_BACKUP_CONFIG] = JsonInstant.encodeToString(settings.autoBackupConfig)
             preferences[LAUNCH_COUNT] = settings.launchCount
             preferences[SPONSOR_ALERT_DISMISSED_AT] = settings.sponsorAlertDismissedAt
             if (canWriteProtected(SYSTEM_TOOLS_SETTING, settings.systemToolsSetting, loadedSettings.systemToolsSetting)) {
@@ -835,6 +840,7 @@ data class Settings(
     val webServerAccessPassword: String = "",
     val webServerLocalhostOnly: Boolean = false,
     val backupReminderConfig: BackupReminderConfig = BackupReminderConfig(),
+    val autoBackupConfig: AutoBackupConfig = AutoBackupConfig(),
     val launchCount: Int = 0,
     val sponsorAlertDismissedAt: Int = 0,
     val systemToolsSetting: SystemToolsSetting = SystemToolsSetting(),
@@ -1122,4 +1128,3 @@ val DEFAULT_MODE_INJECTIONS = listOf(
         name = "Learning Mode"
     )
 )
-

@@ -75,23 +75,25 @@ data class Conversation(
         get() = messageNodes.takeWhile { it.id in compressedMessageNodeIds }.map { it.id }.toSet()
 
     val visibleMessageNodes: List<MessageNode>
-        get() = if (compressedSummary.isBlank() || activeCompressedMessageNodeIds.size == messageNodes.size) messageNodes else
-            messageNodes.filterNot { it.id in activeCompressedMessageNodeIds }
+        get() {
+            val archived = activeCompressedMessageNodeIds
+            return if (compressedSummary.isBlank() || archived.size == messageNodes.size) messageNodes else
+                messageNodes.filterNot { it.id in archived }
+        }
 
     fun messagesForGeneration(messageRange: ClosedRange<Int>? = null): List<UIMessage> {
+        val archived = activeCompressedMessageNodeIds
         check(compressedMessageNodeIds.isEmpty() || compressedSummary.isNotBlank()) {
             "压缩记录缺少摘要，请先撤销压缩再继续。"
         }
-        check(activeCompressedMessageNodeIds.isEmpty() || activeCompressedMessageNodeIds.size < messageNodes.size) {
+        check(archived.isEmpty() || archived.size < messageNodes.size) {
             "压缩记录没有保留近期原文，请先撤销压缩再继续。"
         }
         val nodes = if (messageRange == null) messageNodes else {
-            check(messageRange.start == 0 && activeCompressedMessageNodeIds.all { id ->
-                messageNodes.indexOfFirst { it.id == id } <= messageRange.endInclusive
-            }) { "此处早于摘要覆盖范围，请从此消息分叉后继续。" }
+            check(messageRange.start == 0 && (archived.isEmpty() || archived.size - 1 <= messageRange.endInclusive)) { "此处早于摘要覆盖范围，请从此消息分叉后继续。" }
             messageNodes.slice(messageRange.start..messageRange.endInclusive)
         }
-        return nodes.filterNot { it.id in activeCompressedMessageNodeIds }.map { it.currentMessage }
+        return nodes.filterNot { it.id in archived }.map { it.currentMessage }
     }
 
     fun summaryForGeneration(): String? = if (sendCompressedSummary) {
@@ -202,20 +204,31 @@ data class Conversation(
     fun updateCurrentMessages(messages: List<UIMessage>, targets: Map<Uuid, Uuid> = emptyMap()): Conversation {
         val nodes = messageNodes.toMutableList()
         val archived = activeCompressedMessageNodeIds
+        val nodeIndexes = nodes.mapIndexed { index, node -> node.id to index }.toMap().toMutableMap()
+        val locations = mutableMapOf<Uuid, Pair<Int, Int>>()
+        nodes.forEachIndexed { nodeIndex, node ->
+            node.messages.forEachIndexed { messageIndex, message -> locations[message.id] = nodeIndex to messageIndex }
+        }
         messages.forEach { message ->
-            val index = nodes.indexOfFirst { node -> node.messages.any { it.id == message.id } }
-                .takeIf { it >= 0 } ?: nodes.indexOfFirst { it.id == targets[message.id] }
-            // A generation started before compression may still return its full
-            // old window. Its chunks must leave newly archived nodes intact.
-            if (index >= 0 && nodes[index].id in archived) return@forEach
-            if (index < 0) {
-                nodes.add(message.toMessageNode())
+            val location = locations[message.id]
+            val index = location?.first ?: nodeIndexes[targets[message.id]]
+            if (index != null && nodes[index].id in archived) return@forEach
+            if (index == null) {
+                val node = message.toMessageNode()
+                locations[message.id] = nodes.size to 0
+                nodeIndexes[node.id] = nodes.size
+                nodes.add(node)
             } else {
                 val node = nodes[index]
-                val existing = node.messages.indexOfFirst { it.id == message.id }
-                nodes[index] = if (existing >= 0) node.copy(
-                    messages = node.messages.toMutableList().also { it[existing] = message }
-                ) else node.copy(messages = node.messages + message, selectIndex = node.messages.size)
+                val existing = location?.second
+                if (existing != null) {
+                    if (node.messages[existing] != message) {
+                        nodes[index] = node.copy(messages = node.messages.toMutableList().also { it[existing] = message })
+                    }
+                } else {
+                    locations[message.id] = index to node.messages.size
+                    nodes[index] = node.copy(messages = node.messages + message, selectIndex = node.messages.size)
+                }
             }
         }
         return copy(messageNodes = nodes)

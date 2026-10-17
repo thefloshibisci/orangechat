@@ -49,6 +49,7 @@ fun ReminderTab(vm: BackupVM) {
             .imePadding(),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
+        AutoBackupSettings(vm)
         CardGroup(
             modifier = Modifier.fillMaxWidth(),
         ) {

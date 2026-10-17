@@ -472,8 +472,12 @@ fun ChatInput(
                             fileName.endsWith(".yml", ignoreCase = true) ||
                             fileName.endsWith(".yaml", ignoreCase = true)
                         if (isAllowed) {
-                            val localUri = filesManager.createChatFilesByContents(listOf(uri))[0]
-                            allDocuments.add(UIMessagePart.Document(url = localUri.toString(), fileName = fileName, mime = mime))
+                            val localUri = filesManager.createChatFilesByContents(listOf(uri)).firstOrNull()
+                            if (localUri != null) {
+                                allDocuments.add(UIMessagePart.Document(url = localUri.toString(), fileName = fileName, mime = mime))
+                            } else {
+                                toaster.show("附件为空或无法读取：$fileName", type = ToastType.Error)
+                            }
                         } else {
                             toaster.show(
                                 resources.getString(R.string.chat_input_unsupported_file_type, fileName),

@@ -24,6 +24,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -996,9 +998,11 @@ class ChatService(
                 cancelLiveUpdateNotification(conversationId)
 
                 // 可能被取消了，或者意外结束，兜底更新
-                val updatedConversation = getConversationFlow(conversationId).value.copy(
-                    messageNodes = getConversationFlow(conversationId).value.messageNodes.map { node ->
-                        if (node.id in getConversationFlow(conversationId).value.activeCompressedMessageNodeIds) node else
+                val currentConversation = getConversationFlow(conversationId).value
+                val archived = currentConversation.activeCompressedMessageNodeIds
+                val updatedConversation = currentConversation.copy(
+                    messageNodes = currentConversation.messageNodes.map { node ->
+                        if (node.id in archived) node else
                             node.copy(messages = node.messages.map { it.finishReasoning() })
                     },
                     updateAt = Instant.now()
@@ -1724,8 +1728,10 @@ class ChatService(
         check(conversation.compressionRevision >= session.state.value.compressionRevision) {
             "摘要已变更，请重新打开会话后操作。"
         }
-        checkFilesDelete(conversation, session.state.value)
-        session.state.value = conversation
+        session.state.value = conversation.copy(messageNodes = conversation.messageNodes.map { node ->
+            val messages = filesManager.withoutDeletedAttachments(node.messages)
+            if (messages === node.messages) node else node.copy(messages = messages)
+        })
     }
 
     fun updateConversationState(conversationId: Uuid, update: (Conversation) -> Conversation) {
@@ -1770,15 +1776,35 @@ class ChatService(
         folderRepository.deleteFolder(folderId)
     }
 
-    private fun checkFilesDelete(newConversation: Conversation, oldConversation: Conversation) {
-        val newFiles = newConversation.files
-        val oldFiles = oldConversation.files
-        val deletedFiles = oldFiles.filter { file ->
-            newFiles.none { it == file }
+    private val attachmentMaintenanceMutex = Mutex()
+
+    suspend fun deleteManagedAttachments(ids: Set<Long>): Int = attachmentMaintenanceMutex.withLock {
+        var deleted = 0
+        try {
+            for (id in ids) if (filesManager.delete(id)) deleted++
+            conversationRepo.repairInvalidAttachments()
+        } finally {
+            refreshAttachmentReferences()
         }
-        if (deletedFiles.isNotEmpty()) {
-            filesManager.deleteChatFiles(deletedFiles)
-            Log.w(TAG, "checkFilesDelete: $deletedFiles")
+        deleted
+    }
+
+    suspend fun cleanInvalidAttachments(): Pair<Int, Int> = attachmentMaintenanceMutex.withLock {
+        try {
+            val files = filesManager.cleanInvalidFiles()
+            val nodes = conversationRepo.repairInvalidAttachments()
+            files to nodes
+        } finally {
+            refreshAttachmentReferences()
+        }
+    }
+
+    private suspend fun refreshAttachmentReferences() = withContext(Dispatchers.Main.immediate) {
+        // Also clean active streaming sessions, so their next save cannot resurrect removed references.
+        sessions.values.toList().forEach { session ->
+            session.saveMutex.withLock {
+                updateConversation(session.id, session.state.value)
+            }
         }
     }
 
@@ -2056,7 +2082,7 @@ class ChatService(
     private fun UIMessagePart.copyWithForkedFileUrl(): UIMessagePart {
         fun copyLocalFileIfNeeded(url: String): String {
             if (!url.startsWith("file:")) return url
-            val copied = filesManager.createChatFilesByContents(listOf(url.toUri())).firstOrNull()
+            val copied = filesManager.createChatFilesByContents(listOf(url.toUri()), forceCopy = true).firstOrNull()
             return copied?.toString() ?: url
         }
 

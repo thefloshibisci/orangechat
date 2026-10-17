@@ -53,19 +53,20 @@ class S3Sync(
 
     suspend fun backupToS3(config: S3Config) = withContext(Dispatchers.IO) {
         val file = prepareBackupFile(config)
-        val client = getS3Client(config)
-        val key = "rikkahub_backups/${file.name}"
+        try {
+            val client = getS3Client(config)
+            val key = "rikkahub_backups/${file.name}"
 
-        client.putObject(
-            key = key,
-            file = file,
-            contentType = "application/zip"
-        ).getOrThrow()
+            client.putObject(
+                key = key,
+                file = file,
+                contentType = "application/zip"
+            ).getOrThrow()
 
-        Log.i(TAG, "backupToS3: Uploaded ${file.name} (${file.length().fileSizeToString()})")
-
-        // Clean up temp file
-        file.delete()
+            Log.i(TAG, "backupToS3: Uploaded ${file.name} (${file.length().fileSizeToString()})")
+        } finally {
+            file.delete()
+        }
     }
 
     suspend fun listBackupFiles(config: S3Config): List<S3BackupItem> = withContext(Dispatchers.IO) {
@@ -118,57 +119,62 @@ class S3Sync(
 
     suspend fun prepareBackupFile(config: S3Config): File = withContext(Dispatchers.IO) {
         val timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"))
-        val backupFile = File(context.cacheDir, "backup_$timestamp.zip")
+        val backupFile = File(context.cacheDir, "backup_${timestamp}_${java.util.UUID.randomUUID()}.zip")
 
         if (backupFile.exists()) {
             backupFile.delete()
         }
 
-        // Create zip file and backup data
-        ZipOutputStream(FileOutputStream(backupFile)).use { zipOut ->
-            addVirtualFileToZip(
-                zipOut = zipOut,
-                name = "settings.json",
-                content = json.encodeToString(settingsStore.settingsFlow.value)
-            )
+        try {
+            // Create zip file and backup data
+            ZipOutputStream(FileOutputStream(backupFile)).use { zipOut ->
+                addVirtualFileToZip(
+                    zipOut = zipOut,
+                    name = "settings.json",
+                    content = json.encodeToString(settingsStore.settingsFlow.value)
+                )
 
-            // Backup database files
-            if (config.items.contains(S3Config.BackupItem.DATABASE)) {
-                val snapshot = databaseBackupCoordinator.createConsistentSnapshot()
-                try {
-                    addFileToZip(zipOut, snapshot, "rikka_hub.db")
-                } finally {
-                    snapshot.delete()
-                }
-            }
-
-            // Backup app files
-            if (config.items.contains(S3Config.BackupItem.FILES)) {
-                val uploadFolder = File(context.filesDir, FileFolders.UPLOAD)
-                if (uploadFolder.exists() && uploadFolder.isDirectory) {
-                    Log.i(TAG, "prepareBackupFile: Backing up files from ${uploadFolder.absolutePath}")
-                    uploadFolder.listFiles()?.forEach { file ->
-                        if (file.isFile) {
-                            addFileToZip(zipOut, file, "${FileFolders.UPLOAD}/${file.name}")
-                        }
+                // Backup database files
+                if (config.items.contains(S3Config.BackupItem.DATABASE)) {
+                    val snapshot = databaseBackupCoordinator.createConsistentSnapshot()
+                    try {
+                        addFileToZip(zipOut, snapshot, "rikka_hub.db")
+                    } finally {
+                        snapshot.delete()
                     }
-                } else {
-                    Log.w(TAG, "prepareBackupFile: Upload folder does not exist or is not a directory")
                 }
 
-                val skillsFolder = File(context.filesDir, FileFolders.SKILLS)
-                if (skillsFolder.exists() && skillsFolder.isDirectory) {
-                    Log.i(TAG, "prepareBackupFile: Backing up skills from ${skillsFolder.absolutePath}")
-                    addDirectoryToZip(
-                        zipOut = zipOut,
-                        rootDir = skillsFolder,
-                        currentDir = skillsFolder,
-                        entryPrefix = "${FileFolders.SKILLS}/"
-                    )
-                } else {
-                    Log.w(TAG, "prepareBackupFile: Skills folder does not exist or is not a directory")
+                // Backup app files
+                if (config.items.contains(S3Config.BackupItem.FILES)) {
+                    val uploadFolder = File(context.filesDir, FileFolders.UPLOAD)
+                    if (uploadFolder.exists() && uploadFolder.isDirectory) {
+                        Log.i(TAG, "prepareBackupFile: Backing up files from ${uploadFolder.absolutePath}")
+                        uploadFolder.listFiles()?.forEach { file ->
+                            if (file.isFile && !file.name.startsWith(".") && file.length() > 0) {
+                                addFileToZip(zipOut, file, "${FileFolders.UPLOAD}/${file.name}")
+                            }
+                        }
+                    } else {
+                        Log.w(TAG, "prepareBackupFile: Upload folder does not exist or is not a directory")
+                    }
+
+                    val skillsFolder = File(context.filesDir, FileFolders.SKILLS)
+                    if (skillsFolder.exists() && skillsFolder.isDirectory) {
+                        Log.i(TAG, "prepareBackupFile: Backing up skills from ${skillsFolder.absolutePath}")
+                        addDirectoryToZip(
+                            zipOut = zipOut,
+                            rootDir = skillsFolder,
+                            currentDir = skillsFolder,
+                            entryPrefix = "${FileFolders.SKILLS}/"
+                        )
+                    } else {
+                        Log.w(TAG, "prepareBackupFile: Skills folder does not exist or is not a directory")
+                    }
                 }
             }
+        } catch (e: Exception) {
+            backupFile.delete()
+            throw e
         }
 
         Log.i(
@@ -197,7 +203,11 @@ class S3Sync(
                             try {
                                 val migratedJson = SettingsJsonMigrator.migrate(settingsJson)
                                 val settings = json.decodeFromString<Settings>(migratedJson)
-                                settingsStore.update(settings)
+                                // Folder grants and pending restores are not portable backup state.
+                                settingsStore.update(settings.copy(autoBackupConfig = settings.autoBackupConfig.copy(
+                                    enabled = false,
+                                    lastError = "",
+                                )))
                                 Log.i(TAG, "restoreFromBackupFile: Settings restored successfully")
                             } catch (e: Exception) {
                                 Log.e(TAG, "restoreFromBackupFile: Failed to restore settings", e)

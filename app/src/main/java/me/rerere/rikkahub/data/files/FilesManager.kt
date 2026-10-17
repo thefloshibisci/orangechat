@@ -19,6 +19,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
@@ -42,6 +44,29 @@ class FilesManager(
         private const val TAG = "FilesManager"
     }
 
+    private val managedFileMutex = Mutex()
+    private val removedUrls = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    fun withoutDeletedAttachments(messages: List<UIMessage>): List<UIMessage> =
+        if (removedUrls.isEmpty()) messages else filterAttachments(messages) {
+            it.attachmentUrl() !in removedUrls
+        }
+
+    suspend fun validAttachments(
+        messages: List<UIMessage>,
+        forSending: Boolean = false,
+    ): List<UIMessage> = withContext(Dispatchers.IO) {
+        val validator = AttachmentValidator(forSending)
+        filterAttachments(messages) { part ->
+            validator.isValid(part).also { valid ->
+                // A format unsupported by a provider (for example SVG) is still valid stored content.
+                if (!forSending) part.attachmentUrl()?.let { url ->
+                    if (valid) removedUrls.remove(url) else removedUrls.add(url)
+                }
+            }
+        }
+    }
+
     suspend fun saveManagedFromUri(
         folder: String,
         uri: Uri,
@@ -51,11 +76,7 @@ class FilesManager(
         val resolvedName = displayName ?: getFileNameFromUri(uri) ?: "file"
         val resolvedMime = mimeType ?: getFileMimeType(uri) ?: "application/octet-stream"
         val target = createTargetFile(folder, resolvedName, resolvedMime)
-        context.contentResolver.openInputStream(uri)?.use { input ->
-            target.outputStream().use { output ->
-                input.copyTo(output)
-            }
-        }
+        copyAttachmentAtomically(target) { context.contentResolver.openInputStream(uri) }
         createManagedFileEntity(
             folder = folder,
             file = target,
@@ -71,7 +92,7 @@ class FilesManager(
         mimeType: String = "application/octet-stream",
     ): ManagedFileEntity = withContext(Dispatchers.IO) {
         val target = createTargetFile(folder, displayName, mimeType)
-        target.writeBytes(bytes)
+        copyAttachmentAtomically(target) { bytes.inputStream() }
         createManagedFileEntity(
             folder = folder,
             file = target,
@@ -109,46 +130,26 @@ class FilesManager(
     fun getFile(entity: ManagedFileEntity): File =
         File(context.filesDir, entity.relativePath)
 
-    fun createChatFilesByContents(uris: List<Uri>): List<Uri> {
-        val newUris = mutableListOf<Uri>()
-        val dir = context.filesDir.resolve(FileFolders.UPLOAD)
-        if (!dir.exists()) {
-            dir.mkdirs()
-        }
-        uris.forEach { uri ->
+    fun createChatFilesByContents(uris: List<Uri>, forceCopy: Boolean = false): List<Uri> {
+        val dir = context.filesDir.resolve(FileFolders.UPLOAD).apply { mkdirs() }
+        return uris.mapNotNull { uri ->
             runCatching {
+                val source = localAttachmentFile(uri.toString())
+                // A managed attachment is already durable. Regeneration/re-sending must not copy it again.
+                if (!forceCopy && source != null && source.canonicalFile.parentFile == dir.canonicalFile) {
+                    require(source.isFile && source.length() > 0) { "附件不存在或为空" }
+                    return@runCatching source.toUri()
+                }
                 val sourceName = getFileNameFromUri(uri) ?: uri.lastPathSegment ?: "file"
                 val sourceMime = getFileMimeType(uri)
-                val fileName = buildUuidFileName(displayName = sourceName, mimeType = sourceMime)
-                val file = dir.resolve(fileName)
-                if (!file.exists()) {
-                    file.createNewFile()
-                }
-                val inputStream = context.contentResolver.openInputStream(uri)
-                    ?: error("Failed to open input stream for $uri")
-                inputStream.use { input ->
-                    file.outputStream().use { output ->
-                        input.copyTo(output)
-                    }
-                }
-                val guessedMime = sourceMime ?: guessMimeType(file, sourceName)
-                trackManagedFile(
-                    folder = FileFolders.UPLOAD,
-                    file = file,
-                    displayName = sourceName,
-                    mimeType = guessedMime
-                )
-                newUris.add(file.toUri())
+                val file = dir.resolve(buildUuidFileName(sourceName, sourceMime))
+                copyAttachmentAtomically(file) { context.contentResolver.openInputStream(uri) }
+                trackManagedFile(FileFolders.UPLOAD, file, sourceName, sourceMime ?: guessMimeType(file, sourceName))
+                file.toUri()
             }.onFailure {
-                it.printStackTrace()
-                Log.e(TAG, "createChatFilesByContents: Failed to save file from $uri", it)
-                Logging.log(
-                    TAG,
-                    "createChatFilesByContents: Failed to save file from $uri ${it.message} | ${it.stackTraceToString()}"
-                )
-            }
+                Log.e(TAG, "createChatFilesByContents: Failed to import attachment", it)
+            }.getOrNull()
         }
-        return newUris
     }
 
     fun createChatFilesByByteArrays(byteArrays: List<ByteArray>): List<Uri> {
@@ -158,15 +159,11 @@ class FilesManager(
             dir.mkdirs()
         }
         byteArrays.forEach { byteArray ->
+            if (byteArray.isEmpty()) return@forEach
             val fileName = buildUuidFileName(displayName = "image.png", mimeType = "image/png")
             val file = dir.resolve(fileName)
-            if (!file.exists()) {
-                file.createNewFile()
-            }
+            copyAttachmentAtomically(file) { byteArray.inputStream() }
             val newUri = file.toUri()
-            file.outputStream().use { outputStream ->
-                outputStream.write(byteArray)
-            }
             trackManagedFile(
                 folder = FileFolders.UPLOAD,
                 file = file,
@@ -208,19 +205,28 @@ class FilesManager(
             )
         }
 
+    internal fun isManagedChatFile(url: String): Boolean {
+        val file = localAttachmentFile(url) ?: return false
+        return runCatching {
+            file.canonicalFile.parentFile == context.filesDir.resolve(FileFolders.UPLOAD).canonicalFile
+        }.getOrDefault(false)
+    }
+
     fun deleteChatFiles(uris: List<Uri>) {
         val relativePaths = mutableSetOf<String>()
         uris.filter { it.toString().startsWith("file:") }.forEach { uri ->
             val file = uri.toFile()
-            getRelativePathInFilesDir(file)?.let { relativePaths.add(it) }
-            if (file.exists()) {
-                file.delete()
+            val relativePath = getRelativePathInFilesDir(file) ?: return@forEach
+            if (!file.exists() || file.delete()) {
+                relativePaths.add(relativePath)
+                removedUrls.add(uri.toString())
+                removedUrls.add(file.absolutePath)
             }
         }
         if (relativePaths.isNotEmpty()) {
             appScope.launch(Dispatchers.IO) {
-                relativePaths.forEach { path ->
-                    repository.deleteByPath(path)
+                managedFileMutex.withLock {
+                    relativePaths.forEach { path -> repository.deleteByPath(path) }
                 }
             }
         }
@@ -331,40 +337,64 @@ class FilesManager(
     }
 
     suspend fun syncFolder(folder: String = FileFolders.UPLOAD): Int = withContext(Dispatchers.IO) {
-        val dir = File(context.filesDir, folder)
-        if (!dir.exists()) return@withContext 0
-        val files = dir.listFiles()?.filter { it.isFile } ?: return@withContext 0
-        var inserted = 0
-        files.forEach { file ->
-            val relativePath = "${folder}/${file.name}"
-            val existing = repository.getByPath(relativePath)
-            if (existing == null) {
-                val now = System.currentTimeMillis()
-                val displayName = file.name
-                val mimeType = guessMimeType(file, displayName)
-                repository.insert(
-                    ManagedFileEntity(
-                        folder = folder,
-                        relativePath = relativePath,
-                        displayName = displayName,
-                        mimeType = mimeType,
-                        sizeBytes = file.length(),
-                        createdAt = file.lastModified().takeIf { it > 0 } ?: now,
-                        updatedAt = now,
+        managedFileMutex.withLock {
+            val dir = File(context.filesDir, folder)
+            if (!dir.exists()) return@withLock 0
+            val files = dir.listFiles()?.filter { it.isFile && !it.name.startsWith(".") && it.length() > 0 }
+                ?: return@withLock 0
+            var inserted = 0
+            files.forEach { file ->
+                val relativePath = "${folder}/${file.name}"
+                val existing = repository.getByPath(relativePath)
+                if (existing == null) {
+                    val now = System.currentTimeMillis()
+                    val displayName = file.name
+                    val mimeType = guessMimeType(file, displayName)
+                    repository.insert(
+                        ManagedFileEntity(
+                            folder = folder,
+                            relativePath = relativePath,
+                            displayName = displayName,
+                            mimeType = mimeType,
+                            sizeBytes = file.length(),
+                            createdAt = file.lastModified().takeIf { it > 0 } ?: now,
+                            updatedAt = now,
+                        )
                     )
-                )
-                inserted += 1
+                    inserted += 1
+                }
             }
+            inserted
         }
-        inserted
     }
 
     suspend fun delete(id: Long, deleteFromDisk: Boolean = true): Boolean = withContext(Dispatchers.IO) {
-        val entity = repository.getById(id) ?: return@withContext false
-        if (deleteFromDisk) {
-            runCatching { getFile(entity).delete() }
+        managedFileMutex.withLock {
+            val entity = repository.getById(id) ?: return@withLock false
+            if (deleteFromDisk) {
+                val file = getFile(entity)
+                if (file.exists() && !file.delete()) return@withLock false
+                removedUrls.add(file.toUri().toString())
+                removedUrls.add(file.absolutePath)
+            }
+            repository.deleteById(id) > 0
         }
-        repository.deleteById(id) > 0
+    }
+
+    /** Remove missing/empty/corrupt managed media; never delete valid unreferenced user files. */
+    suspend fun cleanInvalidFiles(): Int = withContext(Dispatchers.IO) {
+        var count = 0
+        list().forEach { entity ->
+            val file = getFile(entity)
+            val invalid = !file.isFile || file.length() == 0L ||
+                (entity.mimeType.startsWith("image/") && entity.mimeType != "image/svg+xml" && !isDecodableImage(file))
+            if (invalid && delete(entity.id)) count++
+        }
+        // Failed imports from older releases may never have reached the managed-file table.
+        File(context.filesDir, FileFolders.UPLOAD).listFiles()?.forEach { file ->
+            if (file.isFile && !file.name.startsWith(".") && file.length() == 0L && file.delete()) count++
+        }
+        count
     }
 
     private fun createTargetFile(folder: String, displayName: String, mimeType: String?): File {
@@ -401,29 +431,32 @@ class FilesManager(
     private fun trackManagedFile(folder: String, file: File, displayName: String, mimeType: String) {
         val relativePath = buildRelativePath(folder, file)
         appScope.launch(Dispatchers.IO) {
-            runCatching {
-                val existing = repository.getByPath(relativePath)
-                if (existing != null) {
-                    return@runCatching
-                }
-                val now = System.currentTimeMillis()
-                repository.insert(
-                    ManagedFileEntity(
-                        folder = folder,
-                        relativePath = relativePath,
-                        displayName = displayName,
-                        mimeType = mimeType,
-                        sizeBytes = file.length(),
-                        createdAt = now,
-                        updatedAt = now,
+            managedFileMutex.withLock {
+                runCatching {
+                    if (!file.isFile || file.length() == 0L || file.toUri().toString() in removedUrls) return@runCatching
+                    val existing = repository.getByPath(relativePath)
+                    if (existing != null) {
+                        return@runCatching
+                    }
+                    val now = System.currentTimeMillis()
+                    repository.insert(
+                        ManagedFileEntity(
+                            folder = folder,
+                            relativePath = relativePath,
+                            displayName = displayName,
+                            mimeType = mimeType,
+                            sizeBytes = file.length(),
+                            createdAt = now,
+                            updatedAt = now,
+                        )
                     )
-                )
-            }.onFailure {
-                Log.e(TAG, "trackManagedFile: Failed to track file ${file.absolutePath}", it)
-                Logging.log(
-                    TAG,
-                    "trackManagedFile: Failed to track file ${file.absolutePath} ${it.message} | ${it.stackTraceToString()}"
-                )
+                }.onFailure {
+                    Log.e(TAG, "trackManagedFile: Failed to track file ${file.absolutePath}", it)
+                    Logging.log(
+                        TAG,
+                        "trackManagedFile: Failed to track file ${file.absolutePath} ${it.message} | ${it.stackTraceToString()}"
+                    )
+                }
             }
         }
     }

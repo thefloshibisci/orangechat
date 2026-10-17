@@ -390,6 +390,8 @@ class GenerationHandler(
         workspaceCwd: String? = null,
         conversationId: String? = null,
     ) {
+        val filesManager = org.koin.java.KoinJavaComponent.getKoin()
+            .get<me.rerere.rikkahub.data.files.FilesManager>()
         val internalMessages = buildList {
             val system = buildString {
                 val effectiveSystemPrompt =
@@ -561,7 +563,7 @@ class GenerationHandler(
  
             }
             addAll(buildConversationRequestMessages(system, messages, assistant.contextMessageSize, conversationContextSummary))
-        }.transforms(
+        }.let { filesManager.validAttachments(it, forSending = true) }.transforms(
             transformers = transformers,
             context = context,
             model = model,
@@ -569,8 +571,8 @@ class GenerationHandler(
             settings = settings,
             processingStatus = processingStatus,
             workspaceCwd = workspaceCwd,
-        )
- 
+        ).let { filesManager.validAttachments(it, forSending = true) }.filterNot { it.parts.isEmpty() }
+
         var messages: List<UIMessage> = messages
         val params = TextGenerationParams(
             model = model,

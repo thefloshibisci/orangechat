@@ -26,6 +26,8 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.runBlocking
 import me.rerere.common.android.appTempFolder
 import com.whl.quickjs.android.QuickJSLoader
@@ -111,6 +113,15 @@ class RikkaHubApp : Application() {
 
         // sync upload files to DB
         syncManagedFiles()
+        get<AppScope>().launch {
+            get<SettingsStore>().settingsFlowRaw
+                .map { it.autoBackupConfig.scheduleConfig() }
+                .distinctUntilChanged()
+                .collect { config ->
+                    runCatching { me.rerere.rikkahub.data.sync.AutoBackupScheduler.schedule(this@RikkaHubApp, config) }
+                        .onFailure { Log.e(TAG, "Unable to schedule automatic backup", it) }
+                }
+        }
 
         // Start WebServer if enabled in settings
         startWebServerIfEnabled()
@@ -174,6 +185,11 @@ class RikkaHubApp : Application() {
         get<AppScope>().launch(Dispatchers.IO) {
             runCatching {
                 get<FilesManager>().syncFolder()
+                val prefs = getSharedPreferences("attachment_maintenance", MODE_PRIVATE)
+                if (!prefs.getBoolean("repaired_v1", false)) {
+                    get<ChatService>().cleanInvalidAttachments()
+                    prefs.edit().putBoolean("repaired_v1", true).apply()
+                }
             }.onFailure {
                 Log.e(TAG, "syncManagedFiles failed", it)
             }

@@ -6,6 +6,7 @@ on:
     branches:
       - master
       - mobile-workflow-v2
+      - fix/attachments-sliders-backup
 
 jobs:
   build:
