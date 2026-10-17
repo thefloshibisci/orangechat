@@ -1,8 +1,6 @@
 name: Android regression checks
 
 on:
-  push:
-    branches: [fix/attachments-sliders-backup]
   pull_request:
     branches: [master]
     paths:
