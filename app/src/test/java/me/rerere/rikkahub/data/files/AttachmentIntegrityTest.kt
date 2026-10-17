@@ -10,10 +10,13 @@ import org.junit.rules.TemporaryFolder
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.GraphicsMode
 import java.io.File
+import java.util.Base64
 
 @RunWith(RobolectricTestRunner::class)
 @Config(manifest = Config.NONE, sdk = [28])
+@GraphicsMode(GraphicsMode.Mode.NATIVE)
 class AttachmentIntegrityTest {
     @get:Rule val temporary = TemporaryFolder()
 
@@ -47,6 +50,17 @@ class AttachmentIntegrityTest {
         assertTrue(cleaned.isExecuted)
         assertFalse(cleaned.canResumeExecution)
         assertTrue(attachmentUrls(listOf(messages.single().copy(parts = listOf(cleaned)))).isEmpty())
+    }
+
+    @Test fun `valid PNG is retained in both history and outgoing messages`() {
+        val png = temporary.newFile("valid.png").apply {
+            writeBytes(Base64.getDecoder().decode(
+                "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAFklEQVR4nGP8UKHBwMDAxMDAwMDAAAATsgGUSte00gAAAABJRU5ErkJggg=="
+            ))
+        }
+        val part = UIMessagePart.Image(png.toURI().toString())
+        assertTrue(AttachmentValidator().isValid(part))
+        assertTrue(AttachmentValidator(forSending = true).isValid(part))
     }
 
     @Test fun `SVG is preserved in history but skipped when sending bitmap images`() {
