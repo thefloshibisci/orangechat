@@ -18,6 +18,14 @@ import me.rerere.rikkahub.data.db.entity.MessageNodeEntity
 
 @Dao
 interface MessageNodeDAO {
+    // Compare-and-set: background repair must not overwrite a concurrently edited message.
+    @Query("UPDATE message_node SET messages = :newMessages WHERE id = :id AND messages = :oldMessages")
+    suspend fun repairAttachments(id: String, oldMessages: String, newMessages: String): Int
+
+    // Conservative match also protects alternate branches and differently encoded local paths.
+    @Query("SELECT EXISTS(SELECT 1 FROM message_node WHERE instr(messages, :fileName) > 0)")
+    suspend fun referencesFile(fileName: String): Boolean
+
     @Query("SELECT * FROM message_node WHERE conversation_id = :conversationId ORDER BY node_index ASC")
     suspend fun getNodesOfConversation(conversationId: String): List<MessageNodeEntity>
 

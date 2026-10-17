@@ -33,7 +33,7 @@ class DatabaseBackupCoordinator(
     fun createConsistentSnapshot(): File {
         val snapshot = File(
             context.cacheDir,
-            "db_snapshot_${LocalDateTime.now().format(FILE_TIME)}.db"
+            "db_snapshot_${LocalDateTime.now().format(FILE_TIME)}_${java.util.UUID.randomUUID()}.db"
         )
         snapshot.delete()
         snapshot.parentFile?.mkdirs()

@@ -21,6 +21,12 @@ class SettingVM(
     ViewModel() {
     val settings: StateFlow<Settings> = settingsStore.settingsFlow
 
+    fun updateDisplaySetting(setting: me.rerere.rikkahub.data.datastore.DisplaySetting) {
+        viewModelScope.launch {
+            settingsStore.update { current -> current.copy(displaySetting = setting) }
+        }
+    }
+
     fun updateSettings(settings: Settings) {
         viewModelScope.launch {
             settingsStore.update(settings)

@@ -47,6 +47,14 @@ class BackupVM(
         loadS3BackupFileItems()
     }
 
+    fun updateAutoBackupConfig(
+        update: (me.rerere.rikkahub.data.datastore.AutoBackupConfig) -> me.rerere.rikkahub.data.datastore.AutoBackupConfig,
+    ) {
+        viewModelScope.launch {
+            settingsStore.update { current -> current.copy(autoBackupConfig = update(current.autoBackupConfig)) }
+        }
+    }
+
     fun updateSettings(settings: Settings) {
         viewModelScope.launch {
             settingsStore.update(settings)

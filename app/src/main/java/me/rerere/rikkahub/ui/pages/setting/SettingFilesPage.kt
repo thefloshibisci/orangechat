@@ -26,6 +26,10 @@ import androidx.compose.foundation.lazy.staggeredgrid.rememberLazyStaggeredGridS
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
+import androidx.compose.material3.Checkbox
+import androidx.compose.runtime.LaunchedEffect
+import kotlinx.coroutines.CancellationException
+import me.rerere.rikkahub.service.ChatService
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
@@ -65,6 +69,7 @@ import java.io.File
 @Composable
 fun SettingFilesPage(
     filesManager: FilesManager = koinInject(),
+    chatService: ChatService = koinInject(),
 ) {
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
     val gridState = rememberLazyStaggeredGridState()
@@ -77,26 +82,68 @@ fun SettingFilesPage(
     val deleteFailedToast = stringResource(R.string.setting_files_page_delete_failed_toast)
 
     var selectedFolder by remember { mutableStateOf(FileFolders.UPLOAD) }
-    var pendingDelete by remember { mutableStateOf<ManagedFileEntity?>(null) }
+    var pendingDelete by remember { mutableStateOf<Set<Long>?>(null) }
+    var selectedIds by remember { mutableStateOf(emptySet<Long>()) }
+    var selecting by remember { mutableStateOf(false) }
+    var busy by remember { mutableStateOf(false) }
+    var confirmCleanup by remember { mutableStateOf(false) }
     val files by filesManager.observe(selectedFolder).collectAsState(initial = emptyList())
+
+    LaunchedEffect(files) {
+        selectedIds = selectedIds.intersect(files.map { it.id }.toSet())
+    }
+
+    if (confirmCleanup) {
+        AlertDialog(
+            onDismissRequest = { if (!busy) confirmCleanup = false },
+            title = { Text("清理失效附件") },
+            text = { Text("移除不存在、0B 或损坏图片的附件引用，并清理对应空文件。所有聊天文字和重新生成的消息分支都会保留。") },
+            confirmButton = {
+                TextButton(enabled = !busy, onClick = {
+                    busy = true
+                    scope.launch {
+                        try {
+                            val (removed, repaired) = chatService.cleanInvalidAttachments()
+                            toaster.show("已清理 $removed 个文件，修复 $repaired 条消息节点")
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            toaster.show("清理未完成，请重试")
+                        } finally {
+                            busy = false
+                            confirmCleanup = false
+                        }
+                    }
+                }) { Text(if (busy) "正在清理…" else "清理") }
+            },
+            dismissButton = { TextButton(enabled = !busy, onClick = { confirmCleanup = false }) { Text("取消") } },
+        )
+    }
 
     if (pendingDelete != null) {
         val target = pendingDelete!!
         AlertDialog(
-            onDismissRequest = { pendingDelete = null },
+            onDismissRequest = { if (!busy) pendingDelete = null },
             title = { Text(stringResource(R.string.setting_files_page_delete_file_title)) },
-            text = { Text(target.displayName) },
+            text = { Text("删除选中的 ${target.size} 个附件？聊天中的附件引用也会移除，聊天文字会保留。") },
             confirmButton = {
                 TextButton(
+                    enabled = !busy,
                     onClick = {
+                        busy = true
                         scope.launch {
-                            val ok = filesManager.delete(target.id, deleteFromDisk = true)
-                            if (ok) {
-                                toaster.show(deletedToast)
-                            } else {
+                            try {
+                                val deleted = chatService.deleteManagedAttachments(target)
+                                toaster.show(if (deleted == target.size) deletedToast else "已删除 $deleted/${target.size} 个附件，失败项请重试")
+                                selectedIds = emptySet()
+                            } catch (e: CancellationException) {
+                                throw e
+                            } catch (e: Exception) {
                                 toaster.show(deleteFailedToast)
+                            } finally {
+                                pendingDelete = null
+                                busy = false
                             }
-                            pendingDelete = null
                         }
                     }
                 ) {
@@ -104,7 +151,7 @@ fun SettingFilesPage(
                 }
             },
             dismissButton = {
-                TextButton(onClick = { pendingDelete = null }) {
+                TextButton(enabled = !busy, onClick = { pendingDelete = null }) {
                     Text(stringResource(R.string.setting_files_page_cancel_action))
                 }
             }
@@ -134,6 +181,24 @@ fun SettingFilesPage(
                 onFolderSelected = { selectedFolder = it }
             )
 
+            Row(
+                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                TextButton(enabled = !busy, onClick = { selecting = !selecting; selectedIds = emptySet() }) {
+                    Text(if (selecting) "退出多选" else "多选")
+                }
+                if (selecting) {
+                    TextButton(enabled = !busy, onClick = {
+                        selectedIds = if (selectedIds.size == files.size) emptySet() else files.map { it.id }.toSet()
+                    }) { Text(if (selectedIds.size == files.size) "取消全选" else "全选") }
+                    TextButton(enabled = !busy && selectedIds.isNotEmpty(), onClick = { pendingDelete = selectedIds.toSet() }) {
+                        Text("删除（${selectedIds.size}）")
+                    }
+                }
+                TextButton(enabled = !busy, onClick = { confirmCleanup = true }) { Text("清理失效附件") }
+            }
+
             if (files.isEmpty()) {
                 Box(
                     modifier = Modifier
@@ -155,7 +220,13 @@ fun SettingFilesPage(
                         FileItem(
                             file = file,
                             fileOnDisk = filesManager.getFile(file),
-                            onDelete = { pendingDelete = file }
+                            onDelete = { if (!busy) pendingDelete = setOf(file.id) },
+                            selecting = selecting,
+                            selected = file.id in selectedIds,
+                            enabled = !busy,
+                            onSelectedChange = {
+                                selectedIds = if (it) selectedIds + file.id else selectedIds - file.id
+                            },
                         )
                     }
                 }
@@ -198,6 +269,10 @@ private fun FileItem(
     file: ManagedFileEntity,
     fileOnDisk: File,
     onDelete: () -> Unit,
+    selecting: Boolean,
+    selected: Boolean,
+    enabled: Boolean,
+    onSelectedChange: (Boolean) -> Unit,
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -231,8 +306,16 @@ private fun FileItem(
                     }
                 }
 
-                IconButton(
+                if (selecting) {
+                    Checkbox(
+                        checked = selected,
+                        onCheckedChange = onSelectedChange,
+                        enabled = enabled,
+                        modifier = Modifier.align(Alignment.TopEnd),
+                    )
+                } else IconButton(
                     onClick = onDelete,
+                    enabled = enabled,
                     modifier = Modifier.align(Alignment.TopEnd)
                 ) {
                     Icon(
