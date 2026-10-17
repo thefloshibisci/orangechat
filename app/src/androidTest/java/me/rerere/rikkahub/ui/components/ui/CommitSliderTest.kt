@@ -2,7 +2,7 @@ package me.rerere.rikkahub.ui.components.ui
 
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.ui.semantics.SemanticsActions
-import androidx.compose.ui.test.hasSetProgressAction
+import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTouchInput
@@ -18,14 +18,16 @@ class CommitSliderTest {
     @Test fun dragPersistsOnceOnRelease() {
         val writes = mutableListOf<Float>()
         compose.setContent { MaterialTheme { CommitSlider(0.8f, { writes += it }) } }
-        compose.onNode(hasSetProgressAction()).performTouchInput { swipeLeft() }
+        compose.onNode(SemanticsMatcher.keyIsDefined(SemanticsActions.SetProgress))
+            .performTouchInput { swipeLeft() }
         compose.runOnIdle { assertEquals(1, writes.size); assertTrue(writes.single() < 0.8f) }
     }
 
     @Test fun accessibilityProgressIsPersisted() {
         val writes = mutableListOf<Float>()
         compose.setContent { MaterialTheme { CommitSlider(0.2f, { writes += it }) } }
-        compose.onNode(hasSetProgressAction()).performSemanticsAction(SemanticsActions.SetProgress) { it(0.75f) }
+        compose.onNode(SemanticsMatcher.keyIsDefined(SemanticsActions.SetProgress))
+            .performSemanticsAction(SemanticsActions.SetProgress) { it(0.75f) }
         compose.runOnIdle { assertEquals(listOf(0.75f), writes) }
     }
 }
