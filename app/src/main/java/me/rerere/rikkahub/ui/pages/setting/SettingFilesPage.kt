@@ -130,6 +130,9 @@ fun SettingFilesPage(
                 TextButton(
                     enabled = !busy,
                     onClick = {
+                        // Dismiss before performing the potentially expensive attachment
+                        // and message-reference cleanup. Keep busy until it finishes.
+                        pendingDelete = null
                         busy = true
                         scope.launch {
                             try {
@@ -141,7 +144,6 @@ fun SettingFilesPage(
                             } catch (e: Exception) {
                                 toaster.show(deleteFailedToast)
                             } finally {
-                                pendingDelete = null
                                 busy = false
                             }
                         }
