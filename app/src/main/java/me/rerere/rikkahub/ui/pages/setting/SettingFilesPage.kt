@@ -40,6 +40,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -78,6 +79,7 @@ fun SettingFilesPage(
 
     var selectedFolder by remember { mutableStateOf(FileFolders.UPLOAD) }
     var pendingDelete by remember { mutableStateOf<ManagedFileEntity?>(null) }
+    val deletingFileIds = remember { mutableStateListOf<Long>() }
     val files by filesManager.observe(selectedFolder).collectAsState(initial = emptyList())
 
     if (pendingDelete != null) {
@@ -89,14 +91,21 @@ fun SettingFilesPage(
             confirmButton = {
                 TextButton(
                     onClick = {
-                        scope.launch {
-                            val ok = filesManager.delete(target.id, deleteFromDisk = true)
-                            if (ok) {
-                                toaster.show(deletedToast)
-                            } else {
-                                toaster.show(deleteFailedToast)
+                        // Dismiss immediately instead of keeping the confirmation dialog visible
+                        // while disk and database operations complete.
+                        pendingDelete = null
+                        if (target.id !in deletingFileIds) {
+                            deletingFileIds.add(target.id)
+                            scope.launch {
+                                try {
+                                    val ok = runCatching {
+                                        filesManager.delete(target.id, deleteFromDisk = true)
+                                    }.getOrDefault(false)
+                                    toaster.show(if (ok) deletedToast else deleteFailedToast)
+                                } finally {
+                                    deletingFileIds.remove(target.id)
+                                }
                             }
-                            pendingDelete = null
                         }
                     }
                 ) {
@@ -155,7 +164,9 @@ fun SettingFilesPage(
                         FileItem(
                             file = file,
                             fileOnDisk = filesManager.getFile(file),
-                            onDelete = { pendingDelete = file }
+                            onDelete = {
+                                if (file.id !in deletingFileIds) pendingDelete = file
+                            }
                         )
                     }
                 }
