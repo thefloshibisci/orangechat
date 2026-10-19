@@ -62,7 +62,7 @@ fun AssistantRequestPage(id: String) {
         AssistantRequestContent(
             modifier = Modifier.padding(innerPadding),
             assistant = assistant,
-            onUpdate = { vm.update(it) }
+            onUpdate = { vm.update(assistant, it) }
         )
     }
 }

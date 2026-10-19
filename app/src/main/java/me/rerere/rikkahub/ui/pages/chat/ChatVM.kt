@@ -34,6 +34,8 @@ import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.datastore.getCurrentChatModel
+import me.rerere.rikkahub.data.datastore.withAssistantEdit
+import me.rerere.rikkahub.data.datastore.withSettingsEdit
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.Avatar
@@ -113,7 +115,13 @@ class ChatVM(
 
         // 初始化对话
         viewModelScope.launch {
-            chatService.initializeConversation(_conversationId)
+            try {
+                chatService.initializeConversation(_conversationId)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                chatService.addError(e, _conversationId)
+            }
         }
 
         // 记住对话ID, 方便下次启动恢复
@@ -155,11 +163,22 @@ class ChatVM(
 
     // 更新设置
     fun updateSettings(newSettings: Settings) {
+        val previous = settings.value
         viewModelScope.launch {
-            val oldSettings = settings.value
-            // 检查用户头像是否有变化，如果有则删除旧头像
-            checkUserAvatarDelete(oldSettings, newSettings)
-            settingsStore.update(newSettings)
+            var replaced: Pair<Settings, Settings>? = null
+            settingsStore.update { current ->
+                current.withSettingsEdit(previous, newSettings).also { updated ->
+                    replaced = current to updated
+                }
+            }
+            // Delete replaced assets only after the settings write succeeds.
+            replaced?.let { (old, new) -> checkUserAvatarDelete(old, new) }
+        }
+    }
+
+    fun updateAssistant(previous: Assistant, desired: Assistant) {
+        viewModelScope.launch {
+            settingsStore.update { it.withAssistantEdit(previous, desired) }
         }
     }
 
@@ -289,20 +308,19 @@ class ChatVM(
 
     fun updateTitle(title: String) {
         viewModelScope.launch {
-            val updatedConversation = conversation.value.copy(title = title)
-            chatService.saveConversation(_conversationId, updatedConversation)
+            chatService.updateTitle(_conversationId, title)
         }
     }
 
     fun deleteConversation(conversation: Conversation) {
         viewModelScope.launch {
-            conversationRepo.deleteConversation(conversation)
+            chatService.deleteConversation(conversation)
         }
     }
 
     fun updatePinnedStatus(conversation: Conversation) {
         viewModelScope.launch {
-            conversationRepo.togglePinStatus(conversation.id)
+            chatService.togglePinStatus(conversation.id)
         }
     }
 

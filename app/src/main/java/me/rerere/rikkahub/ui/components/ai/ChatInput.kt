@@ -19,7 +19,6 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.content.MediaType
@@ -77,7 +76,6 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
@@ -93,6 +91,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.FileProvider
 import androidx.core.net.toUri
+import coil3.compose.AsyncImage
+import coil3.request.ImageRequest
+import coil3.request.crossfade
 import com.dokar.sonner.ToastType
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.hazeEffect
@@ -472,8 +473,12 @@ fun ChatInput(
                             fileName.endsWith(".yml", ignoreCase = true) ||
                             fileName.endsWith(".yaml", ignoreCase = true)
                         if (isAllowed) {
-                            val localUri = filesManager.createChatFilesByContents(listOf(uri))[0]
-                            allDocuments.add(UIMessagePart.Document(url = localUri.toString(), fileName = fileName, mime = mime))
+                            val localUri = filesManager.createChatFilesByContents(listOf(uri)).firstOrNull()
+                            if (localUri != null) {
+                                allDocuments.add(UIMessagePart.Document(url = localUri.toString(), fileName = fileName, mime = mime))
+                            } else {
+                                toaster.show("附件为空或无法读取：$fileName", type = ToastType.Error)
+                            }
                         } else {
                             toaster.show(
                                 resources.getString(R.string.chat_input_unsupported_file_type, fileName),
@@ -502,13 +507,15 @@ fun ChatInput(
         }
     }
 
-    // Load input background image
+    // Coil resolves the displayed bounds before decoding and shares its image cache.
     val inputBgPath = settings.displaySetting.inputBackgroundPath
-    val inputBgBitmap = remember(inputBgPath) {
-        if (inputBgPath.isNotBlank() && File(inputBgPath).exists()) {
-            android.graphics.BitmapFactory.decodeFile(inputBgPath)?.asImageBitmap()
-        } else null
+    val inputBgRequest = remember(context, inputBgPath) {
+        ImageRequest.Builder(context)
+            .data(File(inputBgPath))
+            .crossfade(false)
+            .build()
     }
+    var inputBgLoaded by remember(inputBgPath) { mutableStateOf(false) }
 
     if (showStickerPicker) {
         StickerPickerSheet(
@@ -520,7 +527,7 @@ fun ChatInput(
         )
     }
     val inputContainerColor = when {
-        inputBgBitmap != null || useRealtimeBlur -> Color.Transparent
+        inputBgLoaded || useRealtimeBlur -> Color.Transparent
         else -> {
             val baseColor = settings.displaySetting.inputFieldColor?.let { it.toComposeColor() } ?: hazeTintColor
             when (materialMode) {
@@ -537,7 +544,7 @@ fun ChatInput(
         null
     }
     val useStaticGlass = materialMode == DisplayMaterialMode.GLASS &&
-        inputBgBitmap == null && !useRealtimeBlur
+        !inputBgLoaded && !useRealtimeBlur
     val glassSurfaceTint = MaterialTheme.colorScheme.surface
     val glassHighlight = MaterialTheme.colorScheme.onSurface
     val staticGlassModifier = if (useStaticGlass) {
@@ -609,15 +616,17 @@ fun ChatInput(
                 // Use Box so background image can match parent size
                 Box(modifier = staticGlassModifier) {
                     // Background image inside input area (matches content size exactly)
-                    if (inputBgBitmap != null) {
-                        Image(
-                            bitmap = inputBgBitmap,
+                    if (inputBgPath.isNotBlank()) {
+                        AsyncImage(
+                            model = inputBgRequest,
                             contentDescription = null,
                             modifier = Modifier
                                 .matchParentSize()
                                 .clip(MaterialTheme.shapes.largeIncreased),
                             contentScale = ContentScale.Crop,
                             alpha = 1f,
+                            onSuccess = { inputBgLoaded = true },
+                            onError = { inputBgLoaded = false },
                         )
                     }
                     Column(

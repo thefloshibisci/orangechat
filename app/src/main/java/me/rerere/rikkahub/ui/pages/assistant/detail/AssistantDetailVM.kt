@@ -21,6 +21,8 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.SettingsStore
+import me.rerere.rikkahub.data.datastore.withAssistantEdit
+import me.rerere.rikkahub.data.datastore.withAssistantTags
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.files.SkillManager
 import me.rerere.rikkahub.data.files.SkillMetadata
@@ -113,84 +115,39 @@ class AssistantDetailVM(
 
     fun updateExternalMemoryIds(memoryIds: Set<Uuid>) {
         viewModelScope.launch {
-            val currentAssistant = assistant.value
-            update(currentAssistant.copy(externalMemoryIds = memoryIds))
+            settingsStore.update { current ->
+                current.copy(assistants = current.assistants.map {
+                    if (it.id == assistantId) it.copy(externalMemoryIds = memoryIds) else it
+                })
+            }
         }
     }
 
     fun updateTags(tagIds: List<Uuid>, tags: List<Tag>) {
         viewModelScope.launch {
-            val settings = settings.value
-            settingsStore.update(
-                settings = settings.copy(
-                    assistantTags = tags
-                )
-            )
-            update(
-                assistant.value.copy(
-                    tags = tagIds.toList()
-                )
-            )
+            settingsStore.update { current ->
+                current.withAssistantTags(assistantId, tagIds, tags)
+            }
             Log.d(TAG, "updateTags: ${tagIds.joinToString(",")}")
-            cleanupUnusedTags()
         }
     }
 
-    fun cleanupUnusedTags() {
+    fun update(previous: Assistant, desired: Assistant) {
+        if (desired.id != assistantId || previous.id != assistantId) return
         viewModelScope.launch {
-            val settings = settings.value
-            val validTagIds = settings.assistantTags.map { it.id }.toSet()
-
-            // 清理 assistant 中的无效 tag id
-            val cleanedAssistants = settings.assistants.map { assistant ->
-                val validTags = assistant.tags.filter { tagId ->
-                    validTagIds.contains(tagId)
-                }
-                if (validTags.size != assistant.tags.size) {
-                    assistant.copy(tags = validTags)
-                } else {
-                    assistant
-                }
+            var replaced: Pair<Assistant, Assistant>? = null
+            settingsStore.update { current ->
+                val updated = current.withAssistantEdit(previous, desired)
+                val old = current.assistants.find { it.id == assistantId }
+                val new = updated.assistants.find { it.id == assistantId }
+                if (old != null && new != null) replaced = old to new
+                updated
             }
-
-            // 获取清理后的 assistant 中使用的 tag id
-            val usedTagIds = cleanedAssistants.flatMap { it.tags }.toSet()
-
-            // 清理未使用的 tags
-            val cleanedTags = settings.assistantTags.filter { tag ->
-                usedTagIds.contains(tag.id)
+            // Delete replaced assets only after their new references have been committed.
+            replaced?.let { (old, new) ->
+                checkAvatarDelete(old, new)
+                checkBackgroundDelete(old, new)
             }
-
-            // 检查是否需要更新
-            val needUpdateAssistants = cleanedAssistants != settings.assistants
-            val needUpdateTags = cleanedTags.size != settings.assistantTags.size
-
-            if (needUpdateAssistants || needUpdateTags) {
-                settingsStore.update(
-                    settings = settings.copy(
-                        assistants = cleanedAssistants,
-                        assistantTags = cleanedTags
-                    )
-                )
-            }
-        }
-    }
-
-    fun update(assistant: Assistant) {
-        viewModelScope.launch {
-            val settings = settings.value
-            settingsStore.update(
-                settings = settings.copy(
-                    assistants = settings.assistants.map {
-                        if (it.id == assistant.id) {
-                            checkAvatarDelete(old = it, new = assistant) // 删除旧头像
-                            checkBackgroundDelete(old = it, new = assistant) // 删除旧背景
-                            assistant
-                        } else {
-                            it
-                        }
-                    })
-            )
         }
     }
 

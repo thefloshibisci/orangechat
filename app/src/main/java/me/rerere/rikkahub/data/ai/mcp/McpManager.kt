@@ -59,6 +59,7 @@ import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.event.AppEvent
 import me.rerere.rikkahub.data.event.AppEventBus
 import me.rerere.rikkahub.data.datastore.getCurrentAssistant
+import me.rerere.rikkahub.data.datastore.withMcpServerEdit
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.files.saveUploadFromBytes
 import me.rerere.rikkahub.data.model.Assistant
@@ -399,13 +400,9 @@ class McpManager(
         // 单次原子覆盖写，消除 remove+put 的空档期
         clients[config.id] = Pair(updatedConfig, client)
 
-        // 纯数据持久化：只把匹配 id 的 serverConfig 换成 updatedConfig
+        // Persist discovered fields without reverting edits or OAuth refreshes made during sync.
         settingsStore.update { old ->
-            old.copy(
-                mcpServers = old.mcpServers.map { serverConfig ->
-                    if (serverConfig.id == config.id) updatedConfig else serverConfig
-                }
-            )
+            old.withMcpServerEdit(config, updatedConfig)
         }
 
         setStatus(config = config, status = McpStatus.Connected)

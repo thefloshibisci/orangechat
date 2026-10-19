@@ -55,7 +55,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import me.rerere.highlight.LocalHighlighter
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.ui.components.nav.BackButton
-import me.rerere.rikkahub.ui.components.richtext.HighlightCodeVisualTransformation
+import me.rerere.rikkahub.ui.components.richtext.rememberHighlightCodeVisualTransformation
 import me.rerere.rikkahub.ui.components.ui.FormItem
 import me.rerere.rikkahub.ui.components.ui.OutlinedNumberInput
 import me.rerere.rikkahub.ui.context.LocalNavController
@@ -935,7 +935,8 @@ internal fun CustomJsOptions(
             modifier = Modifier.fillMaxWidth(),
             minLines = 8,
             maxLines = 20,
-            visualTransformation = HighlightCodeVisualTransformation(
+            visualTransformation = rememberHighlightCodeVisualTransformation(
+                text = options.searchScript,
                 language = "javascript",
                 highlighter = highlighter,
                 darkMode = darkMode
@@ -967,7 +968,8 @@ internal fun CustomJsOptions(
                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
                 )
             },
-            visualTransformation = HighlightCodeVisualTransformation(
+            visualTransformation = rememberHighlightCodeVisualTransformation(
+                text = options.scrapeScript,
                 language = "javascript",
                 highlighter = highlighter,
                 darkMode = darkMode

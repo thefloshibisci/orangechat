@@ -15,7 +15,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import me.rerere.rikkahub.ui.theme.LargeFlexibleTopAppBar
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Slider
+import me.rerere.rikkahub.ui.components.ui.CommitSlider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -39,11 +39,11 @@ import kotlin.math.roundToInt
 @Composable
 fun SettingDisplayTransparencyPage(vm: SettingVM = koinViewModel()) {
     val settings by vm.settings.collectAsStateWithLifecycle()
-    var displaySetting by remember(settings) { mutableStateOf(settings.displaySetting) }
+    var displaySetting by remember(settings.displaySetting) { mutableStateOf(settings.displaySetting) }
 
     fun updateDisplaySetting(setting: DisplaySetting) {
         displaySetting = setting
-        vm.updateSettings(settings.copy(displaySetting = setting))
+        vm.updateDisplaySetting(settings.displaySetting, setting)
     }
 
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
@@ -78,15 +78,18 @@ fun SettingDisplayTransparencyPage(vm: SettingVM = koinViewModel()) {
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                             ) {
-                                Slider(
+                                CommitSlider(
                                     value = displaySetting.interfaceSurfaceOpacity,
+                                    onValuePreview = { displaySetting = displaySetting.copy(interfaceSurfaceOpacity = it) },
                                     onValueChange = {
                                         updateDisplaySetting(displaySetting.copy(interfaceSurfaceOpacity = it))
                                     },
                                     valueRange = 0f..95f,
                                     modifier = Modifier.weight(1f)
-                                )
-                                Text(text = "${displaySetting.interfaceSurfaceOpacity.roundToInt()}%")
+                                ) { draft, slider ->
+                                    slider()
+                                    Text(text = "${draft.roundToInt()}%")
+                                }
                             }
                         }
                     )
@@ -98,8 +101,9 @@ fun SettingDisplayTransparencyPage(vm: SettingVM = koinViewModel()) {
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                             ) {
-                                Slider(
+                                CommitSlider(
                                     value = displaySetting.popupSurfaceOpacity.coerceIn(60f, 100f),
+                                    onValuePreview = { displaySetting = displaySetting.copy(popupSurfaceOpacity = it) },
                                     onValueChange = {
                                         updateDisplaySetting(
                                             displaySetting.copy(
@@ -109,12 +113,10 @@ fun SettingDisplayTransparencyPage(vm: SettingVM = koinViewModel()) {
                                     },
                                     valueRange = 60f..100f,
                                     modifier = Modifier.weight(1f)
-                                )
-                                Text(
-                                    text = "${
-                                        displaySetting.popupSurfaceOpacity.coerceIn(60f, 100f).roundToInt()
-                                    }%"
-                                )
+                                ) { draft, slider ->
+                                    slider()
+                                    Text(text = "${draft.roundToInt()}%")
+                                }
                             }
                         }
                     )
@@ -126,15 +128,18 @@ fun SettingDisplayTransparencyPage(vm: SettingVM = koinViewModel()) {
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                             ) {
-                                Slider(
+                                CommitSlider(
                                     value = displaySetting.drawerSurfaceOpacity,
+                                    onValuePreview = { displaySetting = displaySetting.copy(drawerSurfaceOpacity = it) },
                                     onValueChange = {
                                         updateDisplaySetting(displaySetting.copy(drawerSurfaceOpacity = it))
                                     },
                                     valueRange = 60f..100f,
                                     modifier = Modifier.weight(1f)
-                                )
-                                Text(text = "${displaySetting.drawerSurfaceOpacity.roundToInt()}%")
+                                ) { draft, slider ->
+                                    slider()
+                                    Text(text = "${draft.roundToInt()}%")
+                                }
                             }
                         }
                     )
@@ -146,15 +151,18 @@ fun SettingDisplayTransparencyPage(vm: SettingVM = koinViewModel()) {
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                             ) {
-                                Slider(
+                                CommitSlider(
                                     value = displaySetting.chatBubbleTransparency,
+                                    onValuePreview = { displaySetting = displaySetting.copy(chatBubbleTransparency = it) },
                                     onValueChange = {
                                         updateDisplaySetting(displaySetting.copy(chatBubbleTransparency = it))
                                     },
                                     valueRange = 0f..100f,
                                     modifier = Modifier.weight(1f)
-                                )
-                                Text(text = "${displaySetting.chatBubbleTransparency.roundToInt()}%")
+                                ) { draft, slider ->
+                                    slider()
+                                    Text(text = "${draft.roundToInt()}%")
+                                }
                             }
                         }
                     )
@@ -166,15 +174,18 @@ fun SettingDisplayTransparencyPage(vm: SettingVM = koinViewModel()) {
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                             ) {
-                                Slider(
+                                CommitSlider(
                                     value = displaySetting.thinkingChainTransparency,
+                                    onValuePreview = { displaySetting = displaySetting.copy(thinkingChainTransparency = it) },
                                     onValueChange = {
                                         updateDisplaySetting(displaySetting.copy(thinkingChainTransparency = it))
                                     },
                                     valueRange = 0f..100f,
                                     modifier = Modifier.weight(1f)
-                                )
-                                Text(text = "${displaySetting.thinkingChainTransparency.roundToInt()}%")
+                                ) { draft, slider ->
+                                    slider()
+                                    Text(text = "${draft.roundToInt()}%")
+                                }
                             }
                         }
                     )
@@ -186,15 +197,18 @@ fun SettingDisplayTransparencyPage(vm: SettingVM = koinViewModel()) {
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                             ) {
-                                Slider(
+                                CommitSlider(
                                     value = displaySetting.drawerItemAlpha,
+                                    onValuePreview = { displaySetting = displaySetting.copy(drawerItemAlpha = it) },
                                     onValueChange = {
                                         updateDisplaySetting(displaySetting.copy(drawerItemAlpha = it))
                                     },
                                     valueRange = 0f..1f,
                                     modifier = Modifier.weight(1f)
-                                )
-                                Text(text = "${(displaySetting.drawerItemAlpha * 100).roundToInt()}%")
+                                ) { draft, slider ->
+                                    slider()
+                                    Text(text = "${(draft * 100).roundToInt()}%")
+                                }
                             }
                         }
                     )

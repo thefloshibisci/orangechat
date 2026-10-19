@@ -39,7 +39,7 @@ interface ConversationDAO {
     @Query("SELECT * FROM conversationentity WHERE assistant_id = :assistantId ORDER BY is_pinned DESC, update_at DESC LIMIT :limit")
     suspend fun getRecentConversationsOfAssistant(assistantId: String, limit: Int): List<ConversationEntity>
 
-    @Query("SELECT id FROM conversationentity WHERE assistant_id = :assistantId ORDER BY is_pinned DESC, update_at DESC LIMIT 1")
+    @Query("SELECT id FROM conversationentity WHERE assistant_id = :assistantId ORDER BY update_at DESC, create_at DESC, id ASC LIMIT 1")
     suspend fun getMostRecentConversationIdOfAssistant(assistantId: String): String?
 
     @Query("SELECT * FROM conversationentity WHERE title LIKE '%' || :searchText || '%' ORDER BY is_pinned DESC, update_at DESC")
@@ -89,6 +89,18 @@ interface ConversationDAO {
 
     @Query("UPDATE conversationentity SET is_pinned = :isPinned WHERE id = :id")
     suspend fun updatePinStatus(id: String, isPinned: Boolean)
+
+    @Query("UPDATE conversationentity SET is_pinned = NOT is_pinned WHERE id = :id")
+    suspend fun togglePinStatus(id: String): Int
+
+    @Query("SELECT is_pinned FROM conversationentity WHERE id = :id")
+    suspend fun getPinStatus(id: String): Boolean?
+
+    @Query("UPDATE conversationentity SET title = :title WHERE id = :id")
+    suspend fun updateTitle(id: String, title: String): Int
+
+    @Query("UPDATE conversationentity SET suggestions = :suggestions WHERE id = :id")
+    suspend fun updateSuggestions(id: String, suggestions: String): Int
 
     @Query("UPDATE conversationentity SET folder_id = :folderId WHERE id = :id")
     suspend fun updateFolderId(id: String, folderId: String)

@@ -72,18 +72,14 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import me.rerere.rikkahub.data.files.SafeFileResolver
-import me.rerere.ai.core.MessageRole
 import me.rerere.ai.provider.ProviderManager
-import me.rerere.ai.provider.TextGenerationParams
-import me.rerere.ai.ui.UIMessage
+import me.rerere.ai.core.MessageRole
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.ArrowLeft01
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.datastore.getCurrentAssistant
-import me.rerere.rikkahub.data.datastore.getCurrentChatModel
 import me.rerere.rikkahub.data.datastore.findModelById
-import me.rerere.rikkahub.data.datastore.findProvider
 import me.rerere.rikkahub.data.repository.ConversationRepository
 import me.rerere.rikkahub.service.ChatService
 import me.rerere.rikkahub.plugin.data.PluginDataStore
@@ -467,6 +463,18 @@ fun PluginWebViewPage(
                 AndroidView(
                     modifier = Modifier.fillMaxSize(),
                     factory = { ctx ->
+                        val aiCall = PluginAiCall(
+                            permissions = pluginInfo.manifest.permissions,
+                            loadSettings = { settingsStore.settingsFlow.first() },
+                            generateText = { providerSetting, messages, params ->
+                                val manager: ProviderManager = org.koin.java.KoinJavaComponent.get(ProviderManager::class.java)
+                                manager.getProviderByType(providerSetting)
+                                    .generateText(providerSetting, messages, params)
+                                    .choices.firstOrNull()?.message?.parts
+                                    ?.filterIsInstance<UIMessagePart.Text>()?.firstOrNull()?.text.orEmpty()
+                            },
+                            onError = { Log.e(TAG, "AI generation failed", it) },
+                        )
                         WebView(ctx).apply {
                             settings.apply {
                                 @SuppressLint("SetJavaScriptEnabled")
@@ -486,6 +494,7 @@ fun PluginWebViewPage(
                                 pluginRepository = pluginRepository,
                                 conversationRepository = conversationRepository,
                                 settingsStore = settingsStore,
+                                aiCall = aiCall,
                                 chatService = chatService,
                                 initialConversationId = initialConversationId,
                                 isWatchFullscreen = { customVideoView != null },
@@ -727,44 +736,11 @@ fun PluginWebViewPage(
                                                         val prompt = params["prompt"] ?: ""
                                                         val contextJson = params["context"] ?: "{}"
                                                         scope.launch(Dispatchers.IO) {
-                                                            try {
-                                                                // Use the PluginWebViewClient's callAI via a simple approach
-                                                                val settingsStore: SettingsStore = org.koin.java.KoinJavaComponent.get(SettingsStore::class.java)
-                                                                val providerManager: ProviderManager = org.koin.java.KoinJavaComponent.get(ProviderManager::class.java)
-                                                                val settings = settingsStore.settingsFlow.first()
-                                                                val model = settings.getCurrentChatModel()
-                                                                val aiResult = if (model == null) {
-                                                                    """{"success":false,"error":"No chat model configured"}"""
-                                                                } else {
-                                                                    val providerSetting = model.findProvider(settings.providers)
-                                                                    if (providerSetting == null) {
-                                                                        """{"success":false,"error":"Provider not found"}"""
-                                                                    } else {
-                                                                        val providerImpl = providerManager.getProviderByType(providerSetting)
-                                                                        val systemPrompt = "你是一个番茄钟陪伴助手。用户正在使用番茄钟专注。请用简短温暖的话回应，鼓励用户保持专注。当前上下文：$contextJson"
-                                                                        val messages = listOf(
-                                                                            UIMessage(role = MessageRole.SYSTEM, parts = listOf(UIMessagePart.Text(systemPrompt))),
-                                                                            UIMessage(role = MessageRole.USER, parts = listOf(UIMessagePart.Text(prompt)))
-                                                                        )
-                                                                        val textGenParams = TextGenerationParams(model = model, tools = emptyList(), temperature = 0.7f)
-                                                                        val response = providerImpl.generateText(providerSetting, messages, textGenParams)
-                                                                        val responseText = response.choices.firstOrNull()?.message?.parts
-                                                                            ?.filterIsInstance<UIMessagePart.Text>()
-                                                                            ?.firstOrNull()?.text ?: ""
-                                                                        val escaped = responseText.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
-                                                                        """{"success":true,"text":"$escaped"}"""
-                                                                    }
-                                                                }
-                                                                overlayWv.post {
-                                                                    overlayWv.evaluateJavascript("window.__bridgeResult('$cbId', $aiResult);", null)
-                                                                }
-                                                            } catch (e: CancellationException) {
-                                                                throw e
-                                                            } catch (e: Exception) {
-                                                                val err = """{"success":false,"error":"${e.message?.replace("\"", "\\\"")?.replace("\\", "\\\\")}"}"""
-                                                                overlayWv.post {
-                                                                    overlayWv.evaluateJavascript("window.__bridgeResult('$cbId', $err);", null)
-                                                                }
+                                                            val aiResult = aiCall.call(prompt) {
+                                                                "你是一个番茄钟陪伴助手。用户正在使用番茄钟专注。请用简短温暖的话回应，鼓励用户保持专注。当前上下文：$contextJson"
+                                                            }
+                                                            overlayWv.post {
+                                                                overlayWv.evaluateJavascript(pluginAiResultJavascript(cbId, aiResult), null)
                                                             }
                                                         }
                                                     }
@@ -944,6 +920,7 @@ private class PluginWebViewClient(
     private val pluginRepository: PluginRepository,
     private val conversationRepository: ConversationRepository,
     private val settingsStore: SettingsStore,
+    private val aiCall: PluginAiCall,
     private val chatService: ChatService,
     private val initialConversationId: String,
     private val isWatchFullscreen: () -> Boolean,
@@ -1358,44 +1335,10 @@ private class PluginWebViewClient(
                 val prompt = params["prompt"] ?: ""
                 val contextJson = params["context"] ?: "{}"
 
-                if (!pluginInfo.manifest.permissions.contains("ai_chat")) {
-                    val errorResult = """{"success":false,"error":"Permission denied: ai_chat permission not declared in manifest"}"""
-                    webView.post {
-                        webView.evaluateJavascript(
-                            "window.__bridgeResult('$callbackId', $errorResult);", null
-                        )
-                    }
-                    return
-                }
-
-                if (prompt.isBlank()) {
-                    val errorResult = """{"success":false,"error":"prompt is required"}"""
-                    webView.post {
-                        webView.evaluateJavascript(
-                            "window.__bridgeResult('$callbackId', $errorResult);", null
-                        )
-                    }
-                    return
-                }
-
                 scope.launch(Dispatchers.IO) {
-                    try {
-                        val aiResult = callAI(prompt, contextJson)
-                        webView.post {
-                            webView.evaluateJavascript(
-                                "window.__bridgeResult('$callbackId', $aiResult);", null
-                            )
-                        }
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        Log.e(TAG, "callAI failed", e)
-                        val errorResult = """{"success":false,"error":"${e.message?.replace("\"", "\\\"")?.replace("\\", "\\\\")}"}"""
-                        webView.post {
-                            webView.evaluateJavascript(
-                                "window.__bridgeResult('$callbackId', $errorResult);", null
-                            )
-                        }
+                    val aiResult = callAI(prompt, contextJson)
+                    webView.post {
+                        webView.evaluateJavascript(pluginAiResultJavascript(callbackId, aiResult), null)
                     }
                 }
             }
@@ -1701,68 +1644,25 @@ private class PluginWebViewClient(
     }
 
     private suspend fun callAI(prompt: String, contextJson: String): String {
-        val settingsStore: SettingsStore = org.koin.java.KoinJavaComponent.get(SettingsStore::class.java)
-        val providerManager: ProviderManager = org.koin.java.KoinJavaComponent.get(ProviderManager::class.java)
-        val settings = settingsStore.settingsFlow.first()
-        val model = settings.getCurrentChatModel()
-            ?: return """{"success":false,"error":"No chat model configured"}"""
-        val providerSetting = model.findProvider(settings.providers)
-            ?: return """{"success":false,"error":"Provider not found for model"}"""
-
-        val providerImpl = providerManager.getProviderByType(providerSetting)
-
-        val systemPrompt = buildString {
-            append("\u4F60\u662F\u4E00\u4E2A\u9605\u8BFB\u52A9\u624B\u3002\u8BF7\u6839\u636E\u7528\u6237\u7684\u95EE\u9898\u7ED9\u51FA\u6709\u6DF1\u5EA6\u7684\u3001\u6E29\u67D4\u7684\u56DE\u7B54\u3002")
-            if (contextJson.isNotBlank() && contextJson != "{}") {
-                try {
-                    val ctx = JSONObject(contextJson)
-                    append("\n\n\u5F53\u524D\u9605\u8BFB\u4E0A\u4E0B\u6587\uFF1A")
-                    if (ctx.has("book")) append("\n\u4E66\u540D\uFF1A").append(ctx.getString("book"))
-                    if (ctx.has("chapter")) append("\n\u7AE0\u8282\uFF1A\u7B2C").append(ctx.getString("chapter")).append("\u7AE0")
-                    if (ctx.has("page")) append("\n\u9875\u7801\uFF1A\u7B2C").append(ctx.getString("page")).append("\u9875")
-                    if (ctx.has("annotations")) append("\n\u5DF2\u6709\u6279\u6CE8\uFF1A").append(ctx.getString("annotations"))
-                    if (ctx.has("content")) append("\n\u9875\u9762\u5185\u5BB9\uFF1A").append(ctx.getString("content"))
-                    if (ctx.has("quote")) append("\n\u5F15\u7528\u539F\u6587\uFF1A").append(ctx.getString("quote"))
-                    if (ctx.has("note")) append("\n\u7528\u6237\u6279\u6CE8\uFF1A").append(ctx.getString("note"))
-                } catch (e: Exception) {
-                    Log.w(TAG, "Failed to parse context JSON", e)
+        return aiCall.call(prompt) {
+            buildString {
+                append("\u4F60\u662F\u4E00\u4E2A\u9605\u8BFB\u52A9\u624B\u3002\u8BF7\u6839\u636E\u7528\u6237\u7684\u95EE\u9898\u7ED9\u51FA\u6709\u6DF1\u5EA6\u7684\u3001\u6E29\u67D4\u7684\u56DE\u7B54\u3002")
+                if (contextJson.isNotBlank() && contextJson != "{}") {
+                    try {
+                        val ctx = JSONObject(contextJson)
+                        append("\n\n\u5F53\u524D\u9605\u8BFB\u4E0A\u4E0B\u6587\uFF1A")
+                        if (ctx.has("book")) append("\n\u4E66\u540D\uFF1A").append(ctx.getString("book"))
+                        if (ctx.has("chapter")) append("\n\u7AE0\u8282\uFF1A\u7B2C").append(ctx.getString("chapter")).append("\u7AE0")
+                        if (ctx.has("page")) append("\n\u9875\u7801\uFF1A\u7B2C").append(ctx.getString("page")).append("\u9875")
+                        if (ctx.has("annotations")) append("\n\u5DF2\u6709\u6279\u6CE8\uFF1A").append(ctx.getString("annotations"))
+                        if (ctx.has("content")) append("\n\u9875\u9762\u5185\u5BB9\uFF1A").append(ctx.getString("content"))
+                        if (ctx.has("quote")) append("\n\u5F15\u7528\u539F\u6587\uFF1A").append(ctx.getString("quote"))
+                        if (ctx.has("note")) append("\n\u7528\u6237\u6279\u6CE8\uFF1A").append(ctx.getString("note"))
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Failed to parse context JSON", e)
+                    }
                 }
             }
-        }
-
-        val messages = listOf(
-            UIMessage(
-                role = MessageRole.SYSTEM,
-                parts = listOf(UIMessagePart.Text(systemPrompt))
-            ),
-            UIMessage(
-                role = MessageRole.USER,
-                parts = listOf(UIMessagePart.Text(prompt))
-            )
-        )
-
-        val textGenParams = TextGenerationParams(
-            model = model,
-            tools = emptyList(),
-            temperature = 0.7f
-        )
-
-        return try {
-            val response = providerImpl.generateText(providerSetting, messages, textGenParams)
-            val responseText = response.choices.firstOrNull()?.message?.parts
-                ?.filterIsInstance<UIMessagePart.Text>()
-                ?.firstOrNull()?.text ?: ""
-
-            val escaped = responseText
-                .replace("\\", "\\\\")
-                .replace("\"", "\\\"")
-                .replace("\n", "\\n")
-                .replace("\r", "\\r")
-                .replace("\t", "\\t")
-            """{"success":true,"text":"$escaped"}"""
-        } catch (e: Exception) {
-            Log.e(TAG, "AI generation failed", e)
-            """{"success":false,"error":"${e.message?.replace("\"", "\\\"")?.replace("\\", "\\\\")}"}"""
         }
     }
 

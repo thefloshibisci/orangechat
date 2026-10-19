@@ -160,13 +160,13 @@ fun SettingProviderDetailPage(id: Uuid, vm: SettingVM = koinViewModel()) {
                 }
             }
         )
-        vm.updateSettings(newSettings)
+        vm.updateSettings(settings, newSettings)
     }
     val onDelete = {
         val newSettings = settings.copy(
             providers = settings.providers - provider
         )
-        vm.updateSettings(newSettings)
+        vm.updateSettings(settings, newSettings)
         navController.popBackStack()
     }
 
@@ -250,7 +250,8 @@ fun SettingProviderDetailPage(id: Uuid, vm: SettingVM = koinViewModel()) {
                 1 -> {
                     SettingProviderModelPage(
                         provider = provider,
-                        onEdit = onEdit
+                        onEdit = onEdit,
+                        onEditModel = { previous, desired -> vm.updateProviderModel(provider.id, previous, desired) },
                     )
                 }
             }
@@ -375,18 +376,21 @@ private fun SettingProviderConfigPage(
 @Composable
 private fun SettingProviderModelPage(
     provider: ProviderSetting,
-    onEdit: (ProviderSetting) -> Unit
+    onEdit: (ProviderSetting) -> Unit,
+    onEditModel: (Model, Model) -> Unit,
 ) {
     ModelList(
         providerSetting = provider,
-        onUpdateProvider = onEdit
+        onUpdateProvider = onEdit,
+        onEditModel = onEditModel,
     )
 }
 
 @Composable
 private fun ModelList(
     providerSetting: ProviderSetting,
-    onUpdateProvider: (ProviderSetting) -> Unit
+    onUpdateProvider: (ProviderSetting) -> Unit,
+    onEditModel: (Model, Model) -> Unit,
 ) {
     val providerManager = koinInject<ProviderManager>()
     val modelList by produceState(emptyList(), providerSetting) {
@@ -453,9 +457,7 @@ private fun ModelList(
                             onDelete = {
                                 onUpdateProvider(providerSetting.delModel(item))
                             },
-                            onEdit = { editedModel ->
-                                onUpdateProvider(providerSetting.editModel(editedModel))
-                            },
+                            onEdit = onEditModel,
                             parentProvider = providerSetting,
                             modifier = Modifier
                                 .longPressDraggableHandle()
@@ -1165,11 +1167,12 @@ private fun ModelCard(
     model: Model,
     modifier: Modifier = Modifier,
     onDelete: () -> Unit,
-    onEdit: (Model) -> Unit,
+    onEdit: (Model, Model) -> Unit,
     parentProvider: ProviderSetting
 ) {
+    var editBaseline by remember(model.id) { mutableStateOf(model) }
     val dialogState = useEditState<Model> {
-        onEdit(it)
+        onEdit(editBaseline, it)
     }
     val swipeToDismissBoxState = rememberSwipeToDismissBoxState()
     val scope = rememberCoroutineScope()
@@ -1340,6 +1343,7 @@ private fun ModelCard(
                 // Edit button
                 IconButton(
                     onClick = {
+                        editBaseline = model
                         dialogState.open(model.copy())
                     }
                 ) {

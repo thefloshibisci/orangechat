@@ -6,10 +6,8 @@
 
 package me.rerere.rikkahub.ui.pages.chat
 
-import android.content.ContentResolver
 import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.graphics.BlendMode
 import android.graphics.ColorMatrix
 import android.graphics.ColorMatrixColorFilter
@@ -129,69 +127,21 @@ import org.koin.compose.koinInject
 import org.koin.core.parameter.parametersOf
 import kotlin.uuid.Uuid
 
-/**
- * 按 Coil model（assistant.background 的 String）的 scheme 分流加载聊天背景位图。
- *
- * 背景 model 的实际形式（与 Coil 显示完全一致）：
- * - 图库选择：FilesManager.createChatFilesByContents 拷贝到 filesDir 后返回 file:// URI；
- * - 手动输入：http/https URL；
- * - 其余（content://、android.resource://、普通绝对路径）一并兼容。
- *
- * 所有磁盘/流解码都在 Dispatchers.IO 中执行；网络等复杂 model 走项目现有
- * Coil 3.4 SingletonImageLoader（不在本函数内做网络阻塞）。
- */
+/** Decode one screen-sized software bitmap, only while live bubble blur actually needs it. */
 private suspend fun decodeChatBackgroundBitmap(
     context: Context,
     model: String,
+    width: Int,
+    height: Int,
 ): ImageBitmap? = withContext(Dispatchers.IO) {
-    val uri = runCatching { Uri.parse(model) }.getOrNull()
-    val bitmap = when {
-        model.startsWith("/") -> {
-            BitmapFactory.decodeFile(model)
-        }
-
-        uri?.scheme == ContentResolver.SCHEME_CONTENT ||
-            uri?.scheme == ContentResolver.SCHEME_ANDROID_RESOURCE -> {
-            context.contentResolver.openInputStream(uri)?.use { input ->
-                BitmapFactory.decodeStream(input)
-            }
-        }
-
-        uri?.scheme == ContentResolver.SCHEME_FILE -> {
-            context.contentResolver.openInputStream(uri)?.use { input ->
-                BitmapFactory.decodeStream(input)
-            } ?: uri.path?.let(BitmapFactory::decodeFile)
-        }
-
-        uri?.scheme == "http" || uri?.scheme == "https" -> {
-            loadChatBackgroundViaCoil(context, model)
-        }
-
-        else -> {
-            BitmapFactory.decodeFile(model)
-                ?: uri?.let {
-                    runCatching {
-                        context.contentResolver.openInputStream(it)?.use(BitmapFactory::decodeStream)
-                    }.getOrNull()
-                }
-        }
-    }
-    bitmap?.asImageBitmap()
-}
-
-/**
- * 使用项目现有 Coil 3 ImageLoader 加载同一 model（与 Coil 显示背景使用同一套 fetcher/缓存）。
- * 调用方已处于 Dispatchers.IO，Coil 内部网络/解码不会阻塞主线程。
- */
-private suspend fun loadChatBackgroundViaCoil(context: Context, model: String): Bitmap? {
-    val loader = SingletonImageLoader.get(context)
     val request = ImageRequest.Builder(context)
         .data(model)
-        // 硬件位图无法被 asImageBitmap/RenderEffect 采样，关闭硬件加速以保证可读
+        .size(width.coerceAtLeast(1), height.coerceAtLeast(1))
+        .scale(coil3.size.Scale.FILL)
         .allowHardware(false)
         .build()
-    val result = loader.execute(request)
-    return (result.image as? BitmapImage)?.bitmap
+    val result = SingletonImageLoader.get(context).execute(request)
+    (result.image as? BitmapImage)?.bitmap?.asImageBitmap()
 }
 
 @Composable
@@ -251,19 +201,17 @@ fun ChatPage(id: Uuid, text: String?, files: List<Uri>, nodeId: Uuid? = null, au
     // 初始化输入状态（处理传入的 files 和 text 参数）
     LaunchedEffect(files, text) {
         if (files.isNotEmpty()) {
-            val localFiles = filesManager.createChatFilesByContents(files)
-            val contentTypes = files.mapNotNull { file ->
-                filesManager.getFileMimeType(file)
-            }
-            val parts = buildList {
-                localFiles.forEachIndexed { index, file ->
-                    val type = contentTypes.getOrNull(index)
-                    if (type?.startsWith("image/") == true) {
-                        add(UIMessagePart.Image(url = file.toString()))
-                    } else if (type?.startsWith("video/") == true) {
-                        add(UIMessagePart.Video(url = file.toString()))
-                    } else if (type?.startsWith("audio/") == true) {
-                        add(UIMessagePart.Audio(url = file.toString()))
+            val parts = withContext(Dispatchers.IO) {
+                files.mapNotNull { source ->
+                    val file = filesManager.createChatFilesByContents(listOf(source)).firstOrNull()
+                        ?: return@mapNotNull null
+                    // Pair MIME with its source; a skipped invalid file must not shift the remaining types.
+                    val type = filesManager.getFileMimeType(source)
+                    when {
+                        type?.startsWith("image/") == true -> UIMessagePart.Image(url = file.toString())
+                        type?.startsWith("video/") == true -> UIMessagePart.Video(url = file.toString())
+                        type?.startsWith("audio/") == true -> UIMessagePart.Audio(url = file.toString())
+                        else -> null
                     }
                 }
             }
@@ -425,13 +373,21 @@ private fun ChatPageContent(
     val bubbleBlurBackgroundModel = setting.getCurrentAssistant().background
     val bubbleBlurContext = LocalContext.current.applicationContext
     var bubbleBlurBackgroundBitmap by remember { mutableStateOf<ImageBitmap?>(null) }
-    LaunchedEffect(bubbleBlurBackgroundModel) {
-        if (bubbleBlurBackgroundModel != null) {
-            bubbleBlurBackgroundBitmap = runCatching {
-                decodeChatBackgroundBitmap(bubbleBlurContext, bubbleBlurBackgroundModel)
-            }.getOrNull()
-        } else {
-            bubbleBlurBackgroundBitmap = null
+    val backgroundConfiguration = androidx.compose.ui.platform.LocalConfiguration.current
+    val backgroundWidth = with(density) { backgroundConfiguration.screenWidthDp.dp.roundToPx() }
+    val backgroundHeight = with(density) { backgroundConfiguration.screenHeightDp.dp.roundToPx() }
+    LaunchedEffect(enableLiveBubbleBlur, bubbleBlurBackgroundModel, backgroundWidth, backgroundHeight) {
+        bubbleBlurBackgroundBitmap = null
+        if (enableLiveBubbleBlur && bubbleBlurBackgroundModel != null) {
+            bubbleBlurBackgroundBitmap = try {
+                decodeChatBackgroundBitmap(
+                    bubbleBlurContext, bubbleBlurBackgroundModel, backgroundWidth, backgroundHeight,
+                )
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                null
+            }
         }
     }
     // 背景容器窗口原点与像素尺寸（现有内容 Box 同时是 AssistantBackground 的容器）
@@ -665,18 +621,10 @@ private fun ChatPageContent(
                     onUpdateChatModel = {
                         vm.setChatModel(assistant = setting.getCurrentAssistant(), model = it)
                     },
-                    onUpdateAssistant = {
-                        vm.updateSettings(
-                            setting.copy(
-                                assistants = setting.assistants.map { assistant ->
-                                    if (assistant.id == it.id) {
-                                        it
-                                    } else {
-                                        assistant
-                                    }
-                                }
-                            )
-                        )
+                    onUpdateAssistant = { updated ->
+                        setting.assistants.find { it.id == updated.id }?.let { previous ->
+                            vm.updateAssistant(previous, updated)
+                        }
                     },
                     onUpdateSearchService = { index ->
                         vm.updateSettings(

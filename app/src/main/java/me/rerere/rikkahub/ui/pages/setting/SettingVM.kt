@@ -13,6 +13,11 @@ import kotlinx.coroutines.launch
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.ai.mcp.McpManager
+import me.rerere.ai.provider.Model
+import me.rerere.rikkahub.data.ai.mcp.McpServerConfig
+import me.rerere.rikkahub.data.datastore.withMcpServerEdit
+import me.rerere.rikkahub.data.datastore.withProviderModelEdit
+import kotlin.uuid.Uuid
 
 class SettingVM(
     private val settingsStore: SettingsStore,
@@ -21,9 +26,33 @@ class SettingVM(
     ViewModel() {
     val settings: StateFlow<Settings> = settingsStore.settingsFlow
 
+    fun updateDisplaySetting(
+        previous: me.rerere.rikkahub.data.datastore.DisplaySetting,
+        desired: me.rerere.rikkahub.data.datastore.DisplaySetting,
+    ) {
+        val baseline = settings.value.copy(displaySetting = previous)
+        updateSettings(baseline, baseline.copy(displaySetting = desired))
+    }
+
     fun updateSettings(settings: Settings) {
+        updateSettings(this.settings.value, settings)
+    }
+
+    fun updateSettings(previous: Settings, settings: Settings) {
         viewModelScope.launch {
-            settingsStore.update(settings)
+            settingsStore.updateFrom(previous, settings)
+        }
+    }
+
+    fun updateMcpServer(previous: McpServerConfig, desired: McpServerConfig) {
+        viewModelScope.launch {
+            settingsStore.update { it.withMcpServerEdit(previous, desired) }
+        }
+    }
+
+    fun updateProviderModel(providerId: Uuid, previous: Model, desired: Model) {
+        viewModelScope.launch {
+            settingsStore.update { it.withProviderModelEdit(providerId, previous, desired) }
         }
     }
 
