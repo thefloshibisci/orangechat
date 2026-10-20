@@ -9,6 +9,7 @@ package me.rerere.rikkahub.plugin.provider
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
@@ -29,8 +30,6 @@ import me.rerere.rikkahub.plugin.model.PluginToolDefinition
  * 插件工具提供者
  * 将插件工具转换为AI可用的Tool对象
  */
-private const val GALLERY_PLUGIN_ID = "com.orangechat.plugin.photo-gallery"
-
 class PluginToolProvider(
     private val pluginLoader: PluginLoader,
     private val pluginManager: PluginManager,
@@ -91,37 +90,43 @@ class PluginToolProvider(
             parameters = {
                 InputSchema.Obj(
                     properties = buildParameters(toolDef),
-                    required = toolDef.parameters.filter { it.required }.map { it.name }
+                    required = toolDef.parameters.filter { it.required && it.source == null }.map { it.name }
                 )
             },
             execute = { params ->
                 if (plugin.manifest.id == "com.nanzhi.naistudio" && toolDef.name == "nai_chat_image") {
                     listOf(UIMessagePart.Text(chatImages.execute(plugin.manifest.id, params, attachments, conversationId.orEmpty()).toString()))
-                } else if (plugin.manifest.id == GALLERY_PLUGIN_ID && toolDef.name == "list_chat_images") {
-                    listOf(UIMessagePart.Text(chatImages.galleryList(attachments, conversationId.orEmpty()).toString()))
-                } else if (plugin.manifest.id == GALLERY_PLUGIN_ID && toolDef.name == "save_chat_photo") {
-                    // Host reads the attachment; the plugin itself uploads a copy, so deleting the
-                    // chat message never affects the gallery.
-                    val upload = runCatching {
-                        chatImages.prepareGalleryUpload(
-                            params.jsonObject["attachment_id"]?.jsonPrimitive?.contentOrNull,
-                            attachments, conversationId.orEmpty(),
-                        )
+                } else if (toolDef.parameters.any { it.source != null }) {
+                    // Generic host-filled parameters declared in the manifest, so any plugin can
+                    // consume chat images without a per-plugin app change.
+                    try {
+                        val values = mutableMapOf<String, JsonElement>()
+                        var image: PluginChatImages.GalleryUpload? = null
+                        toolDef.parameters.forEach { param ->
+                            when (param.source) {
+                                "chat_image_base64", "chat_image_mime" -> {
+                                    if (image == null) image = chatImages.prepareGalleryUpload(
+                                        params.jsonObject["attachment_id"]?.jsonPrimitive?.contentOrNull,
+                                        attachments, conversationId.orEmpty(),
+                                    )
+                                    val resolved = image!!
+                                    values[param.name] = JsonPrimitive(
+                                        if (param.source == "chat_image_base64") resolved.base64 else resolved.mime
+                                    )
+                                }
+                                "chat_images_list" -> values[param.name] =
+                                    chatImages.galleryList(attachments, conversationId.orEmpty())
+                                        .jsonObject["images"] ?: buildJsonArray { }
+                            }
+                        }
+                        executeTool(plugin, toolDef, JsonObject(params.jsonObject + values))
+                    } catch (error: kotlinx.coroutines.CancellationException) {
+                        throw error
+                    } catch (error: Exception) {
+                        listOf(UIMessagePart.Text(buildJsonObject {
+                            put("success", false); put("error", error.message ?: "Import failed")
+                        }.toString()))
                     }
-                    upload.fold(
-                        onSuccess = { image ->
-                            executeTool(plugin, toolDef, JsonObject(params.jsonObject + mapOf(
-                                "image_base64" to JsonPrimitive(image.base64),
-                                "image_mime" to JsonPrimitive(image.mime),
-                            )))
-                        },
-                        onFailure = { error ->
-                            if (error is kotlinx.coroutines.CancellationException) throw error
-                            listOf(UIMessagePart.Text(buildJsonObject {
-                                put("success", false); put("error", error.message ?: "Import failed")
-                            }.toString()))
-                        },
-                    )
                 } else {
                     executeTool(plugin, toolDef, params)
                 }
@@ -145,7 +150,7 @@ class PluginToolProvider(
      */
     private fun buildParameters(toolDef: PluginToolDefinition): JsonObject {
         return buildJsonObject {
-            toolDef.parameters.forEach { param ->
+            toolDef.parameters.filter { it.source == null }.forEach { param ->
                 put(param.name, buildJsonObject {
                     put("type", param.type)
                     if (param.description != null) {
