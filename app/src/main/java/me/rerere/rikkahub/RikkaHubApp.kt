@@ -26,6 +26,8 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.runBlocking
 import me.rerere.common.android.appTempFolder
 import com.whl.quickjs.android.QuickJSLoader
@@ -38,9 +40,7 @@ import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.service.DailySummaryService
 import me.rerere.rikkahub.data.service.DeviceEventAiTriggerService
-import me.rerere.rikkahub.data.service.DeviceEventTrackingService
 import me.rerere.rikkahub.data.service.ProactiveMessageService
-import me.rerere.rikkahub.data.service.SupabaseSyncService
 import me.rerere.rikkahub.data.sync.DatabaseBackupCoordinator
 import me.rerere.rikkahub.service.ChatService
 import me.rerere.rikkahub.service.WebServerService
@@ -111,6 +111,15 @@ class RikkaHubApp : Application() {
 
         // sync upload files to DB
         syncManagedFiles()
+        get<AppScope>().launch {
+            get<SettingsStore>().settingsFlowRaw
+                .map { it.autoBackupConfig.scheduleConfig() }
+                .distinctUntilChanged()
+                .collect {
+                    runCatching { me.rerere.rikkahub.data.sync.AutoBackupScheduler.schedule(this@RikkaHubApp) }
+                        .onFailure { Log.e(TAG, "Unable to schedule automatic backup", it) }
+                }
+        }
 
         // Start WebServer if enabled in settings
         startWebServerIfEnabled()
@@ -118,11 +127,8 @@ class RikkaHubApp : Application() {
         // Reschedule proactive message alarm if enabled
         rescheduleProactiveMessageIfEnabled()
 
-        // Reschedule Supabase sync alarm if enabled
-        rescheduleSupabaseSyncIfEnabled()
-
-        // Start device event tracking (screen on/off realtime listener) if enabled
-        startDeviceEventTrackingIfEnabled()
+        runCatching { me.rerere.rikkahub.data.service.retireLegacyDeviceSync(this) }
+            .onFailure { Log.w(TAG, "Unable to retire legacy device uploader", it) }
 
         // Start workflow trigger registry (event-driven automation)
         startWorkflowTriggers()
@@ -152,8 +158,7 @@ class RikkaHubApp : Application() {
         get<AppScope>().launch {
             runCatching {
                 val store = get<SettingsStore>()
-                val current = store.settingsFlowRaw.first()
-                store.update(current.copy(launchCount = current.launchCount + 1))
+                store.update { current -> current.copy(launchCount = current.launchCount + 1) }
                 Log.i(TAG, "incrementLaunchCount: ${store.settingsFlowRaw.first().launchCount}")
             }.onFailure {
                 Log.e(TAG, "incrementLaunchCount failed", it)
@@ -174,6 +179,11 @@ class RikkaHubApp : Application() {
         get<AppScope>().launch(Dispatchers.IO) {
             runCatching {
                 get<FilesManager>().syncFolder()
+                val prefs = getSharedPreferences("attachment_maintenance", MODE_PRIVATE)
+                if (!prefs.getBoolean("repaired_v1", false)) {
+                    get<ChatService>().cleanInvalidAttachments()
+                    prefs.edit().putBoolean("repaired_v1", true).apply()
+                }
             }.onFailure {
                 Log.e(TAG, "syncManagedFiles failed", it)
             }
@@ -191,18 +201,6 @@ class RikkaHubApp : Application() {
             }.onFailure {
                 Log.e(TAG, "rescheduleProactiveMessageIfEnabled failed", it)
             }
-        }
-    }
-
-    private fun rescheduleSupabaseSyncIfEnabled() {
-        SupabaseSyncService.rescheduleIfEnabled(this)
-    }
-
-    private fun startDeviceEventTrackingIfEnabled() {
-        runCatching {
-            DeviceEventTrackingService.startIfEnabled(this)
-        }.onFailure {
-            Log.e(TAG, "startDeviceEventTrackingIfEnabled failed", it)
         }
     }
 

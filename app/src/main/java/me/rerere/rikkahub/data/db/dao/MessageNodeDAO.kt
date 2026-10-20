@@ -18,6 +18,16 @@ import me.rerere.rikkahub.data.db.entity.MessageNodeEntity
 
 @Dao
 interface MessageNodeDAO {
+    @RawQuery
+    suspend fun findNodeIdsRaw(query: SupportSQLiteQuery): List<String>
+
+    // Conditional repair must not overwrite a newer stream checkpoint or branch edit.
+    @Query("UPDATE message_node SET messages = :newMessages WHERE id = :id AND messages = :oldMessages")
+    suspend fun repairAttachments(id: String, oldMessages: String, newMessages: String): Int
+
+    @Query("SELECT EXISTS(SELECT 1 FROM message_node WHERE instr(messages, :fileName) > 0)")
+    suspend fun referencesFile(fileName: String): Boolean
+
     @Query("SELECT * FROM message_node WHERE conversation_id = :conversationId ORDER BY node_index ASC")
     suspend fun getNodesOfConversation(conversationId: String): List<MessageNodeEntity>
 
@@ -53,6 +63,15 @@ interface MessageNodeDAO {
         offset: Int
     ): List<MessageNodeEntity>
 
+    @Query("SELECT id, conversation_id AS conversationId, node_index AS nodeIndex, select_index AS selectIndex, length(messages) AS messageLength FROM message_node WHERE conversation_id = :conversationId ORDER BY node_index ASC LIMIT :limit OFFSET :offset")
+    suspend fun getNodeHeaders(conversationId: String, limit: Int, offset: Int): List<MessageNodeHeader>
+
+    @Query("SELECT id, conversation_id AS conversationId, node_index AS nodeIndex, select_index AS selectIndex, length(messages) AS messageLength FROM message_node WHERE id = :id")
+    suspend fun getNodeHeader(id: String): MessageNodeHeader?
+
+    @Query("SELECT substr(messages, :start, :length) FROM message_node WHERE id = :id")
+    suspend fun getMessageSlice(id: String, start: Int, length: Int): String?
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertAll(nodes: List<MessageNodeEntity>)
 
@@ -82,6 +101,14 @@ interface MessageNodeDAO {
     @RawQuery
     suspend fun getMessageCountPerDayRaw(query: SupportSQLiteQuery): List<MessageDayCount>
 }
+
+data class MessageNodeHeader(
+    val id: String,
+    val conversationId: String,
+    val nodeIndex: Int,
+    val selectIndex: Int,
+    val messageLength: Int,
+)
 
 data class MessageTokenStats(
     val totalMessages: Int = 0,

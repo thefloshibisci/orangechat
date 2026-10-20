@@ -16,7 +16,7 @@ import me.rerere.rikkahub.utils.toLocalTime
 import java.io.Reader
 import java.io.StringReader
 import java.io.StringWriter
-import java.time.Instant
+import java.time.ZoneId
 
 class TemplateTransformer(
     private val engine: PebbleEngine,
@@ -28,6 +28,9 @@ class TemplateTransformer(
     ): List<UIMessage> {
         val template = engine.getTemplate(ctx.assistant.id.toString())
         return messages.map { message ->
+            // A historical message's date/time cannot advance on every new request.
+            val timestamp = java.time.LocalDateTime.parse(message.createdAt.toString())
+                .atZone(ZoneId.systemDefault()).toInstant()
             message.copy(
                 parts = message.parts.map { part ->
                     when (part) {
@@ -37,8 +40,8 @@ class TemplateTransformer(
                                 result, mapOf(
                                     "message" to part.text,
                                     "role" to message.role.name.lowercase(),
-                                    "time" to Instant.now().toLocalTime(),
-                                    "date" to Instant.now().toLocalDate(),
+                                    "time" to timestamp.toLocalTime(),
+                                    "date" to timestamp.toLocalDate(),
                                 )
                             )
                             part.copy(

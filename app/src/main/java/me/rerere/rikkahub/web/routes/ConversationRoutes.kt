@@ -178,7 +178,7 @@ fun Route.conversationRoutes(
             val conversation = conversationRepo.getConversationById(uuid)
                 ?: throw NotFoundException("Conversation not found")
 
-            conversationRepo.deleteConversation(conversation)
+            chatService.deleteConversation(conversation)
             call.respond(HttpStatusCode.NoContent)
         }
 
@@ -188,7 +188,7 @@ fun Route.conversationRoutes(
             val conversation = conversationRepo.getConversationById(uuid)
                 ?: throw NotFoundException("Conversation not found")
 
-            chatService.saveConversation(uuid, conversation.copy(isPinned = !conversation.isPinned))
+            chatService.togglePinStatus(uuid)
             call.respond(HttpStatusCode.OK, mapOf("status" to "updated"))
         }
 
@@ -215,7 +215,7 @@ fun Route.conversationRoutes(
             val conversation = conversationRepo.getConversationById(uuid)
                 ?: throw NotFoundException("Conversation not found")
 
-            chatService.saveConversation(uuid, conversation.copy(title = title))
+            chatService.updateTitle(uuid, title)
             call.respond(HttpStatusCode.OK, mapOf("status" to "updated"))
         }
 

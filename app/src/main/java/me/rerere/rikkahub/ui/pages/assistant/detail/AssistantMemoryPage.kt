@@ -103,7 +103,7 @@ fun AssistantMemoryPage(id: String) {
             assistant = assistant,
             memories = memories,
             externalMemories = externalMemories,
-            onUpdateAssistant = { vm.update(it) },
+            onUpdateAssistant = { vm.update(assistant, it) },
             onDeleteMemory = { vm.deleteMemory(it) },
             onAddMemory = { vm.addMemory(it) },
             onUpdateMemory = { vm.updateMemory(it) },

@@ -167,6 +167,7 @@ class SettingsStore(
 
         // 备份提醒
         val BACKUP_REMINDER_CONFIG = stringPreferencesKey("backup_reminder_config")
+        val AUTO_BACKUP_CONFIG = stringPreferencesKey("auto_backup_config")
 
         // 统计
         val LAUNCH_COUNT = intPreferencesKey("launch_count")
@@ -330,6 +331,9 @@ class SettingsStore(
                 backupReminderConfig = preferences[BACKUP_REMINDER_CONFIG]?.let {
                     JsonInstant.decodeFromString(it)
                 } ?: BackupReminderConfig(),
+                autoBackupConfig = runCatching {
+                    preferences[AUTO_BACKUP_CONFIG]?.let { JsonInstant.decodeFromString<AutoBackupConfig>(it) }
+                }.getOrNull() ?: AutoBackupConfig(),
                 launchCount = preferences[LAUNCH_COUNT] ?: 0,
                 sponsorAlertDismissedAt = preferences[SPONSOR_ALERT_DISMISSED_AT] ?: 0,
                 systemToolsSetting = preferences.readPlaintextOrMigrate(SYSTEM_TOOLS_SETTING, SystemToolsSetting()) { JsonInstant.decodeFromString(it) },
@@ -472,18 +476,28 @@ class SettingsStore(
             return
         }
         updateMutex.withLock {
-            publishAndPersist(settings)
+            publishAndPersist(settings, settingsFlowRaw.first())
         }
     }
 
     /** Apply a change to the latest snapshot and persist it atomically. */
     suspend fun update(fn: (Settings) -> Settings) {
         updateMutex.withLock {
-            publishAndPersist(fn(settingsFlow.value))
+            val current = settingsFlowRaw.first()
+            publishAndPersist(fn(current), current)
         }
     }
 
-    private suspend fun publishAndPersist(settings: Settings) {
+    /** Merge an editor's changes under the same lock as the write, preserving newer unrelated fields. */
+    suspend fun updateFrom(previous: Settings, desired: Settings) {
+        if (previous.init || desired.init) {
+            Log.w(TAG, "Cannot update from dummy settings")
+            return
+        }
+        update { current -> current.withSettingsEdit(previous, desired) }
+    }
+
+    private suspend fun publishAndPersist(settings: Settings, previous: Settings) {
         if(settings.init) {
             Log.w(TAG, "Cannot update dummy settings")
             return
@@ -491,7 +505,6 @@ class SettingsStore(
         pendingWrites.incrementAndGet()
         settingsFlow.value = settings
         try {
-            val previous = settingsFlowRaw.first()
             withContext(Dispatchers.IO) {
                 persistSettings(settings, previous)
             }
@@ -636,6 +649,7 @@ class SettingsStore(
             }
             preferences[WEB_SERVER_LOCALHOST_ONLY] = settings.webServerLocalhostOnly
             preferences[BACKUP_REMINDER_CONFIG] = JsonInstant.encodeToString(settings.backupReminderConfig)
+            preferences[AUTO_BACKUP_CONFIG] = JsonInstant.encodeToString(settings.autoBackupConfig)
             preferences[LAUNCH_COUNT] = settings.launchCount
             preferences[SPONSOR_ALERT_DISMISSED_AT] = settings.sponsorAlertDismissedAt
             if (canWriteProtected(SYSTEM_TOOLS_SETTING, settings.systemToolsSetting, loadedSettings.systemToolsSetting)) {
@@ -835,6 +849,7 @@ data class Settings(
     val webServerAccessPassword: String = "",
     val webServerLocalhostOnly: Boolean = false,
     val backupReminderConfig: BackupReminderConfig = BackupReminderConfig(),
+    val autoBackupConfig: AutoBackupConfig = AutoBackupConfig(),
     val launchCount: Int = 0,
     val sponsorAlertDismissedAt: Int = 0,
     val systemToolsSetting: SystemToolsSetting = SystemToolsSetting(),
@@ -1026,6 +1041,12 @@ fun Settings.getCurrentChatModel(): Model? {
     return findModelById(this.getCurrentAssistant().chatModelId ?: this.chatModelId)
 }
 
+/** The open conversation can belong to a different assistant from the global selection. */
+fun Settings.getChatModelForAssistant(assistantId: Uuid): Model? {
+    val assistant = getAssistantById(assistantId) ?: getCurrentAssistant()
+    return findModelById(assistant.chatModelId ?: chatModelId)
+}
+
 fun Settings.getCurrentAssistant(): Assistant {
     return this.assistants.find { it.id == assistantId } ?: this.assistants.first()
 }
@@ -1122,4 +1143,3 @@ val DEFAULT_MODE_INJECTIONS = listOf(
         name = "Learning Mode"
     )
 )
-

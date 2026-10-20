@@ -79,6 +79,7 @@ class MessageFtsManager(private val database: AppDatabase) {
      * @param changedNodeIds 本次发生变化（新增/修改/删除）的 node id 集合
      * @param currentNodes 当前完整的 messageNodes 列表，用于取出仍然存在的 node 的最新内容；
      *                     如果某个 id 不在这个列表里，说明它已被删除，只清索引、不重建
+     * @param failOnError Propagate an indexing failure when a checkpoint requires the enclosing write to roll back.
      */
     suspend fun reindexNodes(
         conversationId: String,
@@ -86,6 +87,7 @@ class MessageFtsManager(private val database: AppDatabase) {
         updateAt: Instant,
         changedNodeIds: Set<String>,
         currentNodes: List<MessageNode>,
+        failOnError: Boolean = false,
     ) {
         if (changedNodeIds.isEmpty()) return
         try {
@@ -118,6 +120,7 @@ class MessageFtsManager(private val database: AppDatabase) {
                 "reindexNodes failed, conversationId=$conversationId, changedNodeIds=$changedNodeIds",
                 e
             )
+            if (failOnError) throw e
         }
     }
 

@@ -6,8 +6,6 @@
 
 package me.rerere.rikkahub.ui.components.message
 
-import android.graphics.BitmapFactory
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -22,11 +20,13 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import coil3.compose.AsyncImage
+import coil3.request.ImageRequest
+import coil3.request.crossfade
 import kotlinx.datetime.toJavaLocalDateTime
 import me.rerere.ai.core.MessageRole
 import me.rerere.ai.provider.Model
@@ -49,24 +49,23 @@ private fun AvatarFrameOverlay(
     scale: Float,
     baseSize: Float,
 ) {
-    if (framePath.isNotBlank() && File(framePath).exists()) {
+    if (framePath.isNotBlank()) {
         val context = LocalContext.current
-        val bitmap = remember(framePath) {
-            runCatching {
-                BitmapFactory.decodeFile(framePath)?.asImageBitmap()
-            }.getOrNull()
+        val request = remember(context, framePath) {
+            ImageRequest.Builder(context)
+                .data(File(framePath))
+                .crossfade(false)
+                .build()
         }
-        if (bitmap != null) {
-            Image(
-                bitmap = bitmap,
-                contentDescription = "Avatar Frame",
-                modifier = Modifier
-                    .size((baseSize * scale).dp)
-                    .offset(x = offsetX.dp, y = offsetY.dp),
-                contentScale = ContentScale.Fit,
-                alpha = 1f,
-            )
-        }
+        AsyncImage(
+            model = request,
+            contentDescription = "Avatar Frame",
+            modifier = Modifier
+                .size((baseSize * scale).dp)
+                .offset(x = offsetX.dp, y = offsetY.dp),
+            contentScale = ContentScale.Fit,
+            alpha = 1f,
+        )
     }
 }
 

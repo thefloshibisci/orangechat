@@ -7,6 +7,7 @@
 package me.rerere.rikkahub.ui.pages.extensions.workspace
 
 import android.content.Intent
+import me.rerere.rikkahub.ui.components.workspace.rememberWorkspaceFileExporter
 import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -117,7 +118,7 @@ fun WorkspaceDetailPage(id: String) {
     var deleteTarget by remember { mutableStateOf<WorkspaceFileEntry?>(null) }
     var showInstallDialog by remember { mutableStateOf(false) }
     // 导出目标文件条目：非空时触发系统"另存为"选择器
-    var exportTarget by remember { mutableStateOf<WorkspaceFileEntry?>(null) }
+    val exportFile = rememberWorkspaceFileExporter(id.toString())
     var previewTarget by remember { mutableStateOf<WorkspaceFileEntry?>(null) }
     var previewResult by remember { mutableStateOf<WorkspaceTextPreview?>(null) }
     var previewLoading by remember { mutableStateOf(false) }
@@ -159,19 +160,6 @@ fun WorkspaceDetailPage(id: String) {
         } else {
             toaster.show(resources.getString(R.string.workspace_detail_import_failed))
         }
-    }
-
-    // 导出文件：用系统"另存为"选择器，以文件名作为建议名
-    val exportFileLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.CreateDocument("*/*")
-    ) { uri: Uri? ->
-        val target = exportTarget
-        if (uri != null && target != null) {
-            context.contentResolver.openOutputStream(uri)?.let { out ->
-                vm.exportFile(target, out)
-            } ?: toaster.show(resources.getString(R.string.workspace_detail_export_failed))
-        }
-        exportTarget = null
     }
 
     Scaffold(
@@ -244,8 +232,7 @@ fun WorkspaceDetailPage(id: String) {
                     onPreview = { previewTarget = it },
                     onDelete = { deleteTarget = it },
                     onExport = { entry ->
-                        exportTarget = entry
-                        exportFileLauncher.launch(entry.name)
+                        exportFile(state.area, entry.path)
                     },
                     onShare = { entry ->
                         vm.shareFile(entry, context.cacheDir) { file ->

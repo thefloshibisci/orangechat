@@ -10,13 +10,15 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.LargeFlexibleTopAppBar
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Button
 import androidx.compose.material3.Scaffold
@@ -45,6 +47,9 @@ import me.rerere.rikkahub.R
 import me.rerere.rikkahub.ui.components.nav.BackButton
 import me.rerere.rikkahub.ui.components.ui.CardGroup
 import me.rerere.rikkahub.ui.components.ui.RiskConfirmDialog
+import me.rerere.rikkahub.ui.theme.CustomColors
+import me.rerere.rikkahub.ui.theme.LargeFlexibleTopAppBar
+import me.rerere.rikkahub.utils.plus
 import me.rerere.rikkahub.data.service.ProactiveMessageService
 import me.rerere.rikkahub.data.service.ProactiveMessageWorker
 import me.rerere.rikkahub.data.service.ProactiveActivity
@@ -60,7 +65,7 @@ import org.koin.compose.koinInject
 fun SettingProactiveMessagePage(vm: SettingVM = koinInject()) {
     val context = LocalContext.current
     val settings by vm.settings.collectAsStateWithLifecycle()
-    val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
+    val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
     val conversationRepository: ConversationRepository = koinInject()
     var showActivities by remember { mutableStateOf(false) }
     var activityRecords by remember { mutableStateOf<List<ProactiveActivity>>(emptyList()) }
@@ -155,16 +160,21 @@ fun SettingProactiveMessagePage(vm: SettingVM = koinInject()) {
                 title = { Text("主动消息") },
                 navigationIcon = { BackButton() },
                 scrollBehavior = scrollBehavior,
+                colors = CustomColors.topBarColors,
             )
-        }
-    ) { padding ->
+        },
+        containerColor = settingsScaffoldContainerColor(CustomColors.topBarColors.containerColor),
+    ) { contentPadding ->
         LazyColumn(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding),
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = contentPadding + PaddingValues(8.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             item {
-                CardGroup {
+                CardGroup(
+                    modifier = Modifier.padding(horizontal = 8.dp),
+                    title = { Text("主动联系") },
+                ) {
                     item(
                         headlineContent = { Text("启用主动消息") },
                         supportingContent = { Text("按设定时段与间隔判断是否联系") },
@@ -241,7 +251,10 @@ fun SettingProactiveMessagePage(vm: SettingVM = koinInject()) {
                 }
             }
             item {
-                CardGroup {
+                CardGroup(
+                    modifier = Modifier.padding(horizontal = 8.dp),
+                    title = { Text("活跃时段与工具") },
+                ) {
                     item(
                         headlineContent = { Text("限定活跃时段") },
                         trailingContent = {
@@ -312,7 +325,10 @@ fun SettingProactiveMessagePage(vm: SettingVM = koinInject()) {
                 }
             }
             item {
-                CardGroup {
+                CardGroup(
+                    modifier = Modifier.padding(horizontal = 8.dp),
+                    title = { Text("间隔与连续追问") },
+                ) {
                     item(
                         headlineContent = { Text("最小间隔 (分钟)") },
                         supportingContent = {
@@ -324,6 +340,7 @@ fun SettingProactiveMessagePage(vm: SettingVM = koinInject()) {
                                 placeholder = { Text("30") },
                                 singleLine = true,
                                 modifier = Modifier
+                                    .fillMaxWidth()
                                     .padding(top = 8.dp)
                                     .onFocusChanged { state ->
                                         editingMinInterval = state.isFocused
@@ -359,6 +376,7 @@ fun SettingProactiveMessagePage(vm: SettingVM = koinInject()) {
                                 placeholder = { Text("90") },
                                 singleLine = true,
                                 modifier = Modifier
+                                    .fillMaxWidth()
                                     .padding(top = 8.dp)
                                     .onFocusChanged { state ->
                                         editingMaxInterval = state.isFocused
@@ -398,6 +416,7 @@ fun SettingProactiveMessagePage(vm: SettingVM = koinInject()) {
                                 placeholder = { Text("1～8") },
                                 singleLine = true,
                                 modifier = Modifier
+                                    .fillMaxWidth()
                                     .padding(top = 8.dp)
                                     .onFocusChanged { state ->
                                         if (editingMaxFollowUps && !state.isFocused) {
@@ -422,6 +441,13 @@ fun SettingProactiveMessagePage(vm: SettingVM = koinInject()) {
                             )
                         },
                     )
+                }
+            }
+            item {
+                CardGroup(
+                    modifier = Modifier.padding(horizontal = 8.dp),
+                    title = { Text("应用使用信息") },
+                ) {
                     item(
                         headlineContent = { Text("允许主动消息查岗") },
                         supportingContent = {
@@ -467,7 +493,7 @@ fun SettingProactiveMessagePage(vm: SettingVM = koinInject()) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 item {
                     val hasExactAlarm = ProactiveMessageWorker.canScheduleExactAlarms(context)
-                    CardGroup {
+                    CardGroup(modifier = Modifier.padding(horizontal = 8.dp)) {
                         item(
                             headlineContent = { Text("精确闹钟权限") },
                             supportingContent = {
@@ -496,7 +522,7 @@ fun SettingProactiveMessagePage(vm: SettingVM = koinInject()) {
             }
             item {
                 val isIgnoring = ProactiveMessageWorker.isIgnoringBatteryOptimizations(context)
-                CardGroup {
+                CardGroup(modifier = Modifier.padding(horizontal = 8.dp)) {
                     item(
                         headlineContent = { Text("电池优化") },
                         supportingContent = {
@@ -523,7 +549,7 @@ fun SettingProactiveMessagePage(vm: SettingVM = koinInject()) {
                 }
             }
             item {
-                CardGroup {
+                CardGroup(modifier = Modifier.padding(horizontal = 8.dp)) {
                     item(
                         headlineContent = { Text("说明") },
                         supportingContent = {

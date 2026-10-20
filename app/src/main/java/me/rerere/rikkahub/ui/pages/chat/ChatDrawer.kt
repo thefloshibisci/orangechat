@@ -7,9 +7,7 @@
 package me.rerere.rikkahub.ui.pages.chat
 
 import androidx.activity.ComponentActivity
-import android.graphics.BitmapFactory
 import android.os.Build
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -65,7 +63,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -75,6 +72,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.paging.compose.collectAsLazyPagingItems
+import coil3.compose.AsyncImage
+import coil3.request.ImageRequest
+import coil3.request.crossfade
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
@@ -244,22 +244,20 @@ fun ChatDrawerContent(
             // 侧边栏背景图（最底层；实时模糊时跳过，避免遮挡 ChatPage 模糊层）
             val drawerBgPath = settings.displaySetting.drawerBackgroundPath
             if (drawerBgPath.isNotEmpty() && !useLiveDrawerGlass) {
-                val bgFile = java.io.File(drawerBgPath)
-                if (bgFile.exists()) {
-                    val bgBitmap = remember(drawerBgPath) {
-                        BitmapFactory.decodeFile(drawerBgPath)
-                    }
-                    if (bgBitmap != null) {
-                        Image(
-                            bitmap = bgBitmap.asImageBitmap(),
-                            contentDescription = null,
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .alpha(0.15f),
-                            contentScale = ContentScale.Crop,
-                        )
-                    }
+                val request = remember(context, drawerBgPath) {
+                    ImageRequest.Builder(context)
+                        .data(java.io.File(drawerBgPath))
+                        .crossfade(false)
+                        .build()
                 }
+                AsyncImage(
+                    model = request,
+                    contentDescription = null,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .alpha(0.15f),
+                    contentScale = ContentScale.Crop,
+                )
             }
 
             Column(

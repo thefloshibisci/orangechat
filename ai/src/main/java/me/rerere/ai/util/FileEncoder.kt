@@ -115,11 +115,11 @@ fun UIMessagePart.Audio.encodeBase64(withPrefix: Boolean = true): Result<String>
             val filePath =
                 this.url.toUri().path ?: throw IllegalArgumentException("Invalid file URI: ${this.url}")
             val file = File(filePath)
-            if (!file.exists()) {
+            if (!file.isFile || file.length() == 0L) {
                 throw IllegalArgumentException("File does not exist: ${this.url}")
             }
             val encoded = file.encodeToBase64Streaming()
-            if (withPrefix) "data:audio/mp3;base64,$encoded" else encoded
+            if (withPrefix) "data:${audioMimeType()};base64,$encoded" else encoded
         }
 
         else -> throw IllegalArgumentException("Unsupported URL format: $url")
@@ -283,4 +283,20 @@ private fun File.guessMimeType(): Result<String> = runCatching {
             }"
         )
     }
+}
+
+fun UIMessagePart.Audio.audioMimeType(): String = when (url.substringBefore('?').substringAfterLast('.').lowercase()) {
+    "wav" -> "audio/wav"
+    "mp3" -> "audio/mpeg"
+    "m4a", "mp4" -> "audio/mp4"
+    "aac" -> "audio/aac"
+    "ogg", "oga" -> "audio/ogg"
+    "flac" -> "audio/flac"
+    else -> error("无法识别音频格式，请使用 WAV 或 MP3 文件")
+}
+
+fun UIMessagePart.Audio.openAiAudioFormat(): String = when (audioMimeType()) {
+    "audio/wav" -> "wav"
+    "audio/mpeg" -> "mp3"
+    else -> error("当前 OpenAI 兼容通道仅支持 WAV/MP3 音频，请启用语音转写")
 }

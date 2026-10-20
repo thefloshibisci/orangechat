@@ -57,22 +57,23 @@ class WebDavSync(
 
     suspend fun backup(config: WebDavConfig) = withContext(Dispatchers.IO) {
         val file = prepareBackupFile(config, includePlugins = false)
-        val client = getClient(config)
+        try {
+            val client = getClient(config)
 
-        // Ensure the backup directory exists
-        client.ensureCollectionExists().getOrThrow()
+            // Ensure the backup directory exists
+            client.ensureCollectionExists().getOrThrow()
 
-        // Upload the backup file
-        client.put(
-            path = file.name,
-            file = file,
-            contentType = "application/zip"
-        ).getOrThrow()
+            // Upload the backup file
+            client.put(
+                path = file.name,
+                file = file,
+                contentType = "application/zip"
+            ).getOrThrow()
 
-        Log.i(TAG, "backup: Uploaded ${file.name} (${file.length().fileSizeToString()})")
-
-        // Clean up temp file
-        file.delete()
+            Log.i(TAG, "backup: Uploaded ${file.name} (${file.length().fileSizeToString()})")
+        } finally {
+            file.delete()
+        }
     }
 
     suspend fun listBackupFiles(config: WebDavConfig): List<WebDavBackupItem> = withContext(Dispatchers.IO) {
@@ -149,85 +150,90 @@ class WebDavSync(
         includePlugins: Boolean = true
     ): File = withContext(Dispatchers.IO) {
         val timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"))
-        val backupFile = File(context.cacheDir, "backup_$timestamp.zip")
+        val backupFile = File(context.cacheDir, "backup_${timestamp}_${java.util.UUID.randomUUID()}.zip")
 
         if (backupFile.exists()) {
             backupFile.delete()
         }
 
-        // Create zip file and backup data
-        ZipOutputStream(FileOutputStream(backupFile)).use { zipOut ->
-            addVirtualFileToZip(
-                zipOut = zipOut,
-                name = "settings.json",
-                content = json.encodeToString(settingsStore.settingsFlow.value)
-            )
+        try {
+            // Create zip file and backup data
+            ZipOutputStream(FileOutputStream(backupFile)).use { zipOut ->
+                addVirtualFileToZip(
+                    zipOut = zipOut,
+                    name = "settings.json",
+                    content = json.encodeToString(settingsStore.settingsFlow.value)
+                )
 
-            // Backup database files
-            if (config.items.contains(WebDavConfig.BackupItem.DATABASE)) {
-                val snapshot = databaseBackupCoordinator.createConsistentSnapshot()
-                try {
-                    addFileToZip(zipOut, snapshot, "rikka_hub.db")
-                } finally {
-                    snapshot.delete()
-                }
-            }
-
-            // Backup app files
-            if (config.items.contains(WebDavConfig.BackupItem.FILES)) {
-                val uploadFolder = File(context.filesDir, FileFolders.UPLOAD)
-                if (uploadFolder.exists() && uploadFolder.isDirectory) {
-                    Log.i(TAG, "prepareBackupFile: Backing up files from ${uploadFolder.absolutePath}")
-                    uploadFolder.listFiles()?.forEach { file ->
-                        if (file.isFile) {
-                            addFileToZip(zipOut, file, "${FileFolders.UPLOAD}/${file.name}")
-                        }
-                    }
-                } else {
-                    Log.w(TAG, "prepareBackupFile: Upload folder does not exist or is not a directory")
-                }
-
-                val skillsFolder = File(context.filesDir, FileFolders.SKILLS)
-                if (skillsFolder.exists() && skillsFolder.isDirectory) {
-                    Log.i(TAG, "prepareBackupFile: Backing up skills from ${skillsFolder.absolutePath}")
-                    addDirectoryToZip(
-                        zipOut = zipOut,
-                        rootDir = skillsFolder,
-                        currentDir = skillsFolder,
-                        entryPrefix = "${FileFolders.SKILLS}/"
-                    )
-                } else {
-                    Log.w(TAG, "prepareBackupFile: Skills folder does not exist or is not a directory")
-                }
-
-                // Backup plugin settings and plugin folders (only for local backup/export)
-                if (includePlugins) {
+                // Backup database files
+                if (config.items.contains(WebDavConfig.BackupItem.DATABASE)) {
+                    val snapshot = databaseBackupCoordinator.createConsistentSnapshot()
                     try {
-                        val pluginSettings = pluginRepository.exportPluginSettings()
-                        addVirtualFileToZip(
-                            zipOut = zipOut,
-                            name = "plugin_settings.json",
-                            content = json.encodeToString(pluginSettings)
-                        )
-                        Log.i(TAG, "prepareBackupFile: Backed up plugin settings")
-                    } catch (e: Exception) {
-                        Log.e(TAG, "prepareBackupFile: Failed to back up plugin settings", e)
+                        addFileToZip(zipOut, snapshot, "rikka_hub.db")
+                    } finally {
+                        snapshot.delete()
+                    }
+                }
+
+                // Backup app files
+                if (config.items.contains(WebDavConfig.BackupItem.FILES)) {
+                    val uploadFolder = File(context.filesDir, FileFolders.UPLOAD)
+                    if (uploadFolder.exists() && uploadFolder.isDirectory) {
+                        Log.i(TAG, "prepareBackupFile: Backing up files from ${uploadFolder.absolutePath}")
+                        uploadFolder.listFiles()?.forEach { file ->
+                            if (file.isFile && !file.name.startsWith(".") && file.length() > 0) {
+                                addFileToZip(zipOut, file, "${FileFolders.UPLOAD}/${file.name}")
+                            }
+                        }
+                    } else {
+                        Log.w(TAG, "prepareBackupFile: Upload folder does not exist or is not a directory")
                     }
 
-                    val pluginsFolder = PluginScanner(context).pluginsDir
-                    if (pluginsFolder.exists() && pluginsFolder.isDirectory) {
-                        Log.i(TAG, "prepareBackupFile: Backing up plugins from ${pluginsFolder.absolutePath}")
+                    val skillsFolder = File(context.filesDir, FileFolders.SKILLS)
+                    if (skillsFolder.exists() && skillsFolder.isDirectory) {
+                        Log.i(TAG, "prepareBackupFile: Backing up skills from ${skillsFolder.absolutePath}")
                         addDirectoryToZip(
                             zipOut = zipOut,
-                            rootDir = pluginsFolder,
-                            currentDir = pluginsFolder,
-                            entryPrefix = "${PluginScanner.PLUGINS_DIR}/"
+                            rootDir = skillsFolder,
+                            currentDir = skillsFolder,
+                            entryPrefix = "${FileFolders.SKILLS}/"
                         )
                     } else {
-                        Log.w(TAG, "prepareBackupFile: Plugins folder does not exist or is not a directory")
+                        Log.w(TAG, "prepareBackupFile: Skills folder does not exist or is not a directory")
+                    }
+
+                    // Backup plugin settings and plugin folders (only for local backup/export)
+                    if (includePlugins) {
+                        try {
+                            val pluginSettings = pluginRepository.exportPluginSettings()
+                            addVirtualFileToZip(
+                                zipOut = zipOut,
+                                name = "plugin_settings.json",
+                                content = json.encodeToString(pluginSettings)
+                            )
+                            Log.i(TAG, "prepareBackupFile: Backed up plugin settings")
+                        } catch (e: Exception) {
+                            Log.e(TAG, "prepareBackupFile: Failed to back up plugin settings", e)
+                        }
+
+                        val pluginsFolder = PluginScanner(context).pluginsDir
+                        if (pluginsFolder.exists() && pluginsFolder.isDirectory) {
+                            Log.i(TAG, "prepareBackupFile: Backing up plugins from ${pluginsFolder.absolutePath}")
+                            addDirectoryToZip(
+                                zipOut = zipOut,
+                                rootDir = pluginsFolder,
+                                currentDir = pluginsFolder,
+                                entryPrefix = "${PluginScanner.PLUGINS_DIR}/"
+                            )
+                        } else {
+                            Log.w(TAG, "prepareBackupFile: Plugins folder does not exist or is not a directory")
+                        }
                     }
                 }
             }
+        } catch (e: Exception) {
+            backupFile.delete()
+            throw e
         }
 
         Log.i(
@@ -260,7 +266,10 @@ class WebDavSync(
                             try {
                                 val migratedJson = SettingsJsonMigrator.migrate(settingsJson)
                                 val settings = json.decodeFromString<Settings>(migratedJson)
-                                settingsStore.update(settings)
+                                // Folder grants and pending restores are not portable backup state.
+                                settingsStore.update(settings.copy(
+                                    autoBackupConfig = settings.autoBackupConfig.forRestore(),
+                                ))
                                 Log.i(TAG, "restoreFromBackupFile: Settings restored successfully")
                             } catch (e: Exception) {
                                 Log.e(TAG, "restoreFromBackupFile: Failed to restore settings", e)

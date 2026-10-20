@@ -6,6 +6,9 @@ on:
     branches:
       - master
       - mobile-workflow-v2
+      - fix/attachments-sliders-backup
+      - codex/latest-review-optimization-20261019
+      - codex/audio-workspace-search-20261019
 
 jobs:
   build:
@@ -67,7 +70,7 @@ jobs:
           fi
 
       - name: Test search provider construction and serialization
-        run: ./gradlew :search:testDebugUnitTest --tests me.rerere.search.SearchServiceOptionsTest
+        run: ./gradlew :search:testDebugUnitTest :workspace:testDebugUnitTest
 
       - name: Test app and AI regressions
         run: ./gradlew :app:testDebugUnitTest :ai:testDebugUnitTest :app:compileDebugAndroidTestKotlin

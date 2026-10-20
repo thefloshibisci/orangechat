@@ -59,15 +59,6 @@ data class SystemToolsSetting(
     val proactiveMessagingMinInterval: Int = 30,
     val proactiveMessagingMaxInterval: Int = 90,
 
-    // Feature 13: Supabase data sync
-    val supabaseEnabled: Boolean = false,
-    val supabaseUrl: String = "",
-    val supabaseApiKey: String = "",
-    val supabaseTableName: String = "device_data",
-
-    // Feature 22: Boot/Screen event tracking (realtime push to Supabase)
-    val deviceEventTrackingEnabled: Boolean = false,
-
     // Feature 14: Gadgetbridge health data
     val gadgetbridgeEnabled: Boolean = false,
     val gadgetbridgeDbPath: String = "",

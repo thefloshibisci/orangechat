@@ -29,6 +29,21 @@ class TimeReminderTransformerTest {
         .filterIsInstance<UIMessagePart.Text>()
         .joinToString("") { it.text }
 
+    @Test fun `old interval stays identical when another turn is appended`() {
+        val first = listOf(
+            message(MessageRole.ASSISTANT, "去忙吧", LocalDateTime(2026, 8, 25, 8, 0)),
+            message(MessageRole.USER, "回来了", LocalDateTime(2026, 8, 25, 10, 0)),
+        )
+        val later = first + listOf(
+            message(MessageRole.ASSISTANT, "欢迎回来", LocalDateTime(2026, 8, 25, 10, 1)),
+            message(MessageRole.USER, "嗯", LocalDateTime(2026, 8, 25, 10, 2)),
+        )
+        val before = applyReplyIntervalContext(first, true, 3600)
+        val after = applyReplyIntervalContext(later, true, 3600)
+        assertEquals(before, after.take(before.size))
+        assertEquals(1, after.count { text(it).contains("<reply_interval>") })
+    }
+
     @Test
     fun `empty messages remain empty`() {
         assertTrue(

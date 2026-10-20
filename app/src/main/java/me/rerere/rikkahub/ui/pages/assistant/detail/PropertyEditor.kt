@@ -40,7 +40,7 @@ import me.rerere.ai.provider.CustomHeader
 import me.rerere.highlight.LocalHighlighter
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.ui.components.ui.CardGroup
-import me.rerere.rikkahub.ui.components.richtext.HighlightCodeVisualTransformation
+import me.rerere.rikkahub.ui.components.richtext.rememberHighlightCodeVisualTransformation
 import me.rerere.rikkahub.ui.theme.JetbrainsMono
 import me.rerere.rikkahub.ui.theme.LocalDarkMode
 
@@ -192,7 +192,8 @@ fun CustomBodies(customBodies: List<CustomBody>, onUpdate: (List<CustomBody>) ->
                                 },
                                 minLines = 3,
                                 maxLines = 5,
-                                visualTransformation = HighlightCodeVisualTransformation(
+                                visualTransformation = rememberHighlightCodeVisualTransformation(
+                                    text = bodyValueString,
                                     language = "json",
                                     highlighter = LocalHighlighter.current,
                                     darkMode = LocalDarkMode.current
