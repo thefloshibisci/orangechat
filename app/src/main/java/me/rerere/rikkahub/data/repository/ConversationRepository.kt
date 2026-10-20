@@ -362,6 +362,7 @@ class ConversationRepository(
                 )
             }
             filesManager.deleteChatFiles(fullConversation.files)
+            filesManager.deleteExtraInfoSnapshots(conversation.id)
         } catch (e: Exception) {
             Log.e(TAG, "deleteConversation failed, conversationId=${conversation.id}", e)
             throw e

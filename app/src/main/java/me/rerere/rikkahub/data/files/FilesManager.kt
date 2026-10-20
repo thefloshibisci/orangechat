@@ -208,6 +208,11 @@ class FilesManager(
             )
         }
 
+    fun deleteExtraInfoSnapshots(conversationId: kotlin.uuid.Uuid) =
+        me.rerere.rikkahub.data.ai.transformers.deleteExtraInfoSnapshots(
+            me.rerere.rikkahub.data.ai.transformers.extraInfoSnapshotDir(context), conversationId,
+        )
+
     fun deleteChatFiles(uris: List<Uri>) {
         val relativePaths = mutableSetOf<String>()
         uris.filter { it.toString().startsWith("file:") }.forEach { uri ->

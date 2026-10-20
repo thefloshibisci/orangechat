@@ -45,7 +45,6 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toInstant
 import kotlinx.serialization.json.JsonObject
@@ -83,7 +82,6 @@ import me.rerere.rikkahub.RouteActivity
 import me.rerere.rikkahub.data.ai.GenerationChunk
 import me.rerere.rikkahub.data.ai.GenerationHandler
 import me.rerere.rikkahub.data.ai.mcp.McpManager
-import me.rerere.rikkahub.data.ai.mcp.recentContinuityPrompt
 import me.rerere.rikkahub.data.ai.tools.LocalTools
 import me.rerere.rikkahub.data.ai.tools.SystemTools
 import me.rerere.rikkahub.data.ai.tools.ToolNaming
@@ -98,6 +96,7 @@ import me.rerere.rikkahub.data.ai.transformers.DocumentAsPromptTransformer
 import me.rerere.rikkahub.data.ai.transformers.ExtraInfoInjectionCollector
 import me.rerere.rikkahub.data.ai.transformers.ExtraInfoRequestCache
 import me.rerere.rikkahub.data.ai.transformers.ExtraInfoRequestTransformer
+import me.rerere.rikkahub.data.ai.transformers.extraInfoSnapshotDir
 import me.rerere.rikkahub.data.ai.transformers.OcrTransformer
 import me.rerere.rikkahub.data.ai.transformers.PlaceholderTransformer
 import me.rerere.rikkahub.data.ai.transformers.PromptInjectionTransformer
@@ -191,7 +190,7 @@ class ChatService(
 ) {
     // workspace 系统提示注入 (依赖 workspaceRepository, 故在类内构造)
     private val workspaceReminderTransformer = WorkspaceReminderTransformer(workspaceRepository)
-    private val extraInfoRequestCache = ExtraInfoRequestCache()
+    private val extraInfoRequestCache = ExtraInfoRequestCache(directory = extraInfoSnapshotDir(context))
 
     // 统一会话管理
     private val sessions = ConcurrentHashMap<Uuid, ConversationSession>()
@@ -918,6 +917,19 @@ class ChatService(
             } else {
                 null
             }
+            // Every historical user message keeps the snapshot it was first sent with, so the
+            // request prefix stays byte-identical across turns and the provider cache survives.
+            // The latest message uses only this turn's resolved snapshot.
+            val extraInfoSnapshots = extraInfoRequestCache.snapshots(
+                conversationId = conversationId,
+                messages = messagesForGeneration,
+                option = settings.systemToolsSetting,
+            ).let { stored ->
+                if (latestUserMessage == null || messageRange != null) stored
+                else stored - latestUserMessage.id + listOfNotNull(
+                    extraInfoContext?.takeIf { it.isNotBlank() }?.let { latestUserMessage.id to it }
+                )
+            }
             activitySnapshot = runCatching { activityStore.snapshot() }.getOrElse {
                 Log.w(TAG, "Could not read proactive activity records", it)
                 emptyList()
@@ -932,25 +944,6 @@ class ChatService(
             activityTransformer = me.rerere.rikkahub.data.service.ProactiveActivityTransformer(
                 activitySnapshot, activityUserId,
             )
-
-            // Continuity is an app-level transport concern, not a tool the model
-            // has to remember to call. Only sync at the start of an ordinary
-            // user turn; tool-approval continuations skip this path.
-            val recentCrossClientContext = if (messagesForGeneration.lastOrNull()?.role == MessageRole.USER) {
-                withTimeoutOrNull(5_000L) {
-                    runCatching {
-                        mcpManager.syncRecentContinuity(
-                            assistant = assistant,
-                            conversationId = conversationId.toString(),
-                            messages = messagesForGeneration,
-                        )
-                    }.onFailure {
-                        Log.w(TAG, "Recent cross-client continuity sync failed", it)
-                    }.getOrNull()
-                }
-            } else {
-                null
-            }
 
             // start generating
             generationHandler.generateText(
@@ -975,7 +968,7 @@ class ChatService(
                     add(templateTransformer)
                     add(workspaceReminderTransformer)
                     add(requireNotNull(activityTransformer))
-                    add(ExtraInfoRequestTransformer(latestUserMessage?.id, extraInfoContext))
+                    add(ExtraInfoRequestTransformer(extraInfoSnapshots))
                 },
                 outputTransformers = outputTransformers,
                 tools = if (enableTools) buildAvailableTools(
@@ -988,7 +981,6 @@ class ChatService(
                 pluginPromptInjections = buildList {
                     addAll(pluginToolProvider.getPluginPromptInjections())
                     settings.displaySetting.buildAnniversaryPrompt()?.let(::add)
-                    recentCrossClientContext?.let { add(recentContinuityPrompt(it)) }
                 },
                 conversationId = conversationId.toString(),
             ).onCompletion {
@@ -1052,23 +1044,6 @@ class ChatService(
                         activityUserId,
                     )
                 }.onFailure { Log.w(TAG, "Could not acknowledge proactive activity records", it) }
-            }
-
-            // Publish the completed assistant turn as well, so another client
-            // opened immediately after this reply does not miss the last line.
-            appScope.launch {
-                withTimeoutOrNull(5_000L) {
-                    runCatching {
-                        mcpManager.syncRecentContinuity(
-                            assistant = assistant,
-                            conversationId = conversationId.toString(),
-                            messages = finalConversation.currentMessages,
-                            returnContext = false,
-                        )
-                    }.onFailure {
-                        Log.w(TAG, "Post-reply continuity sync failed", it)
-                    }
-                }
             }
 
             // 自动唤起网易云音乐：扫描刚完成的 assistant 文本中的 orpheus:// scheme
