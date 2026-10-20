@@ -94,4 +94,39 @@ class PluginChatImagesTest {
         assertEquals(1, sources.size)
         assertFalse(execute(service, "import", listOf(m), sources.single().id)["success"]!!.jsonPrimitive.boolean)
     }
+    private fun registerImage(name: String, width: Int, height: Int, format: Bitmap.CompressFormat, alpha: Boolean = false): UIMessage {
+        val directory = File(context.filesDir, "upload").apply { mkdirs() }
+        val file = File(directory, name)
+        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        bitmap.eraseColor(if (alpha) android.graphics.Color.TRANSPARENT else android.graphics.Color.CYAN)
+        file.outputStream().use { assertTrue(bitmap.compress(format, 100, it)) }; bitmap.recycle()
+        val uri = "content://gallery-test/$name".toUri()
+        shadowOf(context.contentResolver).registerInputStreamSupplier(uri) { file.inputStream() }
+        return message(uri.toString())
+    }
+
+    @Test fun galleryUploadCopiesNewestImageAndScalesLargeOnes() = runBlocking {
+        val service = PluginChatImages(context)
+        val small = registerImage("small.png", 64, 64, Bitmap.CompressFormat.PNG)
+        val large = registerImage("large.jpg", 3200, 1600, Bitmap.CompressFormat.JPEG)
+        val history = listOf(small, large)
+        val newest = service.prepareGalleryUpload(null, history, "test-chat")
+        assertEquals("image/jpeg", newest.mime)
+        assertEquals(1600, newest.width)
+        assertEquals(800, newest.height)
+        val picked = service.prepareGalleryUpload(service.sources(listOf(small), "test-chat").single().id, history, "test-chat")
+        assertEquals("image/png", picked.mime)
+        assertEquals(64, picked.width)
+        val listed = service.galleryList(history, "test-chat").jsonObject["images"]!!.jsonArray
+        assertEquals(2, listed.size)
+    }
+
+    @Test fun galleryUploadRejectsForeignBranchAndEmptyChat() = runBlocking {
+        val service = PluginChatImages(context)
+        val image = registerImage("cat.png", 32, 32, Bitmap.CompressFormat.PNG)
+        val foreignId = service.sources(listOf(image), "other-chat").single().id
+        assertTrue(runCatching { service.prepareGalleryUpload(foreignId, listOf(image), "test-chat") }.isFailure)
+        assertTrue(runCatching { service.prepareGalleryUpload(null, emptyList(), "test-chat") }.isFailure)
+        assertTrue(runCatching { service.prepareGalleryUpload(null, listOf(image), "") }.isFailure)
+    }
 }
