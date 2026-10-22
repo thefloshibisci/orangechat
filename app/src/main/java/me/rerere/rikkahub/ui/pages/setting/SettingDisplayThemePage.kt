@@ -21,7 +21,7 @@ import me.rerere.rikkahub.ui.theme.LargeFlexibleTopAppBar
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Slider
+import me.rerere.rikkahub.ui.components.ui.CommitSlider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBarDefaults
@@ -54,13 +54,13 @@ import kotlin.math.roundToInt
 @Composable
 fun SettingDisplayThemePage(vm: SettingVM = koinViewModel()) {
     val settings by vm.settings.collectAsStateWithLifecycle()
-    var displaySetting by remember(settings) { mutableStateOf(settings.displaySetting) }
+    var displaySetting by remember(settings.displaySetting) { mutableStateOf(settings.displaySetting) }
     var amoledDarkMode by rememberAmoledDarkMode()
     val navController = LocalNavController.current
 
     fun updateDisplaySetting(setting: DisplaySetting) {
         displaySetting = setting
-        vm.updateSettings(settings.copy(displaySetting = setting))
+        vm.updateDisplaySetting(setting)
     }
 
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
@@ -193,19 +193,22 @@ fun SettingDisplayThemePage(vm: SettingVM = koinViewModel()) {
                             headlineContent = { Text("模糊强度") },
                             supportingContent = {
                                 Column {
-                                    Slider(
+                                    CommitSlider(
                                         value = displaySetting.interfaceBlurRadius.coerceIn(3f, 20f),
+                                        onValuePreview = { displaySetting = displaySetting.copy(interfaceBlurRadius = it) },
                                         onValueChange = {
                                             updateDisplaySetting(
                                                 displaySetting.copy(interfaceBlurRadius = it)
                                             )
                                         },
                                         valueRange = 3f..20f,
-                                    )
-                                    Text(
-                                        text = "${displaySetting.interfaceBlurRadius.coerceIn(3f, 20f).roundToInt()} dp",
-                                        style = MaterialTheme.typography.bodySmall,
-                                    )
+                                    ) { draft, slider ->
+                                        slider()
+                                        Text(
+                                            text = "${draft.roundToInt()} dp",
+                                            style = MaterialTheme.typography.bodySmall,
+                                        )
+                                    }
                                 }
                             },
                             colors = CustomColors.listItemColors,

@@ -371,18 +371,21 @@ var imageAssets = {
                 requestBuilder.addHeader(key, headerValue)
             }
  
+            // bodyEncoding=base64 lets plugins upload binary data (e.g. images) without UTF-8 corruption.
+            val binaryBody = (options["bodyEncoding"] as? JsonPrimitive)?.contentOrNull == "base64"
+            fun payload(): okhttp3.RequestBody {
+                val text = body?.contentOrNull ?: ""
+                if (!binaryBody) return okhttp3.RequestBody.create(null, text)
+                require(text.length <= 16_000_000) { "Request body exceeds 12 MB" }
+                return okhttp3.RequestBody.create(null, android.util.Base64.decode(text, android.util.Base64.DEFAULT))
+            }
+
             when (method) {
                 "GET" -> requestBuilder.get()
-                "POST" -> {
-                    val requestBody = okhttp3.RequestBody.create(null, body?.contentOrNull ?: "")
-                    requestBuilder.post(requestBody)
-                }
-                "PUT" -> {
-                    val requestBody = okhttp3.RequestBody.create(null, body?.contentOrNull ?: "")
-                    requestBuilder.put(requestBody)
-                }
+                "POST" -> requestBuilder.post(payload())
+                "PUT" -> requestBuilder.put(payload())
                 "DELETE" -> {
-                    val requestBody = body?.contentOrNull?.let { okhttp3.RequestBody.create(null, it) }
+                    val requestBody = body?.contentOrNull?.let { payload() }
                     if (requestBody != null) requestBuilder.delete(requestBody) else requestBuilder.delete()
                 }
                 else -> requestBuilder.get()

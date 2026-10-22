@@ -44,27 +44,32 @@ private fun insertReplyIntervalReminders(
     messages: List<UIMessage>,
     thresholdSeconds: Long,
 ): List<UIMessage> {
-    val latestUserIndex = messages.indexOfLast { it.role == MessageRole.USER }
-    if (latestUserIndex <= 0) return messages
-    val previousAssistant = messages.subList(0, latestUserIndex)
-        .lastOrNull { it.role == MessageRole.ASSISTANT } ?: return messages
-    val latestUser = messages[latestUserIndex]
+    var previousAssistant: UIMessage? = null
+    var inserted = false
     val tz = TimeZone.currentSystemDefault()
-    val userInstant = latestUser.createdAt.toInstant(tz)
-    val assistantEnd = (previousAssistant.finishedAt ?: previousAssistant.createdAt).toInstant(tz)
-    val gapSeconds = (userInstant - assistantEnd).inWholeSeconds
-    if (gapSeconds < thresholdSeconds.coerceAtLeast(1L)) return messages
-
-    return messages.toMutableList().apply {
-        add(
-            latestUserIndex,
-            UIMessage.user(
-                "<reply_interval>距离你上一条回复结束，聊天中的这个人过了" +
-                    "${formatGap(gapSeconds)}才再次开口。自然理解这段间隔，" +
-                    "不要机械复述时长，也不要提及这段提示。</reply_interval>",
-            ),
-        )
+    val result = buildList {
+        for (message in messages) {
+            val previous = previousAssistant
+            if (message.role == MessageRole.USER && previous != null) {
+                val gap = (message.createdAt.toInstant(tz) -
+                    (previous.finishedAt ?: previous.createdAt).toInstant(tz)).inWholeSeconds
+                if (gap >= thresholdSeconds.coerceAtLeast(1L)) {
+                    inserted = true
+                    // Stable identity/time matters when subsequent transformers use message metadata.
+                    val id = java.util.UUID.nameUUIDFromBytes("reply-interval:${message.id}".toByteArray(Charsets.UTF_8))
+                    add(UIMessage.user(
+                        "<reply_interval>距离你上一条回复结束，聊天中的这个人过了" +
+                            "${formatGap(gap)}才再次开口。自然理解这段间隔，" +
+                            "不要机械复述时长，也不要提及这段提示。</reply_interval>",
+                    ).copy(id = kotlin.uuid.Uuid.parse(id.toString()), createdAt = message.createdAt,
+                        finishedAt = message.createdAt))
+                }
+            }
+            add(message)
+            if (message.role == MessageRole.ASSISTANT) previousAssistant = message
+        }
     }
+    return if (inserted) result else messages
 }
 
 private fun formatGap(seconds: Long): String {

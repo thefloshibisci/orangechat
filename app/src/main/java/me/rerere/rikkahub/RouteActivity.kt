@@ -212,22 +212,25 @@ class RouteActivity : ComponentActivity() {
         disableNavigationBarContrast()
         super.onCreate(savedInstanceState)
 
-        if (CrashHandler.hasCrashed(this)) {
+        // A previous restore crash must not bypass the independent recovery/cancel screen.
+        if ((application as RikkaHubApp).startupRecovery?.isReady == true && CrashHandler.hasCrashed(this)) {
             startActivity(Intent(this, SafeModeActivity::class.java))
             finish()
             return
         }
 
-        // 根据设置自动启动保活服务
-        try {
-            if (settingsStore.settingsFlow.value.keepAliveEnabled) {
-                KeepAliveService.start(this)
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "自动启动保活服务失败", e)
-        }
-
         setContent {
+            val recovery = (application as RikkaHubApp).startupRecovery
+            val startup by recovery!!.state.collectAsStateWithLifecycle()
+            if (startup != me.rerere.rikkahub.data.sync.StartupRecoveryState.Ready) {
+                me.rerere.rikkahub.ui.pages.backup.StartupRecoveryScreen(recovery)
+                return@setContent
+            }
+            LaunchedEffect(Unit) {
+                runCatching {
+                    if (settingsStore.settingsFlow.value.keepAliveEnabled) KeepAliveService.start(this@RouteActivity)
+                }.onFailure { Log.e(TAG, "自动启动保活服务失败", it) }
+            }
             RikkahubTheme {
                 setSingletonImageLoaderFactory { context ->
                     ImageLoader.Builder(context)

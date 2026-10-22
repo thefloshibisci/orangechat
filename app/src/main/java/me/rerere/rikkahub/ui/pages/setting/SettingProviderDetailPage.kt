@@ -98,6 +98,8 @@ import com.dokar.sonner.ToastType
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import me.rerere.ai.provider.BuiltInTools
+import me.rerere.ai.provider.AudioInputMode
+import me.rerere.ai.provider.supportsDirectAudio
 import me.rerere.ai.provider.Modality
 import me.rerere.ai.provider.Model
 import me.rerere.ai.provider.ModelAbility
@@ -116,6 +118,7 @@ import me.rerere.rikkahub.ui.components.ai.ProviderBalanceText
 import me.rerere.rikkahub.ui.components.nav.BackButton
 import me.rerere.rikkahub.ui.components.ui.AutoAIIcon
 import me.rerere.rikkahub.ui.components.ui.ShareSheet
+import me.rerere.rikkahub.ui.components.ui.Select
 import me.rerere.rikkahub.ui.components.ui.SiliconFlowPowerByIcon
 import me.rerere.rikkahub.ui.components.ui.Tag
 import me.rerere.rikkahub.ui.components.ui.TagType
@@ -160,13 +163,13 @@ fun SettingProviderDetailPage(id: Uuid, vm: SettingVM = koinViewModel()) {
                 }
             }
         )
-        vm.updateSettings(newSettings)
+        vm.updateSettings(settings, newSettings)
     }
     val onDelete = {
         val newSettings = settings.copy(
             providers = settings.providers - provider
         )
-        vm.updateSettings(newSettings)
+        vm.updateSettings(settings, newSettings)
         navController.popBackStack()
     }
 
@@ -250,7 +253,8 @@ fun SettingProviderDetailPage(id: Uuid, vm: SettingVM = koinViewModel()) {
                 1 -> {
                     SettingProviderModelPage(
                         provider = provider,
-                        onEdit = onEdit
+                        onEdit = onEdit,
+                        onEditModel = { previous, desired -> vm.updateProviderModel(provider.id, previous, desired) },
                     )
                 }
             }
@@ -375,18 +379,21 @@ private fun SettingProviderConfigPage(
 @Composable
 private fun SettingProviderModelPage(
     provider: ProviderSetting,
-    onEdit: (ProviderSetting) -> Unit
+    onEdit: (ProviderSetting) -> Unit,
+    onEditModel: (Model, Model) -> Unit,
 ) {
     ModelList(
         providerSetting = provider,
-        onUpdateProvider = onEdit
+        onUpdateProvider = onEdit,
+        onEditModel = onEditModel,
     )
 }
 
 @Composable
 private fun ModelList(
     providerSetting: ProviderSetting,
-    onUpdateProvider: (ProviderSetting) -> Unit
+    onUpdateProvider: (ProviderSetting) -> Unit,
+    onEditModel: (Model, Model) -> Unit,
 ) {
     val providerManager = koinInject<ProviderManager>()
     val modelList by produceState(emptyList(), providerSetting) {
@@ -453,9 +460,7 @@ private fun ModelList(
                             onDelete = {
                                 onUpdateProvider(providerSetting.delModel(item))
                             },
-                            onEdit = { editedModel ->
-                                onUpdateProvider(providerSetting.editModel(editedModel))
-                            },
+                            onEdit = onEditModel,
                             parentProvider = providerSetting,
                             modifier = Modifier
                                 .longPressDraggableHandle()
@@ -639,6 +644,9 @@ private fun ModelSettingsForm(
                             .padding(16.dp),
                         verticalArrangement = Arrangement.spacedBy(16.dp)
                     ) {
+                        if (model.type == ModelType.CHAT) {
+                            ModelAudioInputSetting(model, parentProvider, onModelChange)
+                        }
                         ProviderOverrideSettings(
                             providerOverride = model.providerOverwrite,
                             onUpdateProviderOverride = { providerOverride ->
@@ -674,6 +682,37 @@ private fun ModelSettingsForm(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun ModelAudioInputSetting(model: Model, parentProvider: ProviderSetting?, onModelChange: (Model) -> Unit) {
+    val provider = model.providerOverwrite ?: parentProvider
+    val direct = model.supportsDirectAudio(provider)
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("语音输入方式", style = MaterialTheme.typography.titleSmall)
+        Select(
+            options = AudioInputMode.entries,
+            selectedOption = model.audioInputMode,
+            onOptionSelected = { onModelChange(model.copy(audioInputMode = it)) },
+            optionToString = { mode ->
+                when (mode) {
+                    AudioInputMode.AUTO -> "自动"
+                    AudioInputMode.AUDIO -> "直接发送音频"
+                    AudioInputMode.ASR -> "先转为文字"
+                }
+            },
+        )
+        Text(
+            text = when {
+                model.audioInputMode == AudioInputMode.ASR -> "使用已配置的语音识别服务，将录音转为文字后发送。"
+                direct -> "当前模型会接收原始录音。如果服务不支持音频，可改为先转为文字。"
+                model.audioInputMode == AudioInputMode.AUDIO -> "当前通道不支持直接发送音频，录音将先转为文字。"
+                else -> "当前模型默认先将录音转为文字；支持的 Gemini 聊天模型会接收原始录音。"
+            },
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 
@@ -1165,11 +1204,12 @@ private fun ModelCard(
     model: Model,
     modifier: Modifier = Modifier,
     onDelete: () -> Unit,
-    onEdit: (Model) -> Unit,
+    onEdit: (Model, Model) -> Unit,
     parentProvider: ProviderSetting
 ) {
+    var editBaseline by remember(model.id) { mutableStateOf(model) }
     val dialogState = useEditState<Model> {
-        onEdit(it)
+        onEdit(editBaseline, it)
     }
     val swipeToDismissBoxState = rememberSwipeToDismissBoxState()
     val scope = rememberCoroutineScope()
@@ -1340,6 +1380,7 @@ private fun ModelCard(
                 // Edit button
                 IconButton(
                     onClick = {
+                        editBaseline = model
                         dialogState.open(model.copy())
                     }
                 ) {

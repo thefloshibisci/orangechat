@@ -1,4 +1,4 @@
-﻿/*
+/*
  * 橘瓣 OrangeChat
  * 衍生自 RikkaHub (https://github.com/rikkahub/rikkahub)，原作者 RE
  * 本项目基于 GNU AGPL v3 开源，详见根目录 LICENSE 文件
@@ -8,11 +8,16 @@ package me.rerere.rikkahub.plugin.repository
 
 import android.content.Context
 import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.MutablePreferences
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.preferencesDataStoreFile
 import androidx.datastore.preferences.preferencesDataStore
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import me.rerere.rikkahub.data.sync.RestorePreferencesSession
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.serialization.encodeToString
@@ -46,6 +51,22 @@ class PluginRepository(
     }
 
     private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "plugin_settings")
+
+    private val writeMutex = Mutex()
+
+    private suspend fun editPreferences(block: (MutablePreferences) -> Unit) = writeMutex.withLock {
+        context.dataStore.edit { block(it) }
+    }
+
+    internal suspend fun <T> withRestoreSession(block: suspend (RestorePreferencesSession<PluginSettingsExport>) -> T): T =
+        writeMutex.withLock {
+            val previous = context.dataStore.data.first()
+            block(RestorePreferencesSession(
+                file = context.preferencesDataStoreFile("plugin_settings"),
+                apply = { restored -> context.dataStore.edit { writeImportedSettings(it, restored) } },
+                rollback = { context.dataStore.updateData { previous } },
+            ))
+        }
 
     private val foldersKey = stringPreferencesKey("plugin_folders")
     private val assignmentsKey = stringPreferencesKey("plugin_folder_assignments")
@@ -81,7 +102,7 @@ class PluginRepository(
      * 保存插件配置
      */
     suspend fun savePluginConfig(pluginId: String, config: Map<String, JsonElement>) {
-        context.dataStore.edit { prefs ->
+        editPreferences { prefs ->
             val configKey = stringPreferencesKey("plugin_config_$pluginId")
             prefs[configKey] = json.encodeToString(config)
         }
@@ -101,7 +122,7 @@ class PluginRepository(
      * 设置插件启用状态
      */
     suspend fun setPluginEnabled(pluginId: String, enabled: Boolean) {
-        context.dataStore.edit { prefs ->
+        editPreferences { prefs ->
             val enabledKey = booleanPreferencesKey("plugin_enabled_$pluginId")
             prefs[enabledKey] = enabled
         }
@@ -112,7 +133,7 @@ class PluginRepository(
      */
     suspend fun savePlugin(pluginId: String) {
         // 确保插件有启用状态记录
-        context.dataStore.edit { prefs ->
+        editPreferences { prefs ->
             val enabledKey = booleanPreferencesKey("plugin_enabled_$pluginId")
             if (prefs[enabledKey] == null) {
                 prefs[enabledKey] = true
@@ -124,7 +145,7 @@ class PluginRepository(
      * 保存插件信息
      */
     suspend fun savePlugin(pluginInfo: me.rerere.rikkahub.plugin.model.PluginInfo) {
-        context.dataStore.edit { prefs ->
+        editPreferences { prefs ->
             val enabledKey = booleanPreferencesKey("plugin_enabled_${pluginInfo.manifest.id}")
             if (prefs[enabledKey] == null) {
                 prefs[enabledKey] = pluginInfo.isEnabled
@@ -142,7 +163,7 @@ class PluginRepository(
      * 移除插件
      */
     suspend fun removePlugin(pluginId: String) {
-        context.dataStore.edit { prefs ->
+        editPreferences { prefs ->
             prefs.remove(booleanPreferencesKey("plugin_enabled_$pluginId"))
             prefs.remove(stringPreferencesKey("plugin_config_$pluginId"))
         }
@@ -152,7 +173,7 @@ class PluginRepository(
      * 清除所有插件数据
      */
     suspend fun clearAll() {
-        context.dataStore.edit { prefs ->
+        editPreferences { prefs ->
             prefs.clear()
         }
     }
@@ -194,16 +215,18 @@ class PluginRepository(
      * 导入插件配置（追加/覆盖现有配置）
      */
     suspend fun importPluginSettings(export: PluginSettingsExport) {
-        context.dataStore.edit { prefs ->
-            export.enabled.forEach { (pluginId, enabled) ->
-                prefs[booleanPreferencesKey("plugin_enabled_$pluginId")] = enabled
-            }
-            export.configs.forEach { (pluginId, config) ->
-                prefs[stringPreferencesKey("plugin_config_$pluginId")] = json.encodeToString(config)
-            }
-            prefs[stringPreferencesKey("plugin_folders")] = json.encodeToString(export.folders)
-            prefs[stringPreferencesKey("plugin_folder_assignments")] = json.encodeToString(export.assignments)
+        editPreferences { writeImportedSettings(it, export) }
+    }
+
+    private fun writeImportedSettings(prefs: MutablePreferences, export: PluginSettingsExport) {
+        export.enabled.forEach { (pluginId, enabled) ->
+            prefs[booleanPreferencesKey("plugin_enabled_$pluginId")] = enabled
         }
+        export.configs.forEach { (pluginId, config) ->
+            prefs[stringPreferencesKey("plugin_config_$pluginId")] = json.encodeToString(config)
+        }
+        prefs[foldersKey] = json.encodeToString(export.folders)
+        prefs[assignmentsKey] = json.encodeToString(export.assignments)
     }
 
     // ==================== 文件夹管理 ====================
@@ -221,7 +244,7 @@ class PluginRepository(
      * 保存文件夹列表
      */
     private suspend fun updateFolders(transform: (List<PluginFolder>) -> List<PluginFolder>) {
-        context.dataStore.edit { prefs ->
+        editPreferences { prefs ->
             prefs[foldersKey] = json.encodeToString(transform(decodeFolders(prefs)))
         }
     }
@@ -235,7 +258,7 @@ class PluginRepository(
             name = name.trim(),
             sortOrder = 0
         )
-        context.dataStore.edit { prefs ->
+        editPreferences { prefs ->
             val folders = decodeFolders(prefs)
             val nextSort = (folders.maxOfOrNull { it.sortOrder } ?: 0) + 1
             createdFolder = createdFolder.copy(sortOrder = nextSort)
@@ -260,7 +283,7 @@ class PluginRepository(
      * 同时清除该文件夹下所有插件的 folderId 关联
      */
     suspend fun deleteFolder(folderId: String) {
-        context.dataStore.edit { prefs ->
+        editPreferences { prefs ->
             prefs[foldersKey] = json.encodeToString(
                 decodeFolders(prefs).filterNot { it.id == folderId }
             )
@@ -274,7 +297,7 @@ class PluginRepository(
      * 更新文件夹排序
      */
     suspend fun updateFolderOrder(folders: List<PluginFolder>) {
-        context.dataStore.edit { prefs ->
+        editPreferences { prefs ->
             prefs[foldersKey] = json.encodeToString(folders)
         }
     }
@@ -296,7 +319,7 @@ class PluginRepository(
      * folderId 为 null 表示移出文件夹（回到未分组）
      */
     suspend fun setPluginFolder(pluginId: String, folderId: String?) {
-        context.dataStore.edit { prefs ->
+        editPreferences { prefs ->
             val assignments = decodeFolderAssignments(prefs).toMutableMap()
             if (folderId == null) {
                 assignments.remove(pluginId)

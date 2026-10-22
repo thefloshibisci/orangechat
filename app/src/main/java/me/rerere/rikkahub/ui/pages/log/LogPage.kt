@@ -6,6 +6,8 @@
 
 package me.rerere.rikkahub.ui.pages.log
 
+import android.content.Intent
+
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.Delete01
 import androidx.compose.foundation.clickable
@@ -28,21 +30,25 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import me.rerere.common.android.LogEntry
 import me.rerere.common.android.Logging
+import me.rerere.rikkahub.diagnostics.LoadingDiagnostics
 import me.rerere.rikkahub.ui.components.nav.BackButton
 import me.rerere.rikkahub.ui.components.ui.JsonTree
 import me.rerere.rikkahub.ui.pages.setting.settingsScaffoldContainerColor
@@ -55,7 +61,16 @@ import java.util.Locale
 
 @Composable
 fun LogPage() {
+    val context = LocalContext.current
     var logs by remember { mutableStateOf(Logging.getRecentLogs()) }
+    var savedDiagnostic by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(Unit) {
+        savedDiagnostic = LoadingDiagnostics.read(context)
+        savedDiagnostic?.let { report ->
+            logs = listOf(LogEntry.TextLog(tag = "后台加载诊断（重启前现场）",
+                message = report.lineSequence().take(12).joinToString("\n").take(1500))) + logs
+        }
+    }
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
 
     Scaffold(
@@ -64,8 +79,18 @@ fun LogPage() {
                 title = { Text("Logs") },
                 navigationIcon = { BackButton() },
                 actions = {
+                    savedDiagnostic?.let { report ->
+                        TextButton(onClick = {
+                            context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
+                                type = "text/plain"
+                                putExtra(Intent.EXTRA_TEXT, report)
+                            }, "导出加载诊断"))
+                        }) { Text("导出诊断") }
+                    }
                     IconButton(
                         onClick = {
+                            LoadingDiagnostics.clear(context)
+                            savedDiagnostic = null
                             Logging.clear()
                             logs = Logging.getRecentLogs()
                         }

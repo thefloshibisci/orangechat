@@ -13,9 +13,11 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import me.rerere.rikkahub.data.datastore.AutoBackupConfig
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.repository.ConversationRepository
+import me.rerere.rikkahub.service.ChatService
 import me.rerere.rikkahub.data.sync.importer.ChatboxImporter
 import me.rerere.rikkahub.data.sync.importer.CherryStudioProviderImporter
 import me.rerere.rikkahub.data.sync.webdav.WebDavBackupItem
@@ -32,6 +34,7 @@ class BackupVM(
     private val webDavSync: WebDavSync,
     private val s3Sync: S3Sync,
     private val conversationRepository: ConversationRepository,
+    private val chatService: ChatService,
 ) : ViewModel() {
     val settings = settingsStore.settingsFlow.stateIn(
         scope = viewModelScope,
@@ -47,9 +50,17 @@ class BackupVM(
         loadS3BackupFileItems()
     }
 
-    fun updateSettings(settings: Settings) {
+    fun updateAutoBackupConfig(update: (AutoBackupConfig) -> AutoBackupConfig) {
+        if (settings.value.init) return
         viewModelScope.launch {
-            settingsStore.update(settings)
+            settingsStore.update { current -> current.copy(autoBackupConfig = update(current.autoBackupConfig)) }
+        }
+    }
+
+    fun updateSettings(settings: Settings) {
+        val previous = this.settings.value
+        viewModelScope.launch {
+            settingsStore.updateFrom(previous, settings)
         }
     }
 
@@ -104,14 +115,13 @@ class BackupVM(
             providers = settings.value.providers,
         )
         val targetAssistantId = settings.value.assistantId
-        val mergedProviders = payload.providers + settings.value.providers
         val shouldAllowConversationSystemPrompt = payload.conversations.conversations.any {
             !it.customSystemPrompt.isNullOrBlank()
         }
-        settingsStore.update(
-            settings.value.copy(
-                providers = mergedProviders,
-                assistants = settings.value.assistants.map { assistant ->
+        settingsStore.update { current ->
+            current.copy(
+                providers = payload.providers + current.providers,
+                assistants = current.assistants.map { assistant ->
                     if (shouldAllowConversationSystemPrompt && assistant.id == targetAssistantId) {
                         assistant.copy(allowConversationSystemPrompt = true)
                     } else {
@@ -119,7 +129,7 @@ class BackupVM(
                     }
                 }
             )
-        )
+        }
 
         var importedConversations = 0
         var skippedExistingConversations = 0
@@ -127,7 +137,7 @@ class BackupVM(
             if (conversationRepository.existsConversationById(conversation.id)) {
                 skippedExistingConversations++
             } else {
-                conversationRepository.insertConversation(conversation)
+                chatService.restoreConversation(conversation)
                 importedConversations++
             }
         }

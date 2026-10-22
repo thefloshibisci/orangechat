@@ -17,6 +17,32 @@ object Migration_30_32 : Migration(30, 32) {
     override fun migrate(db: SupportSQLiteDatabase) = migrateCompressionSchema(db)
 }
 
+/** A sibling fork can use version 32 without OrangeChat's compression columns. */
+object Migration_32_33 : Migration(32, 33) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        migrateCompressionSchema(db)
+        val hasHistory = db.query("PRAGMA table_info(`ConversationEntity`)").use { cursor ->
+            val name = cursor.getColumnIndexOrThrow("name")
+            var found = false
+            while (cursor.moveToNext()) if (cursor.getString(name) == "compression_history") found = true
+            found
+        }
+        if (!hasHistory) db.execSQL(
+            "ALTER TABLE `ConversationEntity` ADD COLUMN `compression_history` TEXT NOT NULL DEFAULT '[]'"
+        )
+        val workflowColumns = db.query("PRAGMA table_info(`workflow_runs`)").use { cursor ->
+            buildSet {
+                val name = cursor.getColumnIndexOrThrow("name")
+                while (cursor.moveToNext()) add(cursor.getString(name))
+            }
+        }
+        for (column in listOf("outputSummary", "stepsJson")) {
+            if (column !in workflowColumns) db.execSQL("ALTER TABLE `workflow_runs` ADD COLUMN `$column` TEXT")
+        }
+        // Keep strict Room schema validation. Unknown fork differences are not silently reset.
+    }
+}
+
 private fun migrateCompressionSchema(db: SupportSQLiteDatabase) {
     val columns = db.query("PRAGMA table_info(`ConversationEntity`)").use { cursor ->
         buildSet {

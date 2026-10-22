@@ -6,6 +6,7 @@
 
 package me.rerere.rikkahub.service
 
+import me.rerere.rikkahub.data.sync.isChatRecoveryBlocking
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
@@ -142,6 +143,11 @@ class VoiceCallService : Service(), KoinComponent {
     override fun onBind(intent: Intent?): IBinder = binder
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (isChatRecoveryBlocking()) {
+            stopSelf(startId)
+            return START_NOT_STICKY
+        }
+
         // 用户点了通知栏上的"挂断"按钮
         if (intent?.action == ACTION_HANG_UP) {
             endCall()
@@ -714,8 +720,8 @@ class VoiceCallService : Service(), KoinComponent {
         conversationMonitorJob?.cancel()
         asrMonitorJob?.cancel()
         interruptDetectJob?.cancel()
-        asr.stop()
-        tts.stop()
+        if (::asr.isInitialized) asr.stop()
+        if (::tts.isInitialized) tts.stop()
         _uiState.update {
             it.copy(status = VoiceCallStatus.Idle)
         }

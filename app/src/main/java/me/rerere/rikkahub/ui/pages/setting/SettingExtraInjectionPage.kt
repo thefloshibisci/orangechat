@@ -11,11 +11,13 @@ import android.content.Intent
 import android.os.Build
 import android.provider.Settings as AndroidSettings
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.LargeFlexibleTopAppBar
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
@@ -45,6 +47,9 @@ import me.rerere.rikkahub.ui.components.nav.BackButton
 import me.rerere.rikkahub.ui.components.ui.CardGroup
 import me.rerere.rikkahub.ui.components.ui.CardGroupScope
 import me.rerere.rikkahub.ui.components.ui.buildCardGroupItems
+import me.rerere.rikkahub.ui.theme.CustomColors
+import me.rerere.rikkahub.ui.theme.LargeFlexibleTopAppBar
+import me.rerere.rikkahub.utils.plus
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.SystemToolsSetting
 import kotlinx.coroutines.flow.StateFlow
@@ -75,7 +80,7 @@ internal fun ExtraInjectionSettingsContent(
     val notificationReady = remember(permissionRevision) { hasNotificationListenerAccess(context) }
     val notificationConnected = remember(permissionRevision) { NotificationListenerHandle.isBound() }
     val diagnostics by ExtraInfoDiagnostics.latest.collectAsStateWithLifecycle()
-    val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
+    val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
     Scaffold(
         modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
         topBar = {
@@ -83,12 +88,15 @@ internal fun ExtraInjectionSettingsContent(
                 title = { Text("额外注入") },
                 navigationIcon = navigationIcon,
                 scrollBehavior = scrollBehavior,
+                colors = CustomColors.topBarColors,
             )
         },
-    ) { padding ->
+        containerColor = settingsScaffoldContainerColor(CustomColors.topBarColors.containerColor),
+    ) { contentPadding ->
         LazyColumn(
-            modifier = Modifier.fillMaxSize().padding(padding),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = contentPadding + PaddingValues(8.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             item {
                 CardGroup(modifier = Modifier.padding(horizontal = 8.dp), title = { Text("请求背景") }, items = buildCardGroupItems {
@@ -99,9 +107,11 @@ internal fun ExtraInjectionSettingsContent(
                         "用于主动消息", option.extraInfoInProactiveEnabled, enabled,
                         "后台也可读取下方已授权项目；不含屏幕 OCR。应用信息仍需主动查岗授权。",
                     ) { value -> updateSystemToolsSetting { it.copy(extraInfoInProactiveEnabled = value) } }
-                    item(headlineContent = {
-                        Text(if (loaded) "仅本轮使用，不保存到聊天或长期记忆" else "正在读取设置…")
-                    })
+                    item(
+                        headlineContent = {
+                            Text(if (loaded) "仅本轮使用，不保存到聊天或长期记忆" else "正在读取设置…")
+                        },
+                    )
                 })
             }
             item {
@@ -134,6 +144,7 @@ internal fun ExtraInjectionSettingsContent(
                                 visualTransformation = PasswordVisualTransformation(),
                                 singleLine = true,
                                 enabled = enabled,
+                                modifier = Modifier.fillMaxWidth(),
                             )
                         })
                     }
@@ -182,31 +193,53 @@ internal fun ExtraInjectionSettingsContent(
                         "仅当前助手与全局内置记忆，不调用外部 MCP。") { value ->
                         updateSystemToolsSetting { it.copy(memoryContextInjectionEnabled = value) }
                     }
-                    item(headlineContent = { Text("记忆条数：${option.memoryContextInjectionLimit}") },
-                        supportingContent = {
-                            InjectionSlider(option.memoryContextInjectionLimit, 1..20,
-                                enabled && option.memoryContextInjectionEnabled) { value ->
+                    item(
+                        headlineContent = {
+                            InjectionSlider(
+                                value = option.memoryContextInjectionLimit,
+                                range = 1..20,
+                                enabled = enabled && option.memoryContextInjectionEnabled,
+                                label = { "记忆条数：$it" },
+                            ) { value ->
                                 updateSystemToolsSetting { it.copy(memoryContextInjectionLimit = value) }
                             }
-                        })
-                    item(headlineContent = { Text("单项等待上限：${option.extraInfoInjectionTimeoutSeconds} 秒") },
-                        supportingContent = {
-                            InjectionSlider(option.extraInfoInjectionTimeoutSeconds, 1..30, enabled) { value ->
+                        },
+                    )
+                    item(
+                        headlineContent = {
+                            InjectionSlider(
+                                value = option.extraInfoInjectionTimeoutSeconds,
+                                range = 1..30,
+                                enabled = enabled,
+                                label = { "单项等待上限：$it 秒" },
+                            ) { value ->
                                 updateSystemToolsSetting { it.copy(extraInfoInjectionTimeoutSeconds = value) }
                             }
-                        })
+                        },
+                    )
                 })
             }
             if (diagnostics.items.isNotEmpty()) {
                 item {
-                    Text(
-                        "最近一次${if (diagnostics.proactive) "后台" else "聊天"}读取 · " +
-                            java.text.DateFormat.getTimeInstance().format(java.util.Date(diagnostics.timestamp)),
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                    CardGroup(
+                        modifier = Modifier.padding(horizontal = 8.dp),
+                        title = { Text("最近读取") },
+                        items = buildCardGroupItems {
+                            item(headlineContent = {
+                                Text(
+                                    "最近一次${if (diagnostics.proactive) "后台" else "聊天"}读取 · " +
+                                        java.text.DateFormat.getTimeInstance()
+                                            .format(java.util.Date(diagnostics.timestamp)),
+                                )
+                            })
+                            diagnostics.items.forEach { diagnostic ->
+                                item(
+                                    headlineContent = { Text(diagnostic.name) },
+                                    supportingContent = { Text(diagnostic.summary) },
+                                )
+                            }
+                        },
                     )
-                }
-                diagnostics.items.forEach { diagnostic ->
-                    item { Text("${diagnostic.name}：${diagnostic.summary}", modifier = Modifier.padding(horizontal = 16.dp)) }
                 }
             }
         }
@@ -228,14 +261,23 @@ private fun CardGroupScope.injectionToggle(
 }
 
 @Composable
-private fun InjectionSlider(value: Int, range: IntRange, enabled: Boolean, onCommit: (Int) -> Unit) {
+private fun InjectionSlider(
+    value: Int,
+    range: IntRange,
+    enabled: Boolean,
+    label: (Int) -> String,
+    onCommit: (Int) -> Unit,
+) {
     var pending by remember(value) { mutableFloatStateOf(value.coerceIn(range).toFloat()) }
-    Slider(
-        value = pending,
-        onValueChange = { pending = it },
-        onValueChangeFinished = { onCommit(pending.roundToInt()) },
-        valueRange = range.first.toFloat()..range.last.toFloat(),
-        steps = (range.last - range.first - 1).coerceAtLeast(0),
-        enabled = enabled,
-    )
+    Column {
+        Text(label(pending.roundToInt()))
+        Slider(
+            value = pending,
+            onValueChange = { pending = it },
+            onValueChangeFinished = { onCommit(pending.roundToInt()) },
+            valueRange = range.first.toFloat()..range.last.toFloat(),
+            steps = (range.last - range.first - 1).coerceAtLeast(0),
+            enabled = enabled,
+        )
+    }
 }

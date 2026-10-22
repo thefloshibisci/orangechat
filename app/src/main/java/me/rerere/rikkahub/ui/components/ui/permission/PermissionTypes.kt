@@ -106,7 +106,7 @@ val PermissionAccessCoarseLocation = PermissionInfo(
 val PermissionAccessBackgroundLocation = PermissionInfo(
     permission = Manifest.permission.ACCESS_BACKGROUND_LOCATION,
     displayName = { Text("后台位置权限") },
-    usage = { Text("允许应用在后台获取位置信息，用于定时同步位置数据到Supabase") },
+    usage = { Text("允许已启用的位置功能在后台获取位置信息") },
     required = false
 )
 

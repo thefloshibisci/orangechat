@@ -248,6 +248,7 @@ fun MarkdownBlock(
             }
         }
     }
+    me.rerere.rikkahub.ui.components.workspace.WorkspaceInlineDownloads(content)
 }
 
 // for debug

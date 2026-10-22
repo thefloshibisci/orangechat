@@ -20,6 +20,7 @@ import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import androidx.datastore.preferences.preferencesDataStoreFile
 import io.pebbletemplates.pebble.PebbleEngine
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.Dispatchers
@@ -47,11 +48,13 @@ import me.rerere.rikkahub.data.datastore.migration.PreferenceStoreV2Migration
 import me.rerere.rikkahub.data.datastore.migration.PreferenceStoreV3Migration
 import me.rerere.rikkahub.data.ai.mcp.McpServerConfig
 import me.rerere.rikkahub.data.ai.prompts.DEFAULT_COMPRESS_PROMPT
+import me.rerere.rikkahub.data.ai.prompts.resolveCompressPrompt
 import me.rerere.rikkahub.data.ai.prompts.DEFAULT_OCR_PROMPT
 import me.rerere.rikkahub.data.ai.prompts.DEFAULT_SUGGESTION_PROMPT
 import me.rerere.rikkahub.data.ai.prompts.DEFAULT_TITLE_PROMPT
 import me.rerere.rikkahub.data.ai.prompts.DEFAULT_TRANSLATION_PROMPT
 import me.rerere.rikkahub.data.ai.prompts.LEARNING_MODE_PROMPT
+import me.rerere.rikkahub.data.interaction.normalizeCustomChatReactionPresets
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.Avatar
 import me.rerere.rikkahub.data.model.ExternalMemory
@@ -62,6 +65,7 @@ import me.rerere.rikkahub.data.model.PromptInjection
 import me.rerere.rikkahub.data.model.QuickMessage
 import me.rerere.rikkahub.data.model.Tag
 import me.rerere.rikkahub.data.sync.s3.S3Config
+import me.rerere.rikkahub.data.sync.RestorePreferencesSession
 import me.rerere.rikkahub.ui.theme.CustomTheme
 import me.rerere.rikkahub.ui.theme.PresetThemes
 import me.rerere.rikkahub.utils.JsonInstant
@@ -88,7 +92,7 @@ private val Context.settingsStore by preferencesDataStore(
 )
 
 class SettingsStore(
-    context: Context,
+    private val context: Context,
     scope: AppScope,
 ) : KoinComponent {
     companion object {
@@ -101,6 +105,7 @@ class SettingsStore(
         val CUSTOM_THEMES = stringPreferencesKey("custom_themes")
         val DISPLAY_SETTING = stringPreferencesKey("display_setting")
         val DEVELOPER_MODE = booleanPreferencesKey("developer_mode")
+        val CUSTOM_REACTION_PRESETS = stringPreferencesKey("custom_reaction_presets")
 
         // 免责声明与用户协议
         val DISCLAIMER_ACCEPTED = booleanPreferencesKey("disclaimer_accepted")
@@ -167,6 +172,7 @@ class SettingsStore(
 
         // 备份提醒
         val BACKUP_REMINDER_CONFIG = stringPreferencesKey("backup_reminder_config")
+        val AUTO_BACKUP_CONFIG = stringPreferencesKey("auto_backup_config")
 
         // 统计
         val LAUNCH_COUNT = intPreferencesKey("launch_count")
@@ -291,8 +297,8 @@ class SettingsStore(
                 suggestionPrompt = preferences[SUGGESTION_PROMPT] ?: DEFAULT_SUGGESTION_PROMPT,
                 ocrModelId = preferences[OCR_MODEL]?.let { Uuid.parse(it) } ?: Uuid.random(),
                 ocrPrompt = preferences[OCR_PROMPT] ?: DEFAULT_OCR_PROMPT,
-                compressModelId = preferences[COMPRESS_MODEL]?.let { Uuid.parse(it) } ?: DEFAULT_AUTO_MODEL_ID,
-                compressPrompt = preferences[COMPRESS_PROMPT] ?: DEFAULT_COMPRESS_PROMPT,
+                compressModelId = preferences[COMPRESS_MODEL]?.let { Uuid.parse(it) },
+                compressPrompt = resolveCompressPrompt(preferences[COMPRESS_PROMPT] ?: DEFAULT_COMPRESS_PROMPT),
                 assistantId = preferences[SELECT_ASSISTANT]?.let { Uuid.parse(it) }
                     ?: DEFAULT_ASSISTANT_ID,
                 assistantTags = preferences[ASSISTANT_TAGS]?.let {
@@ -304,6 +310,9 @@ class SettingsStore(
                 themeId = preferences[THEME_ID] ?: PresetThemes[0].id,
                 customThemes = runCatching { preferences[CUSTOM_THEMES]?.let { JsonInstant.decodeFromString<List<CustomTheme>>(it) } }.getOrNull() ?: emptyList(),
                 developerMode = preferences[DEVELOPER_MODE] == true,
+                customReactionPresets = runCatching {
+                    preferences[CUSTOM_REACTION_PRESETS]?.let { JsonInstant.decodeFromString<List<String>>(it) }
+                }.getOrNull()?.let(::normalizeCustomChatReactionPresets).orEmpty(),
                 displaySetting = runCatching { JsonInstant.decodeFromString<DisplaySetting>(preferences[DISPLAY_SETTING] ?: "{}") }.getOrElse { DisplaySetting() },
                 searchServices = preferences.readPlaintextOrMigrate<List<SearchServiceOptions>>(
                     SEARCH_SERVICES,
@@ -330,6 +339,9 @@ class SettingsStore(
                 backupReminderConfig = preferences[BACKUP_REMINDER_CONFIG]?.let {
                     JsonInstant.decodeFromString(it)
                 } ?: BackupReminderConfig(),
+                autoBackupConfig = runCatching {
+                    preferences[AUTO_BACKUP_CONFIG]?.let { JsonInstant.decodeFromString<AutoBackupConfig>(it) }
+                }.getOrNull() ?: AutoBackupConfig(),
                 launchCount = preferences[LAUNCH_COUNT] ?: 0,
                 sponsorAlertDismissedAt = preferences[SPONSOR_ALERT_DISMISSED_AT] ?: 0,
                 systemToolsSetting = preferences.readPlaintextOrMigrate(SYSTEM_TOOLS_SETTING, SystemToolsSetting()) { JsonInstant.decodeFromString(it) },
@@ -472,18 +484,46 @@ class SettingsStore(
             return
         }
         updateMutex.withLock {
-            publishAndPersist(settings)
+            publishAndPersist(settings, settingsFlowRaw.first())
         }
     }
+
+    internal suspend fun <T> withRestoreSession(block: suspend (RestorePreferencesSession<Settings>) -> T): T =
+        updateMutex.withLock {
+            val previous = dataStore.data.first()
+            // Finish migrations and validate the current snapshot before touching any restore targets.
+            settingsFlowRaw.first()
+            block(RestorePreferencesSession(
+                file = context.preferencesDataStoreFile("settings"),
+                apply = { restored ->
+                    check(!restored.init) { "Cannot restore dummy settings" }
+                    publishAndPersist(restored, settingsFlowRaw.first())
+                },
+                rollback = {
+                    dataStore.updateData { previous }
+                    settingsFlow.value = settingsFlowRaw.first()
+                },
+            ))
+        }
 
     /** Apply a change to the latest snapshot and persist it atomically. */
     suspend fun update(fn: (Settings) -> Settings) {
         updateMutex.withLock {
-            publishAndPersist(fn(settingsFlow.value))
+            val current = settingsFlowRaw.first()
+            publishAndPersist(fn(current), current)
         }
     }
 
-    private suspend fun publishAndPersist(settings: Settings) {
+    /** Merge an editor's changes under the same lock as the write, preserving newer unrelated fields. */
+    suspend fun updateFrom(previous: Settings, desired: Settings) {
+        if (previous.init || desired.init) {
+            Log.w(TAG, "Cannot update from dummy settings")
+            return
+        }
+        update { current -> current.withSettingsEdit(previous, desired) }
+    }
+
+    private suspend fun publishAndPersist(settings: Settings, previous: Settings) {
         if(settings.init) {
             Log.w(TAG, "Cannot update dummy settings")
             return
@@ -491,7 +531,6 @@ class SettingsStore(
         pendingWrites.incrementAndGet()
         settingsFlow.value = settings
         try {
-            val previous = settingsFlowRaw.first()
             withContext(Dispatchers.IO) {
                 persistSettings(settings, previous)
             }
@@ -527,6 +566,8 @@ class SettingsStore(
             preferences[THEME_ID] = settings.themeId
             preferences[CUSTOM_THEMES] = JsonInstant.encodeToString(settings.customThemes)
             preferences[DEVELOPER_MODE] = settings.developerMode
+            preferences[CUSTOM_REACTION_PRESETS] =
+                JsonInstant.encodeToString(normalizeCustomChatReactionPresets(settings.customReactionPresets))
             preferences[DISPLAY_SETTING] = JsonInstant.encodeToString(settings.displaySetting)
 
             preferences[DISCLAIMER_ACCEPTED] = settings.disclaimerAccepted
@@ -545,7 +586,8 @@ class SettingsStore(
             preferences[SUGGESTION_PROMPT] = settings.suggestionPrompt
             preferences[OCR_MODEL] = settings.ocrModelId.toString()
             preferences[OCR_PROMPT] = settings.ocrPrompt
-            preferences[COMPRESS_MODEL] = settings.compressModelId.toString()
+            settings.compressModelId?.let { preferences[COMPRESS_MODEL] = it.toString() }
+                ?: preferences.remove(COMPRESS_MODEL)
             preferences[COMPRESS_PROMPT] = settings.compressPrompt
 
             if (canWriteProtected(PROVIDERS, settings.providers, loadedSettings.providers)) {
@@ -636,6 +678,7 @@ class SettingsStore(
             }
             preferences[WEB_SERVER_LOCALHOST_ONLY] = settings.webServerLocalhostOnly
             preferences[BACKUP_REMINDER_CONFIG] = JsonInstant.encodeToString(settings.backupReminderConfig)
+            preferences[AUTO_BACKUP_CONFIG] = JsonInstant.encodeToString(settings.autoBackupConfig)
             preferences[LAUNCH_COUNT] = settings.launchCount
             preferences[SPONSOR_ALERT_DISMISSED_AT] = settings.sponsorAlertDismissedAt
             if (canWriteProtected(SYSTEM_TOOLS_SETTING, settings.systemToolsSetting, loadedSettings.systemToolsSetting)) {
@@ -796,6 +839,7 @@ data class Settings(
     val themeId: String = PresetThemes[0].id,
     val customThemes: List<CustomTheme> = emptyList(),
     val developerMode: Boolean = false,
+    val customReactionPresets: List<String> = emptyList(),
     val displaySetting: DisplaySetting = DisplaySetting(),
     val enableWebSearch: Boolean = false,
     val favoriteModels: List<Uuid> = emptyList(),
@@ -810,7 +854,7 @@ data class Settings(
     val suggestionPrompt: String = DEFAULT_SUGGESTION_PROMPT,
     val ocrModelId: Uuid = Uuid.random(),
     val ocrPrompt: String = DEFAULT_OCR_PROMPT,
-    val compressModelId: Uuid = Uuid.random(),
+    val compressModelId: Uuid? = null,
     val compressPrompt: String = DEFAULT_COMPRESS_PROMPT,
     val assistantId: Uuid = DEFAULT_ASSISTANT_ID,
     val providers: List<ProviderSetting> = DEFAULT_PROVIDERS,
@@ -835,6 +879,7 @@ data class Settings(
     val webServerAccessPassword: String = "",
     val webServerLocalhostOnly: Boolean = false,
     val backupReminderConfig: BackupReminderConfig = BackupReminderConfig(),
+    val autoBackupConfig: AutoBackupConfig = AutoBackupConfig(),
     val launchCount: Int = 0,
     val sponsorAlertDismissedAt: Int = 0,
     val systemToolsSetting: SystemToolsSetting = SystemToolsSetting(),
@@ -1026,6 +1071,12 @@ fun Settings.getCurrentChatModel(): Model? {
     return findModelById(this.getCurrentAssistant().chatModelId ?: this.chatModelId)
 }
 
+/** The open conversation can belong to a different assistant from the global selection. */
+fun Settings.getChatModelForAssistant(assistantId: Uuid): Model? {
+    val assistant = getAssistantById(assistantId) ?: getCurrentAssistant()
+    return findModelById(assistant.chatModelId ?: chatModelId)
+}
+
 fun Settings.getCurrentAssistant(): Assistant {
     return this.assistants.find { it.id == assistantId } ?: this.assistants.first()
 }
@@ -1122,4 +1173,3 @@ val DEFAULT_MODE_INJECTIONS = listOf(
         name = "Learning Mode"
     )
 )
-

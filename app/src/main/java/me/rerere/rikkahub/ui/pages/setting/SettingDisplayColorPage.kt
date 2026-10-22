@@ -21,7 +21,7 @@ import me.rerere.rikkahub.ui.theme.LargeFlexibleTopAppBar
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.Slider
+import me.rerere.rikkahub.ui.components.ui.CommitSlider
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -47,11 +47,11 @@ import org.koin.androidx.compose.koinViewModel
 @Composable
 fun SettingDisplayColorPage(vm: SettingVM = koinViewModel()) {
     val settings by vm.settings.collectAsStateWithLifecycle()
-    var displaySetting by remember(settings) { mutableStateOf(settings.displaySetting) }
+    var displaySetting by remember(settings.displaySetting) { mutableStateOf(settings.displaySetting) }
 
     fun updateDisplaySetting(setting: DisplaySetting) {
         displaySetting = setting
-        vm.updateSettings(settings.copy(displaySetting = setting))
+        vm.updateDisplaySetting(setting)
     }
 
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
@@ -321,13 +321,16 @@ fun SettingDisplayColorPage(vm: SettingVM = koinViewModel()) {
                         headlineContent = { Text("共看控件颜色") },
                         supportingContent = {
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text("不透明度 ${(displaySetting.watchControlAlpha * 100).toInt()}%")
-                                Slider(
+                                CommitSlider(
                                     value = displaySetting.watchControlAlpha,
+                                    onValuePreview = { displaySetting = displaySetting.copy(watchControlAlpha = it) },
                                     onValueChange = { updateDisplaySetting(displaySetting.copy(watchControlAlpha = it)) },
                                     valueRange = 0.05f..1f,
                                     modifier = Modifier.weight(1f).padding(start = 8.dp)
-                                )
+                                ) { draft, slider ->
+                                    Text("不透明度 ${(draft * 100).toInt()}%")
+                                    slider()
+                                }
                             }
                         },
                         trailingContent = {

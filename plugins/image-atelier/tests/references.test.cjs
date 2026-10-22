@@ -169,8 +169,8 @@ test('old host blocks large save URL fallback',async()=>{
   await assert.rejects(()=>h.context.downloadAsset('source_cat'),/较大/);
 });
 test('upscale implementation and UI procedure are byte-for-byte preserved',()=>{
-  // SHA256 of the exact function blocks in the user's supplied 0.3.6 archive.
-  const hash=s=>crypto.createHash('sha256').update(s).digest('hex');
+  // SHA256 of the supplied 0.3.6 function blocks, normalizing checkout line endings to LF.
+  const hash=s=>crypto.createHash('sha256').update(s.replace(/\r\n/g,'\n')).digest('hex');
   const logic=source.slice(source.indexOf('  function pngSize('),source.indexOf('  // Vibe encoding'));
   assert.equal(hash(logic),'b18370d748b57d3dc1d8e434c1caaab93a43ecd16453676eef3ec7ea42e986c7');
   const ui=fs.readFileSync(path.join(__dirname,'../ui/index.html'),'utf8');

@@ -28,7 +28,9 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -54,7 +56,6 @@ import me.rerere.rikkahub.ui.components.ui.UIAvatar
 import me.rerere.rikkahub.ui.hooks.heroAnimation
 import me.rerere.rikkahub.ui.pages.setting.settingsScaffoldContainerColor
 import me.rerere.rikkahub.ui.theme.CustomColors
-import me.rerere.rikkahub.utils.toFixed
 import org.koin.androidx.compose.koinViewModel
 import org.koin.core.parameter.parametersOf
 import kotlin.math.roundToInt
@@ -69,6 +70,7 @@ fun AssistantBasicPage(id: String) {
         }
     )
     val assistant by vm.assistant.collectAsStateWithLifecycle()
+    val settings by vm.settings.collectAsStateWithLifecycle()
     val providers by vm.providers.collectAsStateWithLifecycle()
     val tags by vm.tags.collectAsStateWithLifecycle()
     val workspaces by vm.workspaces.collectAsStateWithLifecycle()
@@ -96,12 +98,15 @@ fun AssistantBasicPage(id: String) {
             providers = providers,
             tags = tags,
             workspaces = workspaces,
-            onUpdate = { vm.update(it) },
+            customReactionPresets = settings.customReactionPresets,
+            onAddReactionPreset = vm::addCustomReactionPreset,
+            onRemoveReactionPreset = vm::removeCustomReactionPreset,
+            onUpdate = { vm.update(assistant, it) },
             vm = vm
         )
     }
 }
- 
+
 @Composable
 internal fun AssistantBasicContent(
     modifier: Modifier = Modifier,
@@ -109,6 +114,9 @@ internal fun AssistantBasicContent(
     providers: List<me.rerere.ai.provider.ProviderSetting>,
     tags: List<DataTag>,
     workspaces: List<WorkspaceEntity>,
+    customReactionPresets: List<String>,
+    onAddReactionPreset: (String) -> Unit,
+    onRemoveReactionPreset: (String) -> Unit,
     onUpdate: (Assistant) -> Unit,
     vm: AssistantDetailVM
 ) {
@@ -425,12 +433,26 @@ internal fun AssistantBasicContent(
                     )
                 }
             ) {
+                var contextMessageSize by remember(assistant.id) {
+                    mutableFloatStateOf(assistant.contextMessageSize.toFloat().coerceIn(0f, 512f))
+                }
+                var editingContextSize by remember(assistant.id) { mutableStateOf(false) }
+                LaunchedEffect(assistant.id, assistant.contextMessageSize) {
+                    if (!editingContextSize) {
+                        contextMessageSize = assistant.contextMessageSize.toFloat().coerceIn(0f, 512f)
+                    }
+                }
                 Slider(
-                    value = assistant.contextMessageSize.toFloat(),
+                    value = contextMessageSize,
                     onValueChange = {
+                        editingContextSize = true
+                        contextMessageSize = it
+                    },
+                    onValueChangeFinished = {
+                        editingContextSize = false
                         onUpdate(
                             assistant.copy(
-                                contextMessageSize = it.roundToInt()
+                                contextMessageSize = contextMessageSize.roundToInt()
                             )
                         )
                     },
@@ -439,10 +461,11 @@ internal fun AssistantBasicContent(
                     modifier = Modifier.fillMaxWidth()
                 )
  
+                val contextMessageCount = contextMessageSize.roundToInt()
                 Text(
-                    text = if (assistant.contextMessageSize > 0) stringResource(
+                    text = if (contextMessageCount > 0) stringResource(
                         R.string.assistant_page_context_message_count,
-                        assistant.contextMessageSize
+                        contextMessageCount
                     ) else stringResource(R.string.assistant_page_context_message_unlimited),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.secondary.copy(alpha = 0.75f),
@@ -522,14 +545,32 @@ internal fun AssistantBasicContent(
                 )
             }
         }
- 
+
+        ChatInteractionSettings(
+            assistant = assistant,
+            customReactionPresets = customReactionPresets,
+            onAddReactionPreset = onAddReactionPreset,
+            onRemoveReactionPreset = onRemoveReactionPreset,
+        ) { transform ->
+            onUpdate(transform(assistant))
+        }
+
         Card(
             colors = CustomColors.cardColorsOnSurfaceContainer
         ) {
+            var backgroundOpacity by remember(assistant.id) {
+                mutableFloatStateOf(assistant.backgroundOpacity.coerceIn(0f, 1f))
+            }
+            var editingBackgroundOpacity by remember(assistant.id) { mutableStateOf(false) }
+            LaunchedEffect(assistant.id, assistant.backgroundOpacity) {
+                if (!editingBackgroundOpacity) {
+                    backgroundOpacity = assistant.backgroundOpacity.coerceIn(0f, 1f)
+                }
+            }
             BackgroundPicker(
                 modifier = Modifier.padding(8.dp),
                 background = assistant.background,
-                backgroundOpacity = assistant.backgroundOpacity,
+                backgroundOpacity = backgroundOpacity,
                 onUpdate = { background ->
                     onUpdate(
                         assistant.copy(
@@ -540,7 +581,6 @@ internal fun AssistantBasicContent(
             )
  
             if (assistant.background != null) {
-                val backgroundOpacity = assistant.backgroundOpacity.coerceIn(0f, 1f)
                 HorizontalDivider()
                 FormItem(
                     modifier = Modifier.padding(8.dp),
@@ -554,9 +594,15 @@ internal fun AssistantBasicContent(
                     Slider(
                         value = backgroundOpacity,
                         onValueChange = {
+                            editingBackgroundOpacity = true
+                            backgroundOpacity = it
+                        },
+                        onValueChangeFinished = {
+                            editingBackgroundOpacity = false
                             onUpdate(
                                 assistant.copy(
-                                    backgroundOpacity = it.toFixed(2).toFloatOrNull()?.coerceIn(0f, 1f) ?: 1.0f
+                                    backgroundOpacity = ((backgroundOpacity * 100).roundToInt() / 100f)
+                                        .coerceIn(0f, 1f)
                                 )
                             )
                         },
@@ -577,4 +623,3 @@ internal fun AssistantBasicContent(
         }
     }
 }
- 

@@ -6,6 +6,9 @@
 
 package me.rerere.rikkahub.ui.components.message
 
+import me.rerere.rikkahub.ui.components.workspace.WorkspaceDownloadFolderSetting
+
+import me.rerere.rikkahub.ui.components.workspace.rememberWorkspaceFileExporter
 import android.content.Intent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -97,22 +100,7 @@ internal fun EditedFilesList(
     val visibleFiles = if (expanded) editedFiles else editedFiles.take(DEFAULT_VISIBLE_COUNT)
     val hasMore = editedFiles.size > DEFAULT_VISIBLE_COUNT
 
-    val exportLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.CreateDocument("*/*"),
-    ) { uri ->
-        val path = selectedPath.also { selectedPath = null } ?: return@rememberLauncherForActivityResult
-        if (uri == null) return@rememberLauncherForActivityResult
-        val outputStream = context.contentResolver.openOutputStream(uri)
-            ?: return@rememberLauncherForActivityResult
-        scope.launch {
-            runCatching {
-                val (area, relativePath) = resolveWorkspacePath(path)
-                outputStream.use { output ->
-                    workspaceRepository.exportFile(workspaceId, area, relativePath, output)
-                }
-            }
-        }
-    }
+    val exportFile = rememberWorkspaceFileExporter(workspaceId)
 
     FlowRow(
         horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -179,10 +167,13 @@ internal fun EditedFilesList(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
+                WorkspaceDownloadFolderSetting()
                 Card(
                     onClick = {
                         val p = selectedPath ?: return@Card
-                        exportLauncher.launch(p.substringAfterLast('/'))
+                        val (area, relativePath) = resolveWorkspacePath(p)
+                        selectedPath = null
+                        exportFile(area, relativePath)
                     },
                     shape = MaterialTheme.shapes.medium,
                 ) {

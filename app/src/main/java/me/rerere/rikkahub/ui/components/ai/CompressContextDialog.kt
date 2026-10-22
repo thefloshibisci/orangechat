@@ -1,4 +1,4 @@
-﻿/*
+/*
  * 橘瓣 OrangeChat
  * 衍生自 RikkaHub (https://github.com/rikkahub/rikkahub)，原作者 RE
  * 本项目基于 GNU AGPL v3 开源，详见根目录 LICENSE 文件
@@ -27,7 +27,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -38,7 +38,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.ui.components.ui.RabbitLoadingIndicator
 import me.rerere.rikkahub.ui.theme.popupContainerColor
@@ -46,7 +48,7 @@ import me.rerere.rikkahub.ui.theme.popupContainerColor
 @Composable
 fun CompressContextDialog(
     onDismiss: () -> Unit,
-    onConfirm: (additionalPrompt: String, targetTokens: Int, keepRecentMessages: Int, mergeWithPrevious: Boolean) -> Job
+    onConfirm: suspend (additionalPrompt: String, targetTokens: Int, keepRecentMessages: Int, mergeWithPrevious: Boolean, onProgress: (String) -> Unit) -> Unit
 ) {
     var additionalPrompt by remember { mutableStateOf("") }
     var selectedTokens by remember { mutableIntStateOf(2000) }
@@ -55,16 +57,10 @@ fun CompressContextDialog(
     val tokenOptions = listOf(500, 1000, 2000, 4000)
     val keepRecentOptions = listOf(0, 16, 32, 64)
     var currentJob by remember { mutableStateOf<Job?>(null) }
-    val isLoading = currentJob?.isActive == true
-
-    // Monitor job completion
-    LaunchedEffect(currentJob) {
-        currentJob?.join()
-        if (currentJob?.isCompleted == true && currentJob?.isCancelled == false) {
-            onDismiss()
-        }
-        currentJob = null
-    }
+    var isLoading by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var progress by remember { mutableStateOf("") }
+    val scope = rememberCoroutineScope()
 
     AlertDialog(
         onDismissRequest = {
@@ -92,9 +88,15 @@ fun CompressContextDialog(
                             modifier = Modifier.size(32.dp)
                         )
                         Spacer(modifier = Modifier.width(12.dp))
-                        Text(stringResource(R.string.chat_page_compressing))
+                        Column {
+                            Text(stringResource(R.string.chat_page_compressing))
+                            Text(progress, style = MaterialTheme.typography.bodySmall)
+                            Text("整段一次提交，保留工具内容；单次最多等待 3 分钟，可随时取消。",
+                                style = MaterialTheme.typography.bodySmall)
+                        }
                     }
                 } else {
+                    error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                     Text(stringResource(R.string.chat_page_compress_context_desc))
 
                     // Token size selector
@@ -192,13 +194,29 @@ fun CompressContextDialog(
             if (isLoading) {
                 TextButton(onClick = {
                     currentJob?.cancel()
-                    currentJob = null
                 }) {
                     Text(stringResource(R.string.cancel))
                 }
             } else {
                 TextButton(onClick = {
-                    currentJob = onConfirm(additionalPrompt, selectedTokens, keepRecentMessages, mergeWithPrevious)
+                    isLoading = true
+                    error = null
+                    progress = "正在准备压缩内容…"
+                    currentJob = scope.launch {
+                        try {
+                            onConfirm(additionalPrompt, selectedTokens, keepRecentMessages, mergeWithPrevious) {
+                                progress = it
+                            }
+                            onDismiss()
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            error = e.message ?: "压缩失败，请重试"
+                        } finally {
+                            isLoading = false
+                            currentJob = null
+                        }
+                    }
                 }) {
                     Text(stringResource(R.string.confirm))
                 }

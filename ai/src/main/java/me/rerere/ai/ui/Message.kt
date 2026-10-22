@@ -264,6 +264,8 @@ fun List<UIMessagePart>.isEmptyUIMessage(): Boolean {
     if (this.isEmpty()) return true
     return this.all { message ->
         when (message) {
+            // Tool-only turns still contain visible progress, approval controls and receipts.
+            is UIMessagePart.Tool -> false
             is UIMessagePart.Text -> message.text.isBlank()
             is UIMessagePart.Image -> message.url.isBlank()
             is UIMessagePart.Document -> message.url.isBlank()
@@ -785,6 +787,15 @@ fun <T> List<T>.migrateToolNodes(
 
 @Serializable
 sealed class UIMessageAnnotation {
+    /** Preserve sibling-fork backup metadata without turning it into a citation or model input. */
+    @Serializable
+    @SerialName("avatar_interaction")
+    data class AvatarInteraction(
+        val actor: String,
+        val target: String,
+        val targetMessageId: String? = null,
+    ) : UIMessageAnnotation()
+
     @Serializable
     @SerialName("url_citation")
     data class UrlCitation(

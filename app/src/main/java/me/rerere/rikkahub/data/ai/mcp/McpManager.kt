@@ -59,14 +59,13 @@ import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.event.AppEvent
 import me.rerere.rikkahub.data.event.AppEventBus
 import me.rerere.rikkahub.data.datastore.getCurrentAssistant
+import me.rerere.rikkahub.data.datastore.withMcpServerEdit
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.files.saveUploadFromBytes
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.utils.JsonInstant
 import me.rerere.rikkahub.utils.checkDifferent
 import okhttp3.OkHttpClient
-import java.security.MessageDigest
-import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import kotlin.io.encoding.Base64
 import kotlin.time.Duration.Companion.minutes
@@ -109,13 +108,15 @@ class McpManager(
         install(SSE)
     }
 
+    // Reserved bridge endpoint: no automatic sync and no model exposure.
+    private val DISABLED_CONTINUITY_TOOL_NAME = "xinchao_continuity_sync"
+
     private val oauthClient = McpOAuthClient(okHttpClient)
 
     private val clients: MutableMap<Uuid, Pair<McpServerConfig, Client>> = mutableMapOf()
     private val reconnectJobs: MutableMap<Uuid, Job> = mutableMapOf()
     private val reconnectAttempts: MutableMap<Uuid, Int> = mutableMapOf()
     private val authorizationJobs: MutableMap<Uuid, Job> = mutableMapOf()
-    private val recentContinuityHashes = ConcurrentHashMap<String, String>()
     val syncingStatus = MutableStateFlow<Map<Uuid, McpStatus>>(mapOf())
 
     init {
@@ -171,52 +172,23 @@ class McpManager(
             }
     }
 
-    /** Internal transport helpers are called by the app and never exposed to the model. */
+    /** The removed cross-client bridge endpoint must remain hidden from model tools. */
     fun getAllAvailableTools(assistant: Assistant? = null): List<Pair<Uuid, McpTool>> {
         return getEnabledTools(assistant).filterNot { (_, tool) ->
-            tool.name == RECENT_CONTINUITY_TOOL_NAME
+            tool.name == DISABLED_CONTINUITY_TOOL_NAME
         }
     }
 
-    suspend fun syncRecentContinuity(
-        assistant: Assistant,
-        conversationId: String,
-        messages: List<me.rerere.ai.ui.UIMessage>,
-        returnContext: Boolean = true,
-    ): String? {
-        val turns = selectRecentContinuityTurns(messages)
-        val (serverId, _) = getEnabledTools(assistant)
-            .firstOrNull { (_, tool) -> tool.name == RECENT_CONTINUITY_TOOL_NAME }
-            ?: return null
-        val result = callTool(
-            serverId = serverId,
-            toolName = RECENT_CONTINUITY_TOOL_NAME,
-            args = buildRecentContinuityArguments(
-                sessionId = recentContinuitySessionId(conversationId),
-                turns = turns,
-            ),
-        )
-        if (!returnContext) return null
-
-        val context = parseRecentContinuityResult(result) ?: return null
-        val sessionId = recentContinuitySessionId(conversationId)
-        val hash = MessageDigest.getInstance("SHA-256")
-            .digest(context.toByteArray(Charsets.UTF_8))
-            .joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
-        return if (recentContinuityHashes.put(sessionId, hash) == hash) null else context
-    }
-
     suspend fun callTool(serverId: Uuid, toolName: String, args: JsonObject): List<UIMessagePart> {
+        if (toolName == DISABLED_CONTINUITY_TOOL_NAME) {
+            return listOf(UIMessagePart.Text("Cross-client continuity bridge is disabled in this build."))
+        }
         val pair = clients[serverId]
         val client = pair?.second
             ?: return listOf(UIMessagePart.Text("Failed to execute tool, because no such mcp client for the tool"))
         val config = pair.first
         val normalizedArgs = normalizeMcpArguments(args)
-        if (toolName == RECENT_CONTINUITY_TOOL_NAME) {
-            Log.i(TAG, "callTool: $toolName / [bounded conversation text omitted] (server: ${config.commonOptions.name})")
-        } else {
-            Log.i(TAG, "callTool: $toolName / $normalizedArgs (server: ${config.commonOptions.name})")
-        }
+        Log.i(TAG, "callTool: $toolName / $normalizedArgs (server: ${config.commonOptions.name})")
 
         if (client.transport == null) client.connect(getTransport(config))
         val result = client.callTool(
@@ -399,13 +371,9 @@ class McpManager(
         // 单次原子覆盖写，消除 remove+put 的空档期
         clients[config.id] = Pair(updatedConfig, client)
 
-        // 纯数据持久化：只把匹配 id 的 serverConfig 换成 updatedConfig
+        // Persist discovered fields without reverting edits or OAuth refreshes made during sync.
         settingsStore.update { old ->
-            old.copy(
-                mcpServers = old.mcpServers.map { serverConfig ->
-                    if (serverConfig.id == config.id) updatedConfig else serverConfig
-                }
-            )
+            old.withMcpServerEdit(config, updatedConfig)
         }
 
         setStatus(config = config, status = McpStatus.Connected)

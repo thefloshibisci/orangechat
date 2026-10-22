@@ -32,6 +32,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
+import kotlinx.serialization.json.putJsonObject
 import me.rerere.ai.core.MessageRole
 import me.rerere.ai.core.ReasoningLevel
 import me.rerere.ai.core.TokenUsage
@@ -51,6 +52,7 @@ import me.rerere.ai.ui.UIMessagePart
 import me.rerere.ai.util.KeyRoulette
 import me.rerere.ai.util.configureReferHeaders
 import me.rerere.ai.util.encodeBase64
+import me.rerere.ai.util.openAiAudioFormat
 import me.rerere.ai.util.json
 import me.rerere.ai.util.mergeCustomBody
 import me.rerere.ai.util.parseErrorDetail
@@ -887,6 +889,13 @@ class ChatCompletionsAPI(
                                 })
                             }
 
+                            is UIMessagePart.Audio -> add(buildJsonObject {
+                                put("type", "input_audio")
+                                putJsonObject("input_audio") {
+                                    put("format", part.openAiAudioFormat())
+                                    put("data", part.encodeBase64(false).getOrThrow())
+                                }
+                            })
                             else -> {}
                         }
                     }
@@ -992,7 +1001,7 @@ class ChatCompletionsAPI(
     }
 
     private fun List<UIMessagePart>.isOnlyTextPart(): Boolean {
-        val gonnaSend = filter { it is UIMessagePart.Text || it is UIMessagePart.Image }.size
+        val gonnaSend = filter { it is UIMessagePart.Text || it is UIMessagePart.Image || it is UIMessagePart.Audio }.size
         val texts = filter { it is UIMessagePart.Text }.size
         return gonnaSend == texts && texts == 1
     }

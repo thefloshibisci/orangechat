@@ -23,7 +23,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
-import androidx.compose.material3.Slider
+import me.rerere.rikkahub.ui.components.ui.CommitSlider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -56,12 +56,12 @@ import org.koin.androidx.compose.koinViewModel
 @Composable
 fun SettingDisplayMessagePage(vm: SettingVM = koinViewModel()) {
     val settings by vm.settings.collectAsStateWithLifecycle()
-    var displaySetting by remember(settings) { mutableStateOf(settings.displaySetting) }
+    var displaySetting by remember(settings.displaySetting) { mutableStateOf(settings.displaySetting) }
     val context = LocalContext.current
 
     fun updateDisplaySetting(setting: DisplaySetting) {
         displaySetting = setting
-        vm.updateSettings(settings.copy(displaySetting = setting))
+        vm.updateDisplaySetting(setting)
     }
 
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
@@ -255,35 +255,38 @@ fun SettingDisplayMessagePage(vm: SettingVM = koinViewModel()) {
                         headlineContent = { Text(stringResource(R.string.setting_display_page_font_size_title)) },
                         supportingContent = {
                             Column {
-                                Row(
+                                CommitSlider(
+                                    value = displaySetting.fontSizeRatio,
+                                    onValuePreview = { displaySetting = displaySetting.copy(fontSizeRatio = it) },
+                                    onValueChange = {
+                                        updateDisplaySetting(displaySetting.copy(fontSizeRatio = it))
+                                    },
+                                    valueRange = 0.5f..2f,
+                                    steps = 11,
                                     modifier = Modifier.fillMaxWidth(),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                ) {
-                                    Slider(
-                                        value = displaySetting.fontSizeRatio,
-                                        onValueChange = {
-                                            updateDisplaySetting(displaySetting.copy(fontSizeRatio = it))
-                                        },
-                                        valueRange = 0.5f..2f,
-                                        steps = 11,
-                                        modifier = Modifier.weight(1f)
+                                ) { draft, slider ->
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    ) {
+                                        Column(modifier = Modifier.weight(1f)) { slider() }
+                                        Text(text = "${(draft * 100).toInt()}%")
+                                    }
+                                    MarkdownBlock(
+                                        content = stringResource(R.string.setting_display_page_font_size_preview),
+                                        style = LocalTextStyle.current.copy(
+                                            fontSize = LocalTextStyle.current.fontSize * draft,
+                                            lineHeight = LocalTextStyle.current.lineHeight * draft,
+                                            fontFamily = when (displaySetting.chatFontFamily) {
+                                                ChatFontFamily.DEFAULT -> FontFamily.Default
+                                                ChatFontFamily.SERIF -> FontFamily.Serif
+                                                ChatFontFamily.MONOSPACE -> FontFamily.Monospace
+                                                ChatFontFamily.CUSTOM -> FontFamily.Default
+                                            }
+                                        )
                                     )
-                                    Text(text = "${(displaySetting.fontSizeRatio * 100).toInt()}%")
                                 }
-                                MarkdownBlock(
-                                    content = stringResource(R.string.setting_display_page_font_size_preview),
-                                    style = LocalTextStyle.current.copy(
-                                        fontSize = LocalTextStyle.current.fontSize * displaySetting.fontSizeRatio,
-                                        lineHeight = LocalTextStyle.current.lineHeight * displaySetting.fontSizeRatio,
-                                        fontFamily = when (displaySetting.chatFontFamily) {
-                                            ChatFontFamily.DEFAULT -> FontFamily.Default
-                                            ChatFontFamily.SERIF -> FontFamily.Serif
-                                            ChatFontFamily.MONOSPACE -> FontFamily.Monospace
-                                            ChatFontFamily.CUSTOM -> FontFamily.Default
-                                        }
-                                    )
-                                )
                             }
                         }
                     )
@@ -295,16 +298,19 @@ fun SettingDisplayMessagePage(vm: SettingVM = koinViewModel()) {
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                             ) {
-                                Slider(
+                                CommitSlider(
                                     value = displaySetting.thinkingFontSizeRatio,
+                                    onValuePreview = { displaySetting = displaySetting.copy(thinkingFontSizeRatio = it) },
                                     onValueChange = {
                                         updateDisplaySetting(displaySetting.copy(thinkingFontSizeRatio = it))
                                     },
                                     valueRange = 0.5f..2.0f,
                                     steps = 5,
                                     modifier = Modifier.weight(1f)
-                                )
-                                Text(text = "${(displaySetting.thinkingFontSizeRatio * 100).toInt()}%")
+                                ) { draft, slider ->
+                                    slider()
+                                    Text(text = "${(draft * 100).toInt()}%")
+                                }
                             }
                         }
                     )

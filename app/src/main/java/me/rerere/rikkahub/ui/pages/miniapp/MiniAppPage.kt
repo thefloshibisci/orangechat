@@ -47,6 +47,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat.startActivity
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.ArrowLeft01
 import me.rerere.hugeicons.stroke.Cancel01
@@ -236,7 +239,7 @@ fun MiniAppPage(
                         popupData = null
                         val buttonId = data.buttons.firstOrNull()?.id ?: ""
                         webView?.evaluateJavascript(
-                            "window.__bridgeResult('${data.callbackId}', {buttonId:'$buttonId'});",
+                            miniAppBridgeResult(data.callbackId, buildJsonObject { put("buttonId", buttonId) }),
                             null
                         )
                     }
@@ -251,7 +254,7 @@ fun MiniAppPage(
                             popupData = null
                             val buttonId = data.buttons.getOrNull(1)?.id ?: ""
                             webView?.evaluateJavascript(
-                                "window.__bridgeResult('${data.callbackId}', {buttonId:'$buttonId'});",
+                                miniAppBridgeResult(data.callbackId, buildJsonObject { put("buttonId", buttonId) }),
                                 null
                             )
                         }
@@ -271,14 +274,14 @@ fun MiniAppPage(
             dismissText = "取消",
             onConfirm = {
                 webView?.evaluateJavascript(
-                    "window.__bridgeResult('${data.callbackId}', true);",
+                    miniAppBridgeResult(data.callbackId, JsonPrimitive(true)),
                     null
                 )
                 confirmData = null
             },
             onDismiss = {
                 webView?.evaluateJavascript(
-                    "window.__bridgeResult('${data.callbackId}', false);",
+                    miniAppBridgeResult(data.callbackId, JsonPrimitive(false)),
                     null
                 )
                 confirmData = null

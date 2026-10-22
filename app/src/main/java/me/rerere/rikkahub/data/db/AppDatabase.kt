@@ -34,6 +34,8 @@ import me.rerere.rikkahub.data.db.entity.WorkspaceEntity
 import me.rerere.rikkahub.data.db.dao.SshHostDao
 import me.rerere.rikkahub.data.security.SecurityAuditDao
 import me.rerere.rikkahub.data.security.SecurityAuditEntity
+import me.rerere.rikkahub.data.interaction.MessageReaction
+import me.rerere.rikkahub.data.interaction.MessageReactionDAO
 import me.rerere.rikkahub.workflow.db.WorkflowDao
 import me.rerere.rikkahub.workflow.db.WorkflowEntity
 import me.rerere.rikkahub.workflow.db.WorkflowRunDao
@@ -58,8 +60,9 @@ import me.rerere.rikkahub.utils.JsonInstant
         WorkflowRunEntity::class,
         SshHostEntity::class,
         SecurityAuditEntity::class,
+        MessageReaction::class,
     ],
-    version = 33,
+    version = 34,
     autoMigrations = [
         AutoMigration(from = 1, to = 2),
         AutoMigration(from = 2, to = 3),
@@ -110,6 +113,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun sshHostDao(): SshHostDao
 
     abstract fun securityAuditDao(): SecurityAuditDao
+    abstract fun messageReactionDao(): MessageReactionDAO
 }
 
 object TokenUsageConverter {

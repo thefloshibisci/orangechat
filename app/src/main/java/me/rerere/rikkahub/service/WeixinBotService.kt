@@ -6,6 +6,7 @@
 
 package me.rerere.rikkahub.service
 
+import me.rerere.rikkahub.data.sync.isChatRecoveryBlocking
 import android.app.Notification
 import android.app.Service
 import android.content.Context
@@ -62,6 +63,11 @@ class WeixinBotService : Service(), org.koin.core.component.KoinComponent {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (isChatRecoveryBlocking()) {
+            stopSelf(startId)
+            return START_NOT_STICKY
+        }
+
         startForegroundCompat()
         if (pollJob == null || pollJob?.isActive != true) {
             pollJob = scope.launch { runPollLoop() }
@@ -148,7 +154,7 @@ class WeixinBotService : Service(), org.koin.core.component.KoinComponent {
      * 把一条微信消息转给关联的助手处理, 等待 AI 生成完成, 返回回复文本.
      *
      * 复用助手最近会话 (模式同 ProactiveMessageTriggerService:484). 留空 assistantId 用当前助手.
-     * 走 chatService.sendMessage (fire-and-forget) + 监听 generationDoneFlow 等回复.
+     * 完整初始化会话后等待本次发送任务，自动释放会话引用。
      */
     private suspend fun handleInboundMessage(text: String, assistantIdStr: String): String {
         val settings = settingsStore.settingsFlow.first()
@@ -160,34 +166,8 @@ class WeixinBotService : Service(), org.koin.core.component.KoinComponent {
         }
 
         // 复用助手最近一个会话; 没有就新建一个固定 Uuid
-        val recent = conversationRepository.getRecentConversations(assistant.id, limit = 1)
-        val conversationId = recent.firstOrNull()?.id ?: Uuid.random()
-
-        // 同步会话到 ChatService 的 session 缓存, 防止流式更新覆盖历史
-        chatService.addConversationReference(conversationId)
-
-        // 触发 AI 生成 (fire-and-forget)
-        chatService.sendMessage(
-            conversationId = conversationId,
-            content = listOf(UIMessagePart.Text(text)),
-            answer = true,
-        )
-
-        // 等待这次会话的生成完成事件 (最多 120s), 然后取最后一条 assistant 消息的文本
-        val success = withTimeoutOrNull(REPLY_TIMEOUT_MS) {
-            chatService.generationDoneFlow.first { it == conversationId }
-        }
-        if (success == null) {
-            return "（思考超时, 请稍后再试）"
-        }
-
-        val conversation = chatService.getConversationFlow(conversationId).value
-        val lastAssistant = conversation.currentMessages.lastOrNull { it.role == MessageRole.ASSISTANT }
-        val replyText = lastAssistant?.parts
-            ?.filterIsInstance<UIMessagePart.Text>()
-            ?.joinToString("\n") { it.text }
-            ?.trim()
-        return replyText?.takeIf { it.isNotBlank() } ?: "（无回复）"
+        val conversationId = conversationRepository.getMostRecentConversationId(assistant.id) ?: Uuid.random()
+        return chatService.replyToBot(conversationId, assistant.id, text, REPLY_TIMEOUT_MS)
     }
 
     private fun startForegroundCompat() {

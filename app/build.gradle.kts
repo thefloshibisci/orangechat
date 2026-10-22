@@ -144,6 +144,9 @@ android {
     androidResources {
         generateLocaleConfig = true
     }
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
+    }
     packaging {
         jniLibs {
             useLegacyPackaging = true
@@ -375,6 +378,10 @@ dependencies {
 
     // tests
     testImplementation(libs.junit)
+    testImplementation(libs.androidx.ui.test.junit4)
+    testImplementation("androidx.test:core:1.7.0")
+    testImplementation("androidx.test.espresso:espresso-core:3.7.0")
+    testImplementation("androidx.test.ext:junit:1.3.0")
     testImplementation("org.robolectric:robolectric:4.16.1")
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)

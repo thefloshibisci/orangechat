@@ -181,6 +181,7 @@ fun ImportExportTab(
         verticalArrangement = Arrangement.spacedBy(16.dp),
         contentPadding = PaddingValues(16.dp)
     ) {
+        item { ChatHistoryBackupCard() }
         stickyHeader {
             StickyHeader {
                 Text(stringResource(R.string.backup_page_local_backup_export))

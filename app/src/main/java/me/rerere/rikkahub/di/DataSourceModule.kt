@@ -1,4 +1,4 @@
-﻿/*
+/*
  * 橘瓣 OrangeChat
  * 衍生自 RikkaHub (https://github.com/rikkahub/rikkahub)，原作者 RE
  * 本项目基于 GNU AGPL v3 开源，详见根目录 LICENSE 文件
@@ -14,8 +14,6 @@ import io.ktor.client.HttpClient
 import io.ktor.client.engine.okhttp.OkHttp
 import io.ktor.http.HttpHeaders
 import io.pebbletemplates.pebble.PebbleEngine
-import io.requery.android.database.sqlite.RequerySQLiteOpenHelperFactory
-import io.requery.android.database.sqlite.SQLiteCustomExtension
 import kotlinx.serialization.json.Json
 import me.rerere.ai.provider.ProviderManager
 import me.rerere.common.http.AcceptLanguageBuilder
@@ -28,25 +26,15 @@ import me.rerere.rikkahub.data.ai.transformers.TemplateTransformer
 import me.rerere.rikkahub.data.api.RikkaHubAPI
 import me.rerere.rikkahub.data.api.SponsorAPI
 import me.rerere.rikkahub.data.datastore.SettingsStore
+import me.rerere.rikkahub.data.db.APP_DATABASE_MIGRATIONS
+import me.rerere.rikkahub.data.db.appSQLiteOpenHelperFactory
 import me.rerere.rikkahub.data.db.AppDatabase
 import me.rerere.rikkahub.data.sync.DatabaseBackupCoordinator
 import me.rerere.rikkahub.data.db.fts.MessageFtsManager
 import me.rerere.rikkahub.data.db.fts.SimpleDictManager
-import me.rerere.rikkahub.data.db.migrations.Migration_6_7
-import me.rerere.rikkahub.data.db.migrations.Migration_11_12
-import me.rerere.rikkahub.data.db.migrations.Migration_13_14
-import me.rerere.rikkahub.data.db.migrations.Migration_14_15
-import me.rerere.rikkahub.data.db.migrations.Migration_15_16
-import me.rerere.rikkahub.data.db.migrations.Migration_19_20
-import me.rerere.rikkahub.data.db.migrations.Migration_20_21
-import me.rerere.rikkahub.data.db.migrations.Migration_21_22
-import me.rerere.rikkahub.data.db.migrations.Migration_23_24
-import me.rerere.rikkahub.data.db.migrations.Migration_24_25
-import me.rerere.rikkahub.data.db.migrations.Migration_25_26
-import me.rerere.rikkahub.data.db.migrations.Migration_30_32
-import me.rerere.rikkahub.data.db.migrations.Migration_31_32
 import me.rerere.rikkahub.data.ai.mcp.McpManager
 import me.rerere.rikkahub.data.service.MemoryBankService
+import me.rerere.rikkahub.data.interaction.ChatInteractionRepository
 import me.rerere.rikkahub.data.sync.webdav.WebDavSync
 import me.rerere.search.SearchService
 import me.rerere.rikkahub.data.sync.S3Sync
@@ -72,7 +60,7 @@ val dataSourceModule = module {
         val context: Context = get()
         Room.databaseBuilder(context, AppDatabase::class.java, "rikka_hub")
             .setJournalMode(RoomDatabase.JournalMode.WRITE_AHEAD_LOGGING)
-            .addMigrations(Migration_6_7, Migration_11_12, Migration_13_14, Migration_14_15, Migration_15_16, Migration_19_20, Migration_20_21, Migration_21_22, Migration_23_24, Migration_24_25, Migration_25_26, Migration_30_32, Migration_31_32)
+            .addMigrations(*APP_DATABASE_MIGRATIONS)
             .addCallback(object : RoomDatabase.Callback() {
                 override fun onOpen(db: SupportSQLiteDatabase) {
                     val dictDir = SimpleDictManager.extractDict(context)
@@ -104,19 +92,7 @@ val dataSourceModule = module {
                     )
                 }
             })
-            .openHelperFactory(
-                RequerySQLiteOpenHelperFactory(
-                    listOf(
-                RequerySQLiteOpenHelperFactory.ConfigurationOptions { options ->
-                    options.customExtensions.add(
-                        SQLiteCustomExtension(
-                            context.applicationInfo.nativeLibraryDir + "/libsimple",
-                            null
-                        )
-                    )
-                    options
-                }
-            )))
+            .openHelperFactory(appSQLiteOpenHelperFactory(context))
             .build()
     }
 
@@ -186,6 +162,8 @@ val dataSourceModule = module {
         )
     }
 
+    single { ChatInteractionRepository(get(), get()) }
+
     single {
         GenerationHandler(
             context = get(),
@@ -194,7 +172,9 @@ val dataSourceModule = module {
             memoryRepo = get(),
             conversationRepo = get(),
             aiLoggingManager = get(),
-            memoryBankService = get()
+            memoryBankService = get(),
+            filesManager = get(),
+            chatInteractionRepository = get(),
         )
     }
 

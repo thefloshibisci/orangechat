@@ -21,6 +21,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -33,7 +35,9 @@ import me.rerere.ai.ui.isEmptyInputMessage
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.SettingsStore
-import me.rerere.rikkahub.data.datastore.getCurrentChatModel
+import me.rerere.rikkahub.data.datastore.getChatModelForAssistant
+import me.rerere.rikkahub.data.datastore.withAssistantEdit
+import me.rerere.rikkahub.data.datastore.withSettingsEdit
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.Avatar
@@ -42,6 +46,8 @@ import me.rerere.rikkahub.data.model.MessageNode
 import me.rerere.rikkahub.data.model.NodeFavoriteTarget
 import me.rerere.rikkahub.data.repository.ConversationRepository
 import me.rerere.rikkahub.data.repository.FavoriteRepository
+import me.rerere.rikkahub.data.interaction.ChatInteractionRepository
+import me.rerere.rikkahub.data.datastore.getAssistantById
 import me.rerere.rikkahub.service.ChatError
 import me.rerere.rikkahub.service.ChatService
 import me.rerere.rikkahub.ui.hooks.writeStringPreference
@@ -62,9 +68,38 @@ class ChatVM(
     val updateChecker: UpdateChecker,
     private val filesManager: FilesManager,
     private val favoriteRepository: FavoriteRepository,
+    private val chatInteractionRepository: ChatInteractionRepository,
 ) : ViewModel() {
     private val _conversationId: Uuid = Uuid.parse(id)
     val conversation: StateFlow<Conversation> = chatService.getConversationFlow(_conversationId)
+    val reactions = chatInteractionRepository.observe(id)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    fun interactWithAvatar(target: UIMessage) =
+        chatService.sendAvatarInteraction(_conversationId, target)
+
+    fun toggleReaction(message: UIMessage, emoji: String, quote: String) {
+        viewModelScope.launch {
+            try {
+                val assistant = settings.value.getAssistantById(conversation.value.assistantId) ?: return@launch
+                if (!assistant.enableMessageReactions) return@launch
+                val customReactionPresets = settings.value.customReactionPresets
+                chatInteractionRepository.react(
+                    conversationId = _conversationId,
+                    assistant = assistant,
+                    target = message.id.toString(),
+                    actor = "user",
+                    emoji = emoji,
+                    customReactionPresets = customReactionPresets,
+                    quote = quote,
+                )
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                chatService.addError(error, _conversationId, title = "消息表情")
+            }
+        }
+    }
     var chatListInitialized by mutableStateOf(false) // 聊天列表是否已经滚动到底部
     var showCompressedHistory by mutableStateOf(false)
     var summaryDialogConversation by mutableStateOf<Conversation?>(null)
@@ -113,7 +148,13 @@ class ChatVM(
 
         // 初始化对话
         viewModelScope.launch {
-            chatService.initializeConversation(_conversationId)
+            try {
+                chatService.initializeConversation(_conversationId)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                chatService.addError(e, _conversationId)
+            }
         }
 
         // 记住对话ID, 方便下次启动恢复
@@ -136,8 +177,8 @@ class ChatVM(
     }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
     // 当前模型
-    val currentChatModel = settings.map { settings ->
-        settings.getCurrentChatModel()
+    val currentChatModel = combine(settings, conversation) { settings, conversation ->
+        settings.getChatModelForAssistant(conversation.assistantId)
     }.stateIn(viewModelScope, SharingStarted.Lazily, null)
 
     // 错误状态
@@ -155,13 +196,31 @@ class ChatVM(
 
     // 更新设置
     fun updateSettings(newSettings: Settings) {
+        val previous = settings.value
         viewModelScope.launch {
-            val oldSettings = settings.value
-            // 检查用户头像是否有变化，如果有则删除旧头像
-            checkUserAvatarDelete(oldSettings, newSettings)
-            settingsStore.update(newSettings)
+            var replaced: Pair<Settings, Settings>? = null
+            settingsStore.update { current ->
+                current.withSettingsEdit(previous, newSettings).also { updated ->
+                    replaced = current to updated
+                }
+            }
+            // Delete replaced assets only after the settings write succeeds.
+            replaced?.let { (old, new) -> checkUserAvatarDelete(old, new) }
         }
     }
+
+    fun updateAssistant(previous: Assistant, desired: Assistant) {
+        viewModelScope.launch {
+            settingsStore.update { it.withAssistantEdit(previous, desired) }
+        }
+    }
+
+    suspend fun selectAssistant(assistantId: Uuid, createNew: Boolean): Uuid = selectAssistantConversation(
+        assistantId = assistantId,
+        createNew = createNew,
+        persistSelection = settingsStore::updateAssistant,
+        findConversation = { conversationRepo.getConversationsOfAssistant(it).first().firstOrNull()?.id },
+    )
 
     // 检查用户头像删除
     private fun checkUserAvatarDelete(oldSettings: Settings, newSettings: Settings) {
@@ -215,24 +274,22 @@ class ChatVM(
         }
     }
 
-    fun handleCompressContext(
+    suspend fun handleCompressContext(
         additionalPrompt: String,
         targetTokens: Int,
         keepRecentMessages: Int,
         mergeWithPrevious: Boolean = true,
-    ): Job {
-        return viewModelScope.launch {
-            chatService.compressConversation(
-                _conversationId,
-                conversation.value,
-                additionalPrompt,
-                targetTokens,
-                keepRecentMessages,
-                mergeWithPrevious,
-            ).onFailure {
-                chatService.addError(it, title = context.getString(R.string.error_title_compress_conversation))
-            }
-        }
+        onProgress: (String) -> Unit = {},
+    ) {
+        chatService.compressConversation(
+            _conversationId,
+            conversation.value,
+            additionalPrompt,
+            targetTokens,
+            keepRecentMessages,
+            mergeWithPrevious,
+            onProgress,
+        ).getOrThrow()
     }
 
     suspend fun forkMessage(message: UIMessage): Conversation {
@@ -289,20 +346,19 @@ class ChatVM(
 
     fun updateTitle(title: String) {
         viewModelScope.launch {
-            val updatedConversation = conversation.value.copy(title = title)
-            chatService.saveConversation(_conversationId, updatedConversation)
+            chatService.updateTitle(_conversationId, title)
         }
     }
 
     fun deleteConversation(conversation: Conversation) {
         viewModelScope.launch {
-            conversationRepo.deleteConversation(conversation)
+            chatService.deleteConversation(conversation)
         }
     }
 
     fun updatePinnedStatus(conversation: Conversation) {
         viewModelScope.launch {
-            conversationRepo.togglePinStatus(conversation.id)
+            chatService.togglePinStatus(conversation.id)
         }
     }
 

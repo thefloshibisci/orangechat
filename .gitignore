@@ -40,3 +40,7 @@ _gen.py
 *.jks
 *.keystore
 keystore.properties
+
+# Local agent state, private references and cached diagnostic outputs.
+/.codex/
+**/__pycache__/

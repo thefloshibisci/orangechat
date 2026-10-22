@@ -19,7 +19,6 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.content.MediaType
@@ -77,7 +76,6 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
@@ -93,16 +91,24 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.FileProvider
 import androidx.core.net.toUri
+import coil3.compose.AsyncImage
+import coil3.request.ImageRequest
+import coil3.request.crossfade
 import com.dokar.sonner.ToastType
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.hazeEffect
 import dev.chrisbanes.haze.materials.HazeMaterials
-import kotlinx.coroutines.Job
 import me.rerere.ai.provider.Model
 import me.rerere.ai.provider.ModelAbility
 import me.rerere.ai.provider.ModelType
 import me.rerere.ai.ui.UIMessagePart
+import me.rerere.asr.ASRState
 import me.rerere.asr.ASRStatus
+import me.rerere.ai.provider.supportsDirectAudio
+import me.rerere.rikkahub.data.datastore.findProvider
+import me.rerere.rikkahub.ui.hooks.DirectAudioRecorder
+import me.rerere.rikkahub.ui.hooks.completedRecordingAfter
+import androidx.compose.runtime.DisposableEffect
 import me.rerere.common.android.appTempFolder
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.Add01
@@ -117,7 +123,8 @@ import me.rerere.rikkahub.data.ai.mcp.McpManager
 import me.rerere.rikkahub.data.datastore.DisplayMaterialMode
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.getCurrentAssistant
-import me.rerere.rikkahub.data.datastore.getCurrentChatModel
+import me.rerere.rikkahub.data.datastore.getChatModelForAssistant
+import me.rerere.rikkahub.data.datastore.getAssistantById
 import me.rerere.rikkahub.data.datastore.getQuickMessagesOfAssistant
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.model.Assistant
@@ -165,16 +172,16 @@ fun ChatInput(
     onUpdateChatModel: (Model) -> Unit,
     onUpdateAssistant: (Assistant) -> Unit,
     onUpdateSearchService: (Int) -> Unit,
-    onCompressContext: (additionalPrompt: String, targetTokens: Int, keepRecentMessages: Int, mergeWithPrevious: Boolean) -> Job,
+    onCompressContext: suspend (additionalPrompt: String, targetTokens: Int, keepRecentMessages: Int, mergeWithPrevious: Boolean, onProgress: (String) -> Unit) -> Unit,
     onCancelClick: () -> Unit,
     onSendClick: () -> Unit,
     onLongSendClick: () -> Unit,
     onStickerSend: (markdown: String) -> Unit,
-    onVoiceMessage: ((url: String, duration: Long, transcript: String) -> Unit)? = null,
+    onVoiceMessage: ((url: String, duration: Long, transcript: String, sendAudio: Boolean) -> Unit)? = null,
     autoStartVoice: Boolean = false,
 ) {
     val toaster = LocalToaster.current
-    val assistant = settings.getCurrentAssistant()
+    val assistant = settings.getAssistantById(conversation.assistantId) ?: settings.getCurrentAssistant()
     val hazeTintColor = MaterialTheme.colorScheme.surfaceContainerLow
     val materialMode = LocalMaterialMode.current
     val isScrollCaptureInProgress = LocalScrollCaptureInProgress.current
@@ -221,7 +228,15 @@ fun ChatInput(
     val context = LocalContext.current
     val resources = LocalResources.current
     val filesManager: FilesManager = koinInject()
-    val asr = LocalASRState.current
+    val transcription = LocalASRState.current
+    val directRecorder = remember(context, conversation.id) { DirectAudioRecorder(context) }
+    DisposableEffect(directRecorder) { onDispose { directRecorder.cleanup() } }
+    var voiceMessageMode by remember(conversation.id) { mutableStateOf(false) }
+    var recordingUsesAudio by remember(conversation.id) { mutableStateOf(false) }
+    var previousRecordingPath by remember(conversation.id) { mutableStateOf<String?>(null) }
+    val selectedModel = settings.getChatModelForAssistant(conversation.assistantId)
+    val wantsDirectAudio = selectedModel?.supportsDirectAudio(selectedModel.findProvider(settings.providers)) == true
+    val asr = if (if (voiceMessageMode) recordingUsesAudio else wantsDirectAudio) directRecorder else transcription
     val asrState by asr.state.collectAsState()
     val voiceCallActiveId by VoiceCallService.activeConversationId.collectAsStateWithLifecycle()
     val isVoiceCallActive = voiceCallActiveId != null
@@ -233,14 +248,24 @@ fun ChatInput(
     val asrPermission = rememberPermissionState(PermissionRecordAudio)
     PermissionManager(permissionState = asrPermission)
     var asrBaseText by remember { mutableStateOf("") }
-    var voiceMessageMode by remember { mutableStateOf(false) }
+    fun startVoiceRecording() {
+        val recorder = if (wantsDirectAudio) directRecorder else transcription
+        recordingUsesAudio = wantsDirectAudio
+        previousRecordingPath = recorder.state.value.audioFilePath
+        voiceMessageMode = true
+        try {
+            recorder.start { }
+        } catch (error: Exception) {
+            voiceMessageMode = false
+            toaster.show(message = error.message ?: "无法开始录音", type = ToastType.Error)
+        }
+    }
 
     // Auto-start voice recording when entering from voice call notification
     LaunchedEffect(autoStartVoice) {
         if (autoStartVoice && asrState.status == ASRStatus.Idle && asrState.isAvailable) {
             if (asrPermission.allRequiredPermissionsGranted) {
-                voiceMessageMode = true
-                asr.start { }
+                startVoiceRecording()
             } else {
                 asrPermission.requestPermissions()
             }
@@ -270,14 +295,12 @@ fun ChatInput(
     }
 
     // Handle voice message completion
-    LaunchedEffect(asrState.audioFilePath, voiceMessageMode) {
-        if (voiceMessageMode && asrState.audioFilePath != null && asrState.status == ASRStatus.Idle) {
-            onVoiceMessage?.invoke(
-                asrState.audioFilePath!!,
-                asrState.durationMs,
-                asrState.transcript
-            )
+    LaunchedEffect(asrState.audioFilePath, asrState.status, voiceMessageMode) {
+        val path = asrState.completedRecordingAfter(previousRecordingPath)
+        if (voiceMessageMode && path != null) {
+            // Consume before sending; a stale Idle state from the previous recording must not be resent.
             voiceMessageMode = false
+            onVoiceMessage?.invoke(path, asrState.durationMs, asrState.transcript, recordingUsesAudio)
         }
     }
 
@@ -472,8 +495,12 @@ fun ChatInput(
                             fileName.endsWith(".yml", ignoreCase = true) ||
                             fileName.endsWith(".yaml", ignoreCase = true)
                         if (isAllowed) {
-                            val localUri = filesManager.createChatFilesByContents(listOf(uri))[0]
-                            allDocuments.add(UIMessagePart.Document(url = localUri.toString(), fileName = fileName, mime = mime))
+                            val localUri = filesManager.createChatFilesByContents(listOf(uri)).firstOrNull()
+                            if (localUri != null) {
+                                allDocuments.add(UIMessagePart.Document(url = localUri.toString(), fileName = fileName, mime = mime))
+                            } else {
+                                toaster.show("附件为空或无法读取：$fileName", type = ToastType.Error)
+                            }
                         } else {
                             toaster.show(
                                 resources.getString(R.string.chat_input_unsupported_file_type, fileName),
@@ -502,13 +529,15 @@ fun ChatInput(
         }
     }
 
-    // Load input background image
+    // Coil resolves the displayed bounds before decoding and shares its image cache.
     val inputBgPath = settings.displaySetting.inputBackgroundPath
-    val inputBgBitmap = remember(inputBgPath) {
-        if (inputBgPath.isNotBlank() && File(inputBgPath).exists()) {
-            android.graphics.BitmapFactory.decodeFile(inputBgPath)?.asImageBitmap()
-        } else null
+    val inputBgRequest = remember(context, inputBgPath) {
+        ImageRequest.Builder(context)
+            .data(File(inputBgPath))
+            .crossfade(false)
+            .build()
     }
+    var inputBgLoaded by remember(inputBgPath) { mutableStateOf(false) }
 
     if (showStickerPicker) {
         StickerPickerSheet(
@@ -520,7 +549,7 @@ fun ChatInput(
         )
     }
     val inputContainerColor = when {
-        inputBgBitmap != null || useRealtimeBlur -> Color.Transparent
+        inputBgLoaded || useRealtimeBlur -> Color.Transparent
         else -> {
             val baseColor = settings.displaySetting.inputFieldColor?.let { it.toComposeColor() } ?: hazeTintColor
             when (materialMode) {
@@ -537,7 +566,7 @@ fun ChatInput(
         null
     }
     val useStaticGlass = materialMode == DisplayMaterialMode.GLASS &&
-        inputBgBitmap == null && !useRealtimeBlur
+        !inputBgLoaded && !useRealtimeBlur
     val glassSurfaceTint = MaterialTheme.colorScheme.surface
     val glassHighlight = MaterialTheme.colorScheme.onSurface
     val staticGlassModifier = if (useStaticGlass) {
@@ -609,15 +638,17 @@ fun ChatInput(
                 // Use Box so background image can match parent size
                 Box(modifier = staticGlassModifier) {
                     // Background image inside input area (matches content size exactly)
-                    if (inputBgBitmap != null) {
-                        Image(
-                            bitmap = inputBgBitmap,
+                    if (inputBgPath.isNotBlank()) {
+                        AsyncImage(
+                            model = inputBgRequest,
                             contentDescription = null,
                             modifier = Modifier
                                 .matchParentSize()
                                 .clip(MaterialTheme.shapes.largeIncreased),
                             contentScale = ContentScale.Crop,
                             alpha = 1f,
+                            onSuccess = { inputBgLoaded = true },
+                            onError = { inputBgLoaded = false },
                         )
                     }
                     Column(
@@ -626,6 +657,19 @@ fun ChatInput(
                     ) {
                         if (state.messageContent.isNotEmpty()) {
                             MediaFileInputRow(state = state)
+                        }
+
+                        if (voiceMessageMode) {
+                            Text(
+                                text = when (asrState.status) {
+                                    ASRStatus.Connecting -> if (recordingUsesAudio) "正在打开麦克风…" else "正在连接语音转写…"
+                                    ASRStatus.Stopping -> if (recordingUsesAudio) "正在保存原音…" else "正在等待转写…"
+                                    else -> "${if (recordingUsesAudio) "原音录制" else "转写录音"} · ${asrState.durationMs / 1000} 秒，点击语音按钮发送"
+                                },
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 8.dp),
+                            )
                         }
 
                         TextInputRow(
@@ -663,7 +707,7 @@ fun ChatInput(
                                 // Search
                                 val enableSearchMsg = stringResource(R.string.web_search_enabled)
                                 val disableSearchMsg = stringResource(R.string.web_search_disabled)
-                                val chatModel = settings.getCurrentChatModel()
+                                val chatModel = settings.getChatModelForAssistant(conversation.assistantId)
                                 SearchPickerButton(
                                     enableSearch = enableSearch,
                                     settings = settings,
@@ -685,7 +729,7 @@ fun ChatInput(
                                 )
 
                                 // Reasoning
-                                val model = settings.getCurrentChatModel()
+                                val model = settings.getChatModelForAssistant(conversation.assistantId)
                                 if (model?.abilities?.contains(ModelAbility.REASONING) == true) {
                                     ReasoningButton(
                                         reasoningLevel = assistant.reasoningLevel,
@@ -713,6 +757,28 @@ fun ChatInput(
                                 )
                             }
 
+                            VoiceInputButton(
+                                state = asrState,
+                                directAudio = wantsDirectAudio,
+                                callActive = isVoiceCallActive,
+                                onUnavailable = { message ->
+                                    toaster.show(message = message, type = ToastType.Normal)
+                                },
+                                onRecord = {
+                                    when (asrState.status) {
+                                        ASRStatus.Listening -> asr.stop()
+                                        ASRStatus.Idle, ASRStatus.Error -> {
+                                            if (!asrPermission.allRequiredPermissionsGranted) {
+                                                asrPermission.requestPermissions()
+                                            } else {
+                                                startVoiceRecording()
+                                            }
+                                        }
+                                        ASRStatus.Connecting, ASRStatus.Stopping -> {}
+                                    }
+                                },
+                            )
+
                             ActionIconButton(
                                     onClick = {
                                         expandToggle(ExpandState.Files)
@@ -721,46 +787,6 @@ fun ChatInput(
                                         imageVector = if (expand == ExpandState.Files) HugeIcons.Cancel01 else HugeIcons.Add01,
                                         contentDescription = stringResource(R.string.more_options)
                                     )
-                            }
-
-                                // Voice button: click to record, click again to stop and send
-                                // 通话进行中禁用, 避免两路麦克风冲突
-                            if ((asrState.isAvailable || asrState.isRecording) && !isVoiceCallActive) {
-                                    ActionIconButton(
-                                        onClick = {
-                                            when (asrState.status) {
-                                                ASRStatus.Listening -> {
-                                                    asr.stop()
-                                                }
-                                                ASRStatus.Idle, ASRStatus.Error -> {
-                                                    if (!asrPermission.allRequiredPermissionsGranted) {
-                                                        asrPermission.requestPermissions()
-                                                    } else {
-                                                        voiceMessageMode = true
-                                                        asr.start { transcript ->
-                                                            // Ignore transcript in voice message mode
-                                                        }
-                                                    }
-                                                }
-                                                ASRStatus.Connecting, ASRStatus.Stopping -> {}
-                                            }
-                                        }
-                                    ) {
-                                        if (asrState.isRecording) {
-                                            androidx.compose.material3.CircularProgressIndicator(
-                                                modifier = Modifier.size(18.dp),
-                                                strokeWidth = 2.dp,
-                                                color = MaterialTheme.colorScheme.error,
-                                            )
-                                        } else {
-                                            Icon(
-                                                imageVector = HugeIcons.Voice,
-                                                contentDescription = "Voice",
-                                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                modifier = Modifier.size(18.dp)
-                                            )
-                                        }
-                                    }
                             }
 
                             AnimatedVisibility(
@@ -874,6 +900,43 @@ fun ChatInput(
                     }
                 }
             }
+        }
+    }
+}
+
+/** Keep the entry in place when changing models; explain unavailable input on tap. */
+@Composable
+internal fun VoiceInputButton(
+    state: ASRState,
+    directAudio: Boolean,
+    callActive: Boolean,
+    onUnavailable: (String) -> Unit,
+    onRecord: () -> Unit,
+) {
+    val unavailableReason = when {
+        callActive -> "语音通话进行中，请先挂断通话再录音"
+        !state.isAvailable && !state.isRecording ->
+            "当前模型需要语音转写，请在设置 → 语音服务中配置并选择有效的语音识别服务"
+        else -> null
+    }
+    ActionIconButton(onClick = {
+        if (unavailableReason != null) onUnavailable(unavailableReason) else onRecord()
+    }) {
+        if (state.isRecording) {
+            androidx.compose.material3.CircularProgressIndicator(
+                modifier = Modifier.size(18.dp),
+                strokeWidth = 2.dp,
+                color = MaterialTheme.colorScheme.error,
+            )
+        } else {
+            Icon(
+                imageVector = HugeIcons.Voice,
+                contentDescription = if (directAudio) "录音直传（最长 5 分钟）" else "语音转写",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(
+                    alpha = if (unavailableReason == null) 1f else 0.38f,
+                ),
+                modifier = Modifier.size(18.dp),
+            )
         }
     }
 }

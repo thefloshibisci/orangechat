@@ -15,7 +15,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import me.rerere.rikkahub.ui.theme.LargeFlexibleTopAppBar
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Slider
+import me.rerere.rikkahub.ui.components.ui.CommitSlider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBarDefaults
@@ -41,11 +41,11 @@ import org.koin.androidx.compose.koinViewModel
 @Composable
 fun SettingDisplayCodeInteractionPage(vm: SettingVM = koinViewModel()) {
     val settings by vm.settings.collectAsStateWithLifecycle()
-    var displaySetting by remember(settings) { mutableStateOf(settings.displaySetting) }
+    var displaySetting by remember(settings.displaySetting) { mutableStateOf(settings.displaySetting) }
 
     fun updateDisplaySetting(setting: DisplaySetting) {
         displaySetting = setting
-        vm.updateSettings(settings.copy(displaySetting = setting))
+        vm.updateDisplaySetting(setting)
     }
 
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
@@ -239,16 +239,19 @@ fun SettingDisplayCodeInteractionPage(vm: SettingVM = koinViewModel()) {
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                                 ) {
-                                    Slider(
+                                    CommitSlider(
                                         value = displaySetting.pasteLongTextThreshold.toFloat(),
+                                        onValuePreview = { displaySetting = displaySetting.copy(pasteLongTextThreshold = it.toInt()) },
                                         onValueChange = {
                                             updateDisplaySetting(displaySetting.copy(pasteLongTextThreshold = it.toInt()))
                                         },
                                         valueRange = 100f..10000f,
                                         steps = 98,
                                         modifier = Modifier.weight(1f)
-                                    )
-                                    Text(text = "${displaySetting.pasteLongTextThreshold}")
+                                    ) { draft, slider ->
+                                        slider()
+                                        Text(text = "${draft.toInt()}")
+                                    }
                                 }
                             },
                         )
@@ -274,16 +277,19 @@ fun SettingDisplayCodeInteractionPage(vm: SettingVM = koinViewModel()) {
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                                 ) {
-                                    Slider(
+                                    CommitSlider(
                                         value = displaySetting.volumeKeyScrollRatio,
+                                        onValuePreview = { displaySetting = displaySetting.copy(volumeKeyScrollRatio = it) },
                                         onValueChange = {
                                             updateDisplaySetting(displaySetting.copy(volumeKeyScrollRatio = it))
                                         },
                                         valueRange = 0.25f..1.0f,
                                         steps = 2,
                                         modifier = Modifier.weight(1f)
-                                    )
-                                    Text(text = "${(displaySetting.volumeKeyScrollRatio * 100).toInt()}%")
+                                    ) { draft, slider ->
+                                        slider()
+                                        Text(text = "${(draft * 100).toInt()}%")
+                                    }
                                 }
                             }
                         )

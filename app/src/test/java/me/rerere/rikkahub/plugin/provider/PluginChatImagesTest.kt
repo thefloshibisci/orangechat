@@ -11,6 +11,8 @@ import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.model.MessageNode
 import me.rerere.rikkahub.plugin.data.PluginDataStore
+import me.rerere.rikkahub.plugin.model.PluginToolDefinition
+import me.rerere.rikkahub.plugin.model.PluginToolParameter
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -93,5 +95,99 @@ class PluginChatImagesTest {
         val sources = service.sources(listOf(m), "test-chat")
         assertEquals(1, sources.size)
         assertFalse(execute(service, "import", listOf(m), sources.single().id)["success"]!!.jsonPrimitive.boolean)
+    }
+    private fun registerImage(name: String, width: Int, height: Int, format: Bitmap.CompressFormat, alpha: Boolean = false): UIMessage {
+        val directory = File(context.filesDir, "upload").apply { mkdirs() }
+        val file = File(directory, name)
+        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        bitmap.eraseColor(if (alpha) android.graphics.Color.TRANSPARENT else android.graphics.Color.CYAN)
+        file.outputStream().use { assertTrue(bitmap.compress(format, 100, it)) }; bitmap.recycle()
+        val uri = "content://gallery-test/$name".toUri()
+        shadowOf(context.contentResolver).registerInputStreamSupplier(uri) { file.inputStream() }
+        return message(uri.toString())
+    }
+
+    @Test fun galleryUploadCopiesNewestImageAndScalesLargeOnes() = runBlocking {
+        val service = PluginChatImages(context)
+        val small = registerImage("small.png", 64, 64, Bitmap.CompressFormat.PNG)
+        val large = registerImage("large.jpg", 3200, 1600, Bitmap.CompressFormat.JPEG)
+        val history = listOf(small, large)
+        val newest = service.prepareGalleryUpload(null, history, "test-chat")
+        assertEquals("image/jpeg", newest.mime)
+        assertEquals(1600, newest.width)
+        assertEquals(800, newest.height)
+        val picked = service.prepareGalleryUpload(service.sources(listOf(small), "test-chat").single().id, history, "test-chat")
+        assertEquals("image/png", picked.mime)
+        assertEquals(64, picked.width)
+        val listed = service.galleryList(history, "test-chat").jsonObject["images"]!!.jsonArray
+        assertEquals(2, listed.size)
+    }
+
+    @Test fun galleryUploadRejectsForeignBranchAndEmptyChat() = runBlocking {
+        val service = PluginChatImages(context)
+        val image = registerImage("cat.png", 32, 32, Bitmap.CompressFormat.PNG)
+        val foreignId = service.sources(listOf(image), "other-chat").single().id
+        assertTrue(runCatching { service.prepareGalleryUpload(foreignId, listOf(image), "test-chat") }.isFailure)
+        assertTrue(runCatching { service.prepareGalleryUpload(null, emptyList(), "test-chat") }.isFailure)
+        assertTrue(runCatching { service.prepareGalleryUpload(null, listOf(image), "") }.isFailure)
+    }
+
+    @Test fun hostParametersReplaceForgedValuesAndShareOneImageRead() = runBlocking {
+        val service = PluginChatImages(context)
+        val image = registerImage("host.png", 48, 32, Bitmap.CompressFormat.PNG, alpha = true)
+        val tool = Json.decodeFromString<PluginToolDefinition>("""{
+            "name":"upload","description":"copy image","parameters":[
+                {"name":"bytes","type":"string","required":true,"source":"chat_image_base64"},
+                {"name":"mime","type":"string","source":"chat_image_mime"},
+                {"name":"images","type":"array","source":"chat_images_list"}
+            ]
+        }""")
+        val uri = (image.parts.single() as UIMessagePart.Image).url.toUri()
+        val bytes = context.contentResolver.openInputStream(uri)!!.use { it.readBytes() }
+        var reads = 0
+        shadowOf(context.contentResolver).registerInputStreamSupplier(uri) { reads++; bytes.inputStream() }
+        val supplied = buildJsonObject { put("bytes", "forged"); put("mime", "forged"); put("album", "keep") }
+        val result = service.resolveToolParameters(tool.parameters, supplied, listOf(image), "chat", listOf("conversation_sync"))
+        assertEquals(1, reads)
+        assertEquals("image/png", result["mime"]!!.jsonPrimitive.content)
+        assertArrayEquals(bytes, android.util.Base64.decode(result["bytes"]!!.jsonPrimitive.content, android.util.Base64.DEFAULT))
+        assertEquals(1, result["images"]!!.jsonArray.size)
+        assertEquals("keep", result["album"]!!.jsonPrimitive.content)
+        assertEquals("forged", supplied["bytes"]!!.jsonPrimitive.content)
+    }
+
+    @Test fun hostParametersRequirePermissionAndConversationEvenForList() = runBlocking {
+        val service = PluginChatImages(context)
+        val parameters = listOf(PluginToolParameter("images", "array", source = "chat_images_list"))
+        val image = registerImage("permission.png", 32, 32, Bitmap.CompressFormat.PNG)
+        val noPermission = runCatching { service.resolveToolParameters(parameters, JsonObject(emptyMap()), listOf(image), "chat", emptyList()) }
+        assertTrue(noPermission.exceptionOrNull()?.message.orEmpty().contains("conversation_sync"))
+        val noConversation = runCatching { service.resolveToolParameters(parameters, JsonObject(emptyMap()), listOf(image), "", listOf("conversation_sync")) }
+        assertTrue(noConversation.exceptionOrNull()?.message.orEmpty().contains("conversation"))
+    }
+
+    @Test fun invalidHostDeclarationsFailBeforeOpeningAttachments() = runBlocking {
+        val service = PluginChatImages(context)
+        for ((source, type) in listOf("chat_image_typo" to "string", "chat_images_list" to "string", "chat_image_mime" to "array")) {
+            val parameters = listOf(
+                PluginToolParameter("bytes", "string", source = "chat_image_base64"),
+                PluginToolParameter("bad", type, source = source),
+            )
+            val result = runCatching { service.resolveToolParameters(parameters, JsonObject(emptyMap()), emptyList(), "chat", listOf("conversation_sync")) }
+            val error = result.exceptionOrNull()?.message.orEmpty()
+            assertTrue(error, error.contains("source") || error.contains("type"))
+        }
+    }
+
+    @Test fun hostImageSelectionRejectsForeignIdsAndMalformedParameters() = runBlocking {
+        val service = PluginChatImages(context)
+        val image = registerImage("selection.png", 32, 32, Bitmap.CompressFormat.PNG)
+        val parameters = listOf(PluginToolParameter("bytes", "string", source = "chat_image_base64"))
+        val foreignId = service.sources(listOf(image), "other").single().id
+        val foreign = runCatching { service.resolveToolParameters(parameters, buildJsonObject { put("attachment_id", foreignId) }, listOf(image), "chat", listOf("conversation_sync")) }
+        assertTrue(foreign.exceptionOrNull()?.message.orEmpty().contains("branch"))
+        for (params in listOf(JsonPrimitive("invalid"), buildJsonObject { put("attachment_id", 123) })) {
+            assertTrue(runCatching { service.resolveToolParameters(parameters, params, listOf(image), "chat", listOf("conversation_sync")) }.isFailure)
+        }
     }
 }

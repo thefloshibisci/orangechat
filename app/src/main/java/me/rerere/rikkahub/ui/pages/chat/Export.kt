@@ -502,7 +502,7 @@ private fun ExportedChatImage(
                             )
                         }
                         // Use painterResource for the logo
-                        val painter = painterResource(id = R.mipmap.ic_launcher_foreground)
+                        val painter = painterResource(id = R.drawable.share_logo)
                         Image(
                             painter = painter,
                             contentDescription = "Logo",
@@ -684,9 +684,9 @@ private fun ChainOfThoughtScope.ExportedReasoningStep(
         onExpandedChange = {},
         icon = {
             Icon(
-                painter = painterResource(R.drawable.deepthink),
+                painter = painterResource(R.drawable.ic_thinking_watermelon),
                 contentDescription = null,
-                modifier = Modifier.size(16.dp),
+                modifier = Modifier.size(18.dp),
                 tint = MaterialTheme.colorScheme.secondary
             )
         },

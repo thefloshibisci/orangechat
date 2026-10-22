@@ -85,12 +85,27 @@ class PluginToolProvider(
             parameters = {
                 InputSchema.Obj(
                     properties = buildParameters(toolDef),
-                    required = toolDef.parameters.filter { it.required }.map { it.name }
+                    required = toolDef.parameters.filter { it.required && it.source == null }.map { it.name }
                 )
             },
             execute = { params ->
                 if (plugin.manifest.id == "com.nanzhi.naistudio" && toolDef.name == "nai_chat_image") {
                     listOf(UIMessagePart.Text(chatImages.execute(plugin.manifest.id, params, attachments, conversationId.orEmpty()).toString()))
+                } else if (toolDef.parameters.any { it.source != null }) {
+                    // Generic host-filled parameters declared in the manifest, so any plugin can
+                    // consume chat images without a per-plugin app change.
+                    try {
+                        val resolved = chatImages.resolveToolParameters(
+                            toolDef.parameters, params, attachments, conversationId.orEmpty(), plugin.manifest.permissions,
+                        )
+                        executeTool(plugin, toolDef, resolved)
+                    } catch (error: kotlinx.coroutines.CancellationException) {
+                        throw error
+                    } catch (error: Exception) {
+                        listOf(UIMessagePart.Text(buildJsonObject {
+                            put("success", false); put("error", error.message ?: "Import failed")
+                        }.toString()))
+                    }
                 } else {
                     executeTool(plugin, toolDef, params)
                 }
@@ -114,7 +129,7 @@ class PluginToolProvider(
      */
     private fun buildParameters(toolDef: PluginToolDefinition): JsonObject {
         return buildJsonObject {
-            toolDef.parameters.forEach { param ->
+            toolDef.parameters.filter { it.source == null }.forEach { param ->
                 put(param.name, buildJsonObject {
                     put("type", param.type)
                     if (param.description != null) {

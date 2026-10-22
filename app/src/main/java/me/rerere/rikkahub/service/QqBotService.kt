@@ -6,6 +6,7 @@
 
 package me.rerere.rikkahub.service
 
+import me.rerere.rikkahub.data.sync.isChatRecoveryBlocking
 import android.app.Notification
 import android.app.Service
 import android.content.Context
@@ -96,6 +97,11 @@ class QqBotService : Service(), org.koin.core.component.KoinComponent {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (isChatRecoveryBlocking()) {
+            stopSelf(startId)
+            return START_NOT_STICKY
+        }
+
         startForegroundCompat()
         if (!alive) {
             scope.launch { connect() }
@@ -360,37 +366,14 @@ class QqBotService : Service(), org.koin.core.component.KoinComponent {
 
     /**
      * 把一条 QQ 消息转给当前助手处理, 等待 AI 生成完成, 返回回复文本.
-     * 复用助手最近会话. 走 chatService.sendMessage + 等 generationDoneFlow.
+     * 复用助手最近会话. 完整初始化会话后等待本次发送任务，自动释放会话引用。
      */
     private suspend fun handleInboundMessage(text: String): String {
         val settings = settingsStore.settingsFlow.first()
         val assistant = settings.getCurrentAssistant()
 
-        val recent = conversationRepository.getRecentConversations(assistant.id, limit = 1)
-        val conversationId = recent.firstOrNull()?.id ?: Uuid.random()
-
-        chatService.addConversationReference(conversationId)
-
-        chatService.sendMessage(
-            conversationId = conversationId,
-            content = listOf(UIMessagePart.Text(text)),
-            answer = true,
-        )
-
-        val success = withTimeoutOrNull(REPLY_TIMEOUT_MS) {
-            chatService.generationDoneFlow.first { it == conversationId }
-        }
-        if (success == null) {
-            return "（思考超时, 请稍后再试）"
-        }
-
-        val conversation = chatService.getConversationFlow(conversationId).value
-        val lastAssistant = conversation.currentMessages.lastOrNull { it.role == MessageRole.ASSISTANT }
-        val replyText = lastAssistant?.parts
-            ?.filterIsInstance<UIMessagePart.Text>()
-            ?.joinToString("\n") { it.text }
-            ?.trim()
-        return replyText?.takeIf { it.isNotBlank() } ?: "（无回复）"
+        val conversationId = conversationRepository.getMostRecentConversationId(assistant.id) ?: Uuid.random()
+        return chatService.replyToBot(conversationId, assistant.id, text, REPLY_TIMEOUT_MS)
     }
 
     // ==================== 前台服务通知 ====================

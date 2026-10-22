@@ -50,6 +50,7 @@ private fun buildWorkspacePrompt(workspace: WorkspaceEntity, cwd: String? = null
     appendLine("You have access to a persistent Linux workspace named \"${workspace.name}\", running in a sandboxed proot rootfs environment.")
     appendLine("- The workspace files area is mounted at `/workspace`. Use it as your working directory; files written there persist across turns of this conversation.")
     appendLine("- All paths passed to workspace tools must be absolute and inside the Rootfs (for example `/workspace/notes.md`).")
+    appendLine("- To deliver a file, create it under /workspace and provide a Markdown link: [Download file](sandbox:/workspace/file.zip). URL-encode spaces and special characters in the link target. Never embed archives or other binary files as base64 in chat; the app streams the linked file to the user.")
     appendLine("- Available tools:")
     appendLine("  - `workspace_read_file`: read file contents.")
     appendLine("  - `workspace_write_file` / `workspace_edit_file`: create files, or make precise edits to existing files.")

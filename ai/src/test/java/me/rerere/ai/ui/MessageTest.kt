@@ -15,6 +15,19 @@ import org.junit.Test
 
 class MessageTest {
 
+    @Test
+    fun `tool-only turns remain visible before and after execution without becoming user input`() {
+        val call = UIMessagePart.Tool("call", "plugin_write", "{}")
+        val completed = call.copy(output = listOf(UIMessagePart.Text("saved")))
+        val denied = call.copy(approvalState = ToolApprovalState.Denied("cancelled"))
+        for (tool in listOf(call, completed, denied, call.copy(approvalState = ToolApprovalState.Pending))) {
+            val parts = listOf(UIMessagePart.Text(""), tool)
+            assertFalse(parts.isEmptyUIMessage())
+            assertTrue(parts.isEmptyInputMessage())
+        }
+        assertTrue(listOf(UIMessagePart.Text(" ")).isEmptyUIMessage())
+    }
+
     // ==================== limitContext Tests ====================
 
     @Test

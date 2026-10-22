@@ -26,8 +26,9 @@ import org.koin.dsl.module
 import java.io.File
 
 val repositoryModule = module {
+    single { me.rerere.rikkahub.data.sync.ChatHistoryBackup(get(), get(), get()) }
     single {
-        ConversationRepository(get(), get(), get(), get(), get(), get())
+        ConversationRepository(get(), get(), get(), get(), get(), get(), get())
     }
 
     single {

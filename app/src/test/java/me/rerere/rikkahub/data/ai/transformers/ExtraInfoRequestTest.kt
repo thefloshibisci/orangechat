@@ -8,6 +8,7 @@ import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.data.datastore.SystemToolsSetting
 import org.junit.Assert.*
 import org.junit.Test
+import java.nio.file.Files
 import kotlin.uuid.Uuid
 
 class ExtraInfoRequestTest {
@@ -99,5 +100,59 @@ class ExtraInfoRequestTest {
             fail("must cancel")
         } catch (_: CancellationException) { }
         assertEquals("retry", cache.resolve(conversation, assistant, user, SystemToolsSetting(), true) { "retry" })
+    }
+    @Test fun `historical snapshots stay byte-identical across turns for prefix caching`() = runBlocking {
+        val cache = ExtraInfoRequestCache()
+        val conversation = Uuid.random()
+        val assistant = Uuid.random()
+        val option = SystemToolsSetting()
+        val first = UIMessage.user("first")
+        val reply = UIMessage.assistant("reply")
+        val second = UIMessage.user("second")
+        cache.resolve(conversation, assistant, first, option, true) { "snapshot one" }
+        val turnOne = attachExtraInfoSnapshots(listOf(first),
+            cache.snapshots(conversation, listOf(first), option))
+        cache.resolve(conversation, assistant, second, option, true) { "snapshot two" }
+        val history = listOf(first, reply, second)
+        val turnTwo = attachExtraInfoSnapshots(history, cache.snapshots(conversation, history, option))
+        assertEquals(turnOne.first(), turnTwo.first())
+        assertEquals(1, turnTwo[2].parts.count { it.isExtraInfoInjectionPart() })
+        assertEquals(reply, turnTwo[1])
+    }
+
+    @Test fun `snapshots persist across restart and are dropped for edits deletion or master off`() = runBlocking {
+        val dir = Files.createTempDirectory("extra-info").toFile()
+        try {
+            val conversation = Uuid.random()
+            val assistant = Uuid.random()
+            val option = SystemToolsSetting()
+            val user = UIMessage.user("hello")
+            ExtraInfoRequestCache(directory = dir).resolve(conversation, assistant, user, option, true) { "kept" }
+            val restarted = ExtraInfoRequestCache(directory = dir)
+            assertEquals(mapOf(user.id to "kept"), restarted.snapshots(conversation, listOf(user), option))
+            assertEquals("kept", restarted.resolve(conversation, assistant, user, option, false) { error("reuse") })
+            val edited = user.copy(parts = listOf(UIMessagePart.Text("edited")))
+            assertTrue(restarted.snapshots(conversation, listOf(edited), option).isEmpty())
+            assertTrue(restarted.snapshots(conversation, listOf(user),
+                option.copy(extraInfoInjectionEnabled = false)).isEmpty())
+            deleteExtraInfoSnapshots(dir, conversation)
+            assertTrue(ExtraInfoRequestCache(directory = dir).snapshots(conversation, listOf(user), option).isEmpty())
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test fun `persisted snapshot file never contains api keys`() = runBlocking {
+        val dir = Files.createTempDirectory("extra-info").toFile()
+        try {
+            val conversation = Uuid.random()
+            ExtraInfoRequestCache(directory = dir).resolve(conversation, Uuid.random(), UIMessage.user("hi"),
+                SystemToolsSetting(amapApiKey = "amap-secret-123", ocrApiKey = "ocr-secret-456"), true) { "ok" }
+            val text = dir.listFiles()!!.single().readText()
+            assertFalse(text.contains("amap-secret-123"))
+            assertFalse(text.contains("ocr-secret-456"))
+        } finally {
+            dir.deleteRecursively()
+        }
     }
 }

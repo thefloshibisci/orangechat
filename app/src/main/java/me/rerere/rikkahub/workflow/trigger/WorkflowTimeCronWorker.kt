@@ -6,6 +6,7 @@
 
 package me.rerere.rikkahub.workflow.trigger
 
+import me.rerere.rikkahub.data.sync.awaitChatRecovery
 import android.content.Context
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
@@ -29,6 +30,7 @@ class WorkflowTimeCronWorker(
     private val registry: TriggerRegistry by inject()
 
     override suspend fun doWork(): Result {
+        applicationContext.awaitChatRecovery()
         val workflowId = inputData.getString(TimeCronTriggerFamily.KEY_WORKFLOW_ID) ?: return Result.failure()
         registry.fireFromTimeCronWorker(workflowId)
         return Result.success()

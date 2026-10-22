@@ -105,7 +105,7 @@ fun SettingProviderPage(vm: SettingVM = koinViewModel()) {
         val newProviders = settings.providers.toMutableList().apply {
             add(to.index, removeAt(from.index))
         }
-        vm.updateSettings(settings.copy(providers = newProviders))
+        vm.updateSettings(settings, settings.copy(providers = newProviders))
     }
 
     val filteredProviders = remember(settings.providers, searchQuery) {
@@ -146,6 +146,7 @@ fun SettingProviderPage(vm: SettingVM = koinViewModel()) {
                     }
                     ImportProviderButton {
                         vm.updateSettings(
+                            settings,
                             settings.copy(
                                 providers = listOf(it.copyProvider(Uuid.random())) + settings.providers
                             )
@@ -153,6 +154,7 @@ fun SettingProviderPage(vm: SettingVM = koinViewModel()) {
                     }
                     AddButton {
                         vm.updateSettings(
+                            settings,
                             settings.copy(
                                 providers = listOf(it) + settings.providers
                             )

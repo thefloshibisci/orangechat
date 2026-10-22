@@ -133,6 +133,10 @@ import me.rerere.rikkahub.ui.theme.LocalMaterialMode
 import me.rerere.rikkahub.ui.theme.extendColors
 import me.rerere.rikkahub.data.datastore.ChatFontFamily
 import me.rerere.rikkahub.data.datastore.DisplayMaterialMode
+import me.rerere.rikkahub.data.interaction.MessageReaction
+import me.rerere.rikkahub.data.interaction.avatarInteraction
+import me.rerere.rikkahub.data.interaction.avatarInteractionText
+import me.rerere.rikkahub.data.interaction.reactionSegments
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -261,6 +265,11 @@ fun ChatMessage(
     onClearTranslation: (UIMessage) -> Unit = {},
     onToolApproval: ((toolCallId: String, approved: Boolean, reason: String) -> Unit)? = null,
     onToolAnswer: ((toolCallId: String, answer: String) -> Unit)? = null,
+    reactions: List<MessageReaction> = emptyList(),
+    reactionPresets: List<String> = emptyList(),
+    onReact: ((String, String) -> Unit)? = null,
+    onAvatarInteraction: ((UIMessage) -> Unit)? = null,
+    avatarPulse: String? = null,
 ) {
     val message = node.messages[node.selectIndex].let { original ->
         if (original.role == MessageRole.USER && original.parts.any {
@@ -277,6 +286,20 @@ fun ChatMessage(
         }
     }
     if (message.parts.isEmptyUIMessage()) return
+    if (message.avatarInteraction() != null) {
+        Text(
+            text = message.avatarInteractionText(),
+            modifier = modifier.fillMaxWidth().padding(vertical = 6.dp),
+            textAlign = TextAlign.Center,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        return
+    }
+    val avatarGesture = avatarInteractionModifier(
+        avatarPulse,
+        onAvatarInteraction?.let { callback -> { callback(message) } },
+    )
     val settings = LocalDisplaySettings.current
     val textStyle = LocalTextStyle.current.copy(
         fontSize = LocalTextStyle.current.fontSize * settings.fontSizeRatio,
@@ -297,6 +320,7 @@ fun ChatMessage(
         }
     )
     var showActionsSheet by remember { mutableStateOf(false) }
+    var showReactionPicker by remember(message.id) { mutableStateOf(false) }
     var showSelectCopySheet by remember { mutableStateOf(false) }
     val navController = LocalNavController.current
     val context = LocalContext.current
@@ -318,13 +342,15 @@ fun ChatMessage(
                     model = model,
                     assistant = assistant,
                     loading = loading,
-                    modifier = Modifier.weight(1f)
+                    modifier = Modifier.weight(1f),
+                    interactionModifier = avatarGesture,
                 )
                 ChatMessageUserAvatar(
                     message = message,
                     avatar = settings.userAvatar,
                     nickname = settings.userNickname,
-                    modifier = Modifier.weight(1f)
+                    modifier = Modifier.weight(1f),
+                    interactionModifier = avatarGesture,
                 )
             }
         }
@@ -339,6 +365,9 @@ fun ChatMessage(
                 onToolApproval = onToolApproval,
                 onToolAnswer = onToolAnswer,
                 onUserMessageClick = if (!readOnly && message.role == MessageRole.USER) onEdit else null,
+                reactions = reactions,
+                reactionPresets = reactionPresets,
+                onReact = onReact,
             )
  
             message.translation?.let { translation ->
@@ -349,6 +378,10 @@ fun ChatMessage(
             }
         }
  
+        if (message.parts.none { it is UIMessagePart.Text }) {
+            MessageReactionBar("", reactions, reactionPresets, onReact)
+        }
+
         val showActions = if (lastMessage) {
             !loading
         } else {
@@ -396,6 +429,7 @@ fun ChatMessage(
             },
             isFavorite = isFavorite,
             onToggleFavorite = onToggleFavorite,
+            onReact = onReact?.let { { showReactionPicker = true } },
             onWebViewPreview = {
                 val textContent = message.parts
                     .filterIsInstance<UIMessagePart.Text>()
@@ -413,6 +447,18 @@ fun ChatMessage(
             onDismissRequest = {
                 showActionsSheet = false
             }
+        )
+    }
+
+    if (showReactionPicker && onReact != null) {
+        MessageReactionPicker(
+            segments = reactionSegments(message, assistant ?: Assistant()),
+            presets = reactionPresets,
+            onDismiss = { showReactionPicker = false },
+            onSelect = { emoji, quote ->
+                onReact(emoji, quote)
+                showReactionPicker = false
+            },
         )
     }
  
@@ -438,6 +484,9 @@ private fun MessagePartsBlock(
     onToolApproval: ((toolCallId: String, approved: Boolean, reason: String) -> Unit)? = null,
     onToolAnswer: ((toolCallId: String, answer: String) -> Unit)? = null,
     onUserMessageClick: (() -> Unit)? = null,
+    reactions: List<MessageReaction> = emptyList(),
+    reactionPresets: List<String> = emptyList(),
+    onReact: ((String, String) -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val contentColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.65f)
@@ -559,6 +608,7 @@ private fun MessagePartsBlock(
                                                             onClickCitation = handleClickCitation
                                                         )
                                                     }
+                                                    MessageReactionBar(segment, reactions, reactionPresets, onReact)
                                                 }
                                             }
                                         }
@@ -580,6 +630,7 @@ private fun MessagePartsBlock(
                                                 ),
                                                 onClickCitation = handleClickCitation
                                             )
+                                            MessageReactionBar(displayText, reactions, reactionPresets, onReact)
                                         }
                                     }
                                 } else if (assistant?.splitBubbleByLine == true) {
@@ -611,6 +662,7 @@ private fun MessagePartsBlock(
                                                             onClickCitation = handleClickCitation,
                                                         )
                                                     }
+                                                    MessageReactionBar(segment, reactions, reactionPresets, onReact)
                                                 } else {
                                                     MarkdownBlock(
                                                         content = segment.replaceRegexes(
@@ -622,6 +674,7 @@ private fun MessagePartsBlock(
                                                         modifier = Modifier
                                                             .animateContentSize()
                                                     )
+                                                    MessageReactionBar(segment, reactions, reactionPresets, onReact)
                                                 }
                                             }
                                         }
@@ -644,6 +697,7 @@ private fun MessagePartsBlock(
                                                 ),
                                                 onClickCitation = handleClickCitation,
                                             )
+                                            MessageReactionBar(displayText, reactions, reactionPresets, onReact)
                                         }
                                     } else {
                                         MarkdownBlock(
@@ -656,6 +710,7 @@ private fun MessagePartsBlock(
                                             modifier = Modifier
                                                 .animateContentSize()
                                         )
+                                        MessageReactionBar(displayText, reactions, reactionPresets, onReact)
                                     }
                                 }
                                 
@@ -789,7 +844,8 @@ private fun MessagePartsBlock(
     }
  
     // Annotations (always rendered at the end)
-    if (annotations.isNotEmpty()) {
+    val citations = annotations.filterIsInstance<UIMessageAnnotation.UrlCitation>()
+    if (citations.isNotEmpty()) {
         Column(
             modifier = Modifier.animateContentSize(),
         ) {
@@ -813,7 +869,7 @@ private fun MessagePartsBlock(
                             .padding(4.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        annotations.fastForEachIndexed { index, annotation ->
+                        citations.fastForEachIndexed { index, annotation ->
                             when (annotation) {
                                 is UIMessageAnnotation.UrlCitation -> {
                                     Row(
@@ -840,7 +896,7 @@ private fun MessagePartsBlock(
                     expand = !expand
                 }
             ) {
-                Text(stringResource(R.string.citations_count, annotations.size))
+                Text(stringResource(R.string.citations_count, citations.size))
             }
         }
     }
@@ -893,7 +949,10 @@ private fun BubbleSurface(
     val liveFragmentModifier = if (finalLiveBubbleBlurEnabled) {
         Modifier
             .onGloballyPositioned { coordinates ->
-                liveLayerOriginInWindow = coordinates.positionInWindow()
+                val origin = coordinates.positionInWindow()
+                if (origin != liveLayerOriginInWindow) {
+                    liveLayerOriginInWindow = origin
+                }
             }
             .graphicsLayer {
                 renderEffect = cachedBlurEffect

@@ -9,6 +9,7 @@ package me.rerere.rikkahub.data.db.fts
 import android.util.Log
 import androidx.room.withTransaction
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
@@ -16,6 +17,7 @@ import me.rerere.rikkahub.data.db.AppDatabase
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.model.MessageNode
 import java.time.Instant
+import kotlin.coroutines.coroutineContext
 
 data class MessageSearchResult(
     val nodeId: String,
@@ -31,6 +33,32 @@ private const val TAG = "MessageFtsManager"
 class MessageFtsManager(private val database: AppDatabase) {
 
     private val db get() = database.openHelper.writableDatabase
+
+    /** Whole-conversation replacement clears once; per-node FTS deletes would repeatedly scan
+     * the virtual table, including every unrelated conversation. Failures roll back the caller. */
+    suspend fun replaceConversationIndex(conversation: Conversation) = database.withTransaction {
+        val conversationId = conversation.id.toString()
+        db.execSQL("DELETE FROM message_fts WHERE conversation_id = ?", arrayOf(conversationId))
+        db.compileStatement(
+            "INSERT INTO message_fts(text, node_id, message_id, conversation_id, title, update_at) VALUES (?, ?, ?, ?, ?, ?)"
+        ).use { statement ->
+            conversation.messageNodes.forEach { node ->
+                coroutineContext.ensureActive()
+                node.messages.forEach { message ->
+                    val text = message.extractFtsText()
+                    if (text.isNotBlank()) {
+                        statement.bindString(1, text)
+                        statement.bindString(2, node.id.toString())
+                        statement.bindString(3, message.id.toString())
+                        statement.bindString(4, conversationId)
+                        statement.bindString(5, conversation.title)
+                        statement.bindString(6, conversation.updateAt.toEpochMilli().toString())
+                        statement.executeInsert()
+                    }
+                }
+            }
+        }
+    }
 
     /**
      * 全量重建某个对话的 FTS 索引。用于新建对话（insertConversation）场景，
@@ -79,6 +107,7 @@ class MessageFtsManager(private val database: AppDatabase) {
      * @param changedNodeIds 本次发生变化（新增/修改/删除）的 node id 集合
      * @param currentNodes 当前完整的 messageNodes 列表，用于取出仍然存在的 node 的最新内容；
      *                     如果某个 id 不在这个列表里，说明它已被删除，只清索引、不重建
+     * @param failOnError Propagate an indexing failure when a checkpoint requires the enclosing write to roll back.
      */
     suspend fun reindexNodes(
         conversationId: String,
@@ -86,6 +115,7 @@ class MessageFtsManager(private val database: AppDatabase) {
         updateAt: Instant,
         changedNodeIds: Set<String>,
         currentNodes: List<MessageNode>,
+        failOnError: Boolean = false,
     ) {
         if (changedNodeIds.isEmpty()) return
         try {
@@ -118,6 +148,7 @@ class MessageFtsManager(private val database: AppDatabase) {
                 "reindexNodes failed, conversationId=$conversationId, changedNodeIds=$changedNodeIds",
                 e
             )
+            if (failOnError) throw e
         }
     }
 

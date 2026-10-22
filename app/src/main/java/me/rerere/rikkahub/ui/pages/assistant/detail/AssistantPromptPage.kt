@@ -133,7 +133,7 @@ fun AssistantPromptPage(id: String) {
             modifier = Modifier.padding(innerPadding),
             assistant = assistant,
             settings = settings,
-            onUpdate = { vm.update(it) }
+            onUpdate = { vm.update(assistant, it) }
         )
     }
 }

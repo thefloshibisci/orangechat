@@ -6,6 +6,7 @@
 
 package me.rerere.rikkahub.service
 
+import me.rerere.rikkahub.data.sync.isChatRecoveryBlocking
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
@@ -49,6 +50,11 @@ class WebServerService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (isChatRecoveryBlocking()) {
+            stopSelf(startId)
+            return START_NOT_STICKY
+        }
+
         when (intent?.action) {
             ACTION_START -> {
                 val port = intent.getIntExtra(EXTRA_PORT, 8080)

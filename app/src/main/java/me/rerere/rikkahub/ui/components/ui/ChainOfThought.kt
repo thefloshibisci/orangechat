@@ -426,7 +426,7 @@ private class ChainOfThoughtScopeImpl : ChainOfThoughtScope {
                     ) {
                         if (icon != null) {
                             Box(
-                                modifier = Modifier.size(14.dp),
+                                modifier = Modifier.size(20.dp),
                                 contentAlignment = Alignment.Center,
                             ) {
                                 icon()

@@ -6,6 +6,7 @@
 
 package me.rerere.rikkahub.data.service
 
+import me.rerere.rikkahub.data.sync.awaitChatRecovery
 import android.app.AlarmManager
 import android.content.Context
 import android.content.pm.ServiceInfo
@@ -96,6 +97,7 @@ class ProactiveMessageWorker(
     }
 
     override suspend fun doWork(): Result {
+        applicationContext.awaitChatRecovery()
         Log.d(TAG, "ProactiveMessageWorker triggered")
 
         val settingsStore = org.koin.core.context.GlobalContext.get().get<SettingsStore>()

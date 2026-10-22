@@ -571,7 +571,7 @@ private fun DefaultCompressModelSetting(
             )
         },
         description = {
-            Text(stringResource(R.string.setting_model_page_compress_model_desc))
+            Text("可选：单独指定压缩使用的模型，清除后使用当前助手的聊天模型。默认摘要保留任务、身份关系与情绪变化；自定义提示词以编辑内容为准。")
         },
         icon = {
             Icon(HugeIcons.FileZip, null)
@@ -580,6 +580,8 @@ private fun DefaultCompressModelSetting(
             Box(modifier = Modifier.weight(1f)) {
                 ModelSelector(
                     modelId = settings.compressModelId,
+                    allowClear = true,
+                    onClear = { vm.updateSettings(settings.copy(compressModelId = null)) },
                     type = ModelType.CHAT,
                     onSelect = {
                         vm.updateSettings(

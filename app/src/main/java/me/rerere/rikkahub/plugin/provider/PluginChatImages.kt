@@ -13,6 +13,7 @@ import me.rerere.ai.core.MessageRole
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.plugin.data.PluginDataStore
+import me.rerere.rikkahub.plugin.model.PluginToolParameter
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.security.MessageDigest
@@ -58,28 +59,7 @@ class PluginChatImages(private val context: Context) {
                     "import" -> {
                         val source = available.singleOrNull { it.id == p["attachment_id"]?.jsonPrimitive?.content }
                             ?: error("Attachment is not in this conversation branch. List images first.")
-                        val uri = source.uri.toUri()
-                        val input = when (uri.scheme) {
-                            "file" -> {
-                                val file = File(requireNotNull(uri.path)).canonicalFile
-                                val roots = listOf("images", "upload").map { File(context.filesDir, it).canonicalFile }
-                                require(roots.any { file.path.startsWith(it.path + File.separator) }) { "Unsupported attachment location" }
-                                file.inputStream()
-                            }
-                            "content" -> context.contentResolver.openInputStream(uri) ?: error("Attachment cannot be opened")
-                            else -> error("Only local chat attachments can be imported")
-                        }
-                        val bytes = input.use { stream ->
-                            val out = ByteArrayOutputStream()
-                            val buffer = ByteArray(8192)
-                            while (true) {
-                                val count = stream.read(buffer)
-                                if (count < 0) break
-                                require(out.size() + count <= 12000000) { "Attachment exceeds 12 MB" }
-                                out.write(buffer, 0, count)
-                            }
-                            out.toByteArray()
-                        }
+                        val bytes = readAttachment(source)
                         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
                         BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
                         require(bounds.outWidth in 1..8192 && bounds.outHeight in 1..8192 &&
@@ -120,6 +100,126 @@ class PluginChatImages(private val context: Context) {
                 throw e
             } catch (e: Exception) {
                 buildJsonObject { put("success", false); put("error", e.message ?: "Import failed") }
+            }
+        }
+    private fun readAttachment(source: Source): ByteArray {
+        val uri = source.uri.toUri()
+        val input = when (uri.scheme) {
+            "file" -> {
+                val file = File(requireNotNull(uri.path)).canonicalFile
+                val roots = listOf("images", "upload").map { File(context.filesDir, it).canonicalFile }
+                require(roots.any { file.path.startsWith(it.path + File.separator) }) { "Unsupported attachment location" }
+                file.inputStream()
+            }
+            "content" -> context.contentResolver.openInputStream(uri) ?: error("Attachment cannot be opened")
+            else -> error("Only local chat attachments can be imported")
+        }
+        return input.use { stream ->
+            val out = ByteArrayOutputStream()
+            val buffer = ByteArray(8192)
+            while (true) {
+                val count = stream.read(buffer)
+                if (count < 0) break
+                require(out.size() + count <= 12000000) { "Attachment exceeds 12 MB" }
+                out.write(buffer, 0, count)
+            }
+            out.toByteArray()
+        }
+    }
+
+    /** Copy of a chat image for the gallery plugin: longest side <= 1600px; small PNGs keep transparency. */
+    data class GalleryUpload(val base64: String, val mime: String, val width: Int, val height: Int)
+
+    internal suspend fun resolveToolParameters(
+        parameters: List<PluginToolParameter>,
+        params: JsonElement,
+        messages: List<UIMessage>,
+        conversationId: String,
+        permissions: List<String>,
+    ): JsonObject {
+        val supplied = params as? JsonObject ?: error("Tool parameters must be an object")
+        val hostParameters = parameters.filter { it.source != null }
+        // Validate every declaration before opening any attachment or invoking plugin code.
+        hostParameters.forEach { parameter ->
+            val expectedType = when (parameter.source) {
+                "chat_image_base64", "chat_image_mime" -> "string"
+                "chat_images_list" -> "array"
+                else -> error("Unsupported host parameter source: ${parameter.source}")
+            }
+            require(parameter.type == expectedType) { "Host parameter ${parameter.name} must have type $expectedType" }
+        }
+        require("conversation_sync" in permissions) { "Chat image parameters require conversation_sync permission" }
+        require(conversationId.isNotBlank()) { "Chat image parameters require a conversation" }
+        val attachment = supplied["attachment_id"]
+        require(attachment == null || attachment == JsonNull || attachment is JsonPrimitive && attachment.isString) {
+            "attachment_id must be a string"
+        }
+        val attachmentId = (attachment as? JsonPrimitive)?.contentOrNull
+        var image: GalleryUpload? = null
+        val values = hostParameters.associate { parameter ->
+            parameter.name to when (parameter.source) {
+                "chat_images_list" -> galleryList(messages, conversationId).jsonObject.getValue("images")
+                else -> {
+                    val resolved = image ?: prepareGalleryUpload(attachmentId, messages, conversationId).also { image = it }
+                    JsonPrimitive(if (parameter.source == "chat_image_base64") resolved.base64 else resolved.mime)
+                }
+            }
+        }
+        // Model-supplied values cannot override host-owned fields.
+        return JsonObject(supplied + values)
+    }
+
+    internal fun galleryList(messages: List<UIMessage>, conversationId: String): JsonElement = buildJsonObject {
+        put("success", true)
+        putJsonArray("images") {
+            (if (conversationId.isNotBlank()) sources(messages, conversationId) else emptyList()).forEach { source ->
+                add(buildJsonObject {
+                    put("attachment_id", source.id); put("message_id", source.messageId); put("name", source.name)
+                })
+            }
+        }
+    }
+
+    /** attachment_id blank = the newest image the user sent in this branch. */
+    suspend fun prepareGalleryUpload(attachmentId: String?, messages: List<UIMessage>, conversationId: String): GalleryUpload =
+        withContext(Dispatchers.IO) {
+            val available = if (conversationId.isNotBlank()) sources(messages, conversationId) else emptyList()
+            val source = if (attachmentId.isNullOrBlank()) available.lastOrNull() ?: error("No image in this conversation")
+            else available.singleOrNull { it.id == attachmentId } ?: error("Attachment is not in this conversation branch. List images first.")
+            val bytes = readAttachment(source)
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+            require(bounds.outWidth in 1..8192 && bounds.outHeight in 1..8192 &&
+                bounds.outWidth.toLong() * bounds.outHeight <= 16777216) { "Unsupported image dimensions" }
+            require(bounds.outMimeType in listOf("image/png", "image/jpeg", "image/webp")) { "Unsupported image format" }
+            val longest = maxOf(bounds.outWidth, bounds.outHeight)
+            if (longest <= 1600 && bytes.size < 700_000 && bounds.outMimeType != "image/webp") {
+                return@withContext GalleryUpload(Base64.encodeToString(bytes, Base64.NO_WRAP), bounds.outMimeType,
+                    bounds.outWidth, bounds.outHeight)
+            }
+            val scale = minOf(1f, 1600f / longest)
+            val width = (bounds.outWidth * scale).toInt().coerceAtLeast(1)
+            val height = (bounds.outHeight * scale).toInt().coerceAtLeast(1)
+            val options = BitmapFactory.Options().apply {
+                while (longest / (inSampleSize.coerceAtLeast(1) * 2) >= 1600) {
+                    inSampleSize = inSampleSize.coerceAtLeast(1) * 2
+                }
+            }
+            val decoded = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options) ?: error("Image decode failed")
+            var scaled = decoded
+            try {
+                if (decoded.width != width || decoded.height != height) {
+                    scaled = Bitmap.createScaledBitmap(decoded, width, height, true)
+                }
+                val keepPng = bounds.outMimeType == "image/png" && scaled.hasAlpha()
+                val out = ByteArrayOutputStream()
+                check(scaled.compress(if (keepPng) Bitmap.CompressFormat.PNG else Bitmap.CompressFormat.JPEG,
+                    if (keepPng) 100 else 85, out))
+                GalleryUpload(Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP),
+                    if (keepPng) "image/png" else "image/jpeg", width, height)
+            } finally {
+                if (scaled !== decoded) scaled.recycle()
+                decoded.recycle()
             }
         }
 }

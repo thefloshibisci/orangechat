@@ -68,6 +68,9 @@ interface SearchService<T : SearchServiceOptions> {
                 is SearchServiceOptions.RikkaHubOptions -> RikkaHubSearchService
                 is SearchServiceOptions.GrokOptions -> GrokSearchService
                 is SearchServiceOptions.TinyfishOptions -> TinyfishSearchService
+                is SearchServiceOptions.DoubaoOptions -> DoubaoSearchService
+                is SearchServiceOptions.SerperOptions -> SerperSearchService
+                is SearchServiceOptions.DeepSeekOptions -> DeepSeekSearchService
                 is SearchServiceOptions.CustomJsOptions -> CustomJsSearchService
             } as SearchService<T>
         }
@@ -106,12 +109,14 @@ data class SearchCommonOptions(
 data class SearchResult(
     val answer: String? = null,
     val items: List<SearchResultItem>,
+    val images: List<String> = emptyList(),
 ) {
     @Serializable
     data class SearchResultItem(
         val title: String,
         val url: String,
         val text: String,
+        val publishedDate: String? = null,
     )
 }
 
@@ -156,6 +161,9 @@ sealed class SearchServiceOptions {
             is BochaOptions -> "博查"
             is GrokOptions -> "Grok"
             is TinyfishOptions -> "Tinyfish"
+            is DoubaoOptions -> "豆包"
+            is SerperOptions -> "Serper"
+            is DeepSeekOptions -> "DeepSeek"
             is CustomJsOptions -> name.ifBlank { "Custom JS" }
         }
 
@@ -179,6 +187,9 @@ sealed class SearchServiceOptions {
             BochaOptions::class to "博查",
             GrokOptions::class to "Grok",
             TinyfishOptions::class to "Tinyfish",
+            DoubaoOptions::class to "豆包",
+            SerperOptions::class to "Serper",
+            DeepSeekOptions::class to "DeepSeek",
             CustomJsOptions::class to "Custom JS",
         )
 
@@ -204,6 +215,9 @@ sealed class SearchServiceOptions {
             BochaOptions::class -> BochaOptions()
             GrokOptions::class -> GrokOptions()
             TinyfishOptions::class -> TinyfishOptions()
+            DoubaoOptions::class -> DoubaoOptions()
+            SerperOptions::class -> SerperOptions()
+            DeepSeekOptions::class -> DeepSeekOptions()
             CustomJsOptions::class -> CustomJsOptions()
             else -> error("Unsupported search provider type: $type")
         }
@@ -336,6 +350,28 @@ sealed class SearchServiceOptions {
     ) : SearchServiceOptions()
 
     @Serializable
+    @SerialName("doubao")
+    data class DoubaoOptions(
+        override val id: Uuid = Uuid.random(),
+        val apiKey: String = "",
+        val mode: DoubaoSearchMode = DoubaoSearchMode.CUSTOM,
+    ) : SearchServiceOptions()
+
+    @Serializable
+    @SerialName("serper")
+    data class SerperOptions(
+        override val id: Uuid = Uuid.random(),
+        val apiKey: String = "",
+    ) : SearchServiceOptions()
+
+    @Serializable
+    @SerialName("deepseek")
+    data class DeepSeekOptions(
+        override val id: Uuid = Uuid.random(),
+        val apiKey: String = "",
+    ) : SearchServiceOptions()
+
+    @Serializable
     @SerialName("custom_js")
     data class CustomJsOptions(
         override val id: Uuid = Uuid.random(),
@@ -397,4 +433,10 @@ internal suspend fun Call.await(): Response {
             }
         })
     }
+}
+
+@Serializable
+enum class DoubaoSearchMode {
+    @SerialName("global") GLOBAL,
+    @SerialName("custom") CUSTOM,
 }

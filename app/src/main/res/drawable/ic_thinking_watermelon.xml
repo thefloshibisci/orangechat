@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Keep the original watermelon paths; fit their optical bounds to the shared 20dp step slot. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <group android:pivotX="12" android:pivotY="12" android:scaleX="1.2" android:scaleY="1.2" android:translateY="-1.5">
+    <path android:pathData="M5.059,7.462 L19.401,15.742 A8.28,8.28 0 0 1 5.059,7.462 Z"
+        android:strokeColor="#FF000000"
+        android:strokeWidth="1.196"
+        android:strokeLineJoin="round"/>
+    <path android:pathData="M7.131,8.658 A5.888,5.888 0 0 0 17.329,14.546"
+        android:strokeColor="#FF000000"
+        android:strokeWidth="1.196"
+        android:strokeLineCap="round"/>
+    <path android:pathData="M9.047,10.858 C9.157,11.496 9.181,12.035 8.974,12.393 A0.704,0.704 0 0 1 7.755,11.69 C7.962,11.331 8.44,11.082 9.047,10.858 Z M11.296,13.219 C11.406,13.856 11.43,14.396 11.223,14.754 A0.704,0.704 0 0 1 10.004,14.05 C10.211,13.692 10.689,13.442 11.296,13.219 Z M14.465,13.986 C14.575,14.624 14.599,15.163 14.392,15.521 A0.704,0.704 0 0 1 13.173,14.818 C13.38,14.459 13.858,14.21 14.465,13.986 Z"
+        android:fillColor="#FF000000"/>
+    </group>
+</vector>

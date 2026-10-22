@@ -94,6 +94,7 @@ fun UIAvatar(
     modifier: Modifier = Modifier,
     loading: Boolean = false,
     onUpdate: ((Avatar) -> Unit)? = null,
+    interactive: Boolean = true,
     onClick: (() -> Unit)? = null
 ) {
     val filesManager: FilesManager = koinInject()
@@ -127,16 +128,9 @@ fun UIAvatar(
     }
 
     Box(modifier = modifier.size(32.dp)) {
-        Surface(
-            shape = rememberAvatarShape(loading),
-            modifier = Modifier.fillMaxSize(),
-            onClick = {
-                onClick?.invoke()
-                if (onUpdate != null) showPickOption = true
-            },
-            tonalElevation = 4.dp,
-            color = MaterialTheme.colorScheme.secondaryContainer,
-        ) {
+        val shape = rememberAvatarShape(loading)
+        val color = MaterialTheme.colorScheme.secondaryContainer
+        val content: @Composable () -> Unit = {
             Box(
                 contentAlignment = Alignment.Center,
                 modifier = Modifier.fillMaxSize()
@@ -176,6 +170,27 @@ fun UIAvatar(
                     }
                 }
             }
+        }
+        if (interactive) {
+            Surface(
+                shape = shape,
+                modifier = Modifier.fillMaxSize(),
+                onClick = {
+                    onClick?.invoke()
+                    if (onUpdate != null) showPickOption = true
+                },
+                tonalElevation = 4.dp,
+                color = color,
+                content = content,
+            )
+        } else {
+            Surface(
+                shape = shape,
+                modifier = Modifier.fillMaxSize(),
+                tonalElevation = 4.dp,
+                color = color,
+                content = content,
+            )
         }
 
         // Show edit icon when editable

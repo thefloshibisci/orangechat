@@ -88,6 +88,9 @@ class SearchServiceOptionsTest {
         is SearchServiceOptions.BochaOptions -> BochaSearchService
         is SearchServiceOptions.GrokOptions -> GrokSearchService
         is SearchServiceOptions.TinyfishOptions -> TinyfishSearchService
+        is SearchServiceOptions.DoubaoOptions -> DoubaoSearchService
+        is SearchServiceOptions.SerperOptions -> SerperSearchService
+        is SearchServiceOptions.DeepSeekOptions -> DeepSeekSearchService
         is SearchServiceOptions.CustomJsOptions -> CustomJsSearchService
     }
 }

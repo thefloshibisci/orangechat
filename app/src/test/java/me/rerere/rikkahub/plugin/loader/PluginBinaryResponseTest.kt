@@ -44,4 +44,43 @@ class PluginBinaryResponseTest {
     @Test fun oversizedBinaryRejected() {
         assertFalse(fetch(ByteArray(12000001), """{"responseEncoding":"base64"}""").getBoolean("success"))
     }
+    @Test fun base64RequestBodyUploadsExactBytes() {
+        val sent = byteArrayOf(0, -1, -128, 127, 10, 13, 42)
+        var received: ByteArray? = null
+        var contentType: String? = null
+        val client = OkHttpClient.Builder().addInterceptor { chain ->
+            val buffer = okio.Buffer()
+            chain.request().body!!.writeTo(buffer)
+            received = buffer.readByteArray()
+            contentType = chain.request().header("Content-Type")
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200).message("OK")
+                .body("{}".toByteArray().toResponseBody("application/json".toMediaType())).build()
+        }.build()
+        val sandbox = PluginSandbox(RuntimeEnvironment.getApplication(), client)
+        sandbox.allowedHosts = listOf("create.suanbohe.com")
+        val method = PluginSandbox::class.java.getDeclaredMethod("nativeFetch", String::class.java, String::class.java)
+        method.isAccessible = true
+        val body = Base64.encodeToString(sent, Base64.NO_WRAP)
+        for (verb in listOf("POST", "PUT", "DELETE")) {
+            received = null
+            val options = """{"method":"$verb","bodyEncoding":"base64","headers":{"Content-Type":"image/png"},"body":"$body"}"""
+            assertTrue(JSONObject(method.invoke(sandbox, "https://create.suanbohe.com/upload", options) as String).getBoolean("success"))
+            assertArrayEquals(sent, received)
+            assertEquals("image/png", contentType)
+        }
+    }
+
+    @Test fun malformedAndOversizedUploadsNeverReachNetwork() {
+        var requests = 0
+        val client = OkHttpClient.Builder().addInterceptor { requests++; error("Unexpected network request") }.build()
+        val sandbox = PluginSandbox(RuntimeEnvironment.getApplication(), client)
+        sandbox.allowedHosts = listOf("create.suanbohe.com")
+        val method = PluginSandbox::class.java.getDeclaredMethod("nativeFetch", String::class.java, String::class.java)
+        method.isAccessible = true
+        for (body in listOf("a", "A".repeat(16_000_001))) {
+            val options = """{"method":"POST","bodyEncoding":"base64","body":"$body"}"""
+            assertFalse(JSONObject(method.invoke(sandbox, "https://create.suanbohe.com/upload", options) as String).getBoolean("success"))
+        }
+        assertEquals(0, requests)
+    }
 }

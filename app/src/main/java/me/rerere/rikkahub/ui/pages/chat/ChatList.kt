@@ -1,4 +1,4 @@
-﻿/*
+/*
  * 橘瓣 OrangeChat
  * 衍生自 RikkaHub (https://github.com/rikkahub/rikkahub)，原作者 RE
  * 本项目基于 GNU AGPL v3 开源，详见根目录 LICENSE 文件
@@ -110,6 +110,8 @@ import me.rerere.rikkahub.data.datastore.findModelById
 import me.rerere.rikkahub.data.datastore.getAssistantById
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.model.MessageNode
+import me.rerere.rikkahub.data.interaction.MessageReaction
+import me.rerere.rikkahub.data.interaction.avatarInteraction
 import me.rerere.rikkahub.service.ChatError
 import me.rerere.rikkahub.ui.components.message.ChatMessage
 import me.rerere.rikkahub.ui.context.LocalDisplaySettings
@@ -154,6 +156,10 @@ fun ChatList(
     onToolAnswer: ((toolCallId: String, answer: String) -> Unit)? = null,
     onToggleFavorite: ((MessageNode) -> Unit)? = null,
     onConversationSystemPromptChange: ((String?) -> Unit)? = null,
+    reactions: List<MessageReaction> = emptyList(),
+    reactionPresets: List<String> = emptyList(),
+    onReact: ((UIMessage, String, String) -> Unit)? = null,
+    onAvatarInteraction: ((UIMessage) -> Unit)? = null,
 ) {
     AnimatedContent(
         targetState = previewMode,
@@ -198,6 +204,10 @@ fun ChatList(
                 onToolAnswer = onToolAnswer,
                 onToggleFavorite = onToggleFavorite,
                 onConversationSystemPromptChange = onConversationSystemPromptChange,
+                reactions = reactions,
+                reactionPresets = reactionPresets,
+                onReact = onReact,
+                onAvatarInteraction = onAvatarInteraction,
             )
         }
     }
@@ -229,6 +239,10 @@ private fun ChatListNormal(
     onToolAnswer: ((toolCallId: String, answer: String) -> Unit)? = null,
     onToggleFavorite: ((MessageNode) -> Unit)? = null,
     onConversationSystemPromptChange: ((String?) -> Unit)? = null,
+    reactions: List<MessageReaction> = emptyList(),
+    reactionPresets: List<String> = emptyList(),
+    onReact: ((UIMessage, String, String) -> Unit)? = null,
+    onAvatarInteraction: ((UIMessage) -> Unit)? = null,
 ) {
     val scope = rememberCoroutineScope()
     val loadingState by rememberUpdatedState(loading)
@@ -323,6 +337,23 @@ private fun ChatListNormal(
             }
         }
 
+        val compressionDividers = remember(conversation, displayNodes, showCompressedHistory) {
+            conversation.compressionDividerLabels(displayNodes, showCompressedHistory)
+        }
+        val avatarEvent = conversation.currentMessages.lastOrNull { it.avatarInteraction() != null }
+        val avatarTargetRole = if (avatarEvent?.avatarInteraction()?.target == "user") {
+            MessageRole.USER
+        } else {
+            MessageRole.ASSISTANT
+        }
+        val avatarTargetId = avatarEvent?.avatarInteraction()?.targetMessageId ?: displayNodes.lastOrNull {
+            it.currentMessage.role == avatarTargetRole && it.currentMessage.avatarInteraction() == null
+        }?.currentMessage?.id?.toString()
+        val interactionAssistant = settings.getAssistantById(conversation.assistantId)
+        val reactionsByMessageId = remember(reactions) {
+            reactions.groupBy { it.messageId }
+        }
+
         LazyColumn(
             state = state,
             contentPadding = PaddingValues(16.dp) + PaddingValues(bottom = 32.dp + innerPadding.calculateBottomPadding()),
@@ -352,9 +383,30 @@ private fun ChatListNormal(
                     ) {
                         ChatMessage(
                             node = node,
+                            reactions = reactionsByMessageId[node.currentMessage.id.toString()].orEmpty(),
+                            reactionPresets = reactionPresets,
+                            onReact = if (interactionAssistant?.enableMessageReactions == true &&
+                                !(loading && index == displayNodes.lastIndex)
+                            ) {
+                                onReact?.let { callback ->
+                                    { emoji, quote -> callback(node.currentMessage, emoji, quote) }
+                                }
+                            } else {
+                                null
+                            },
+                            onAvatarInteraction = if (!loading && interactionAssistant?.enableAvatarInteractions == true) {
+                                onAvatarInteraction
+                            } else {
+                                null
+                            },
+                            avatarPulse = if (node.currentMessage.id.toString() == avatarTargetId) {
+                                avatarEvent?.id?.toString()
+                            } else {
+                                null
+                            },
                             readOnly = node.id in conversation.activeCompressedMessageNodeIds,
                             model = node.currentMessage.modelId?.let { settings.findModelById(it) },
-                            assistant = settings.getAssistantById(conversation.assistantId),
+                            assistant = interactionAssistant,
                             loading = loading && index == displayNodes.lastIndex,
                             onRegenerate = {
                                 onRegenerate(node.currentMessage)
@@ -387,6 +439,9 @@ private fun ChatListNormal(
                             onToolAnswer = onToolAnswer,
                             lastMessage = index == displayNodes.lastIndex,
                         )
+                    }
+                    compressionDividers[node.id].orEmpty().forEach { text ->
+                        CompressionHistoryDivider(text)
                     }
                 }
             }
@@ -642,6 +697,12 @@ private fun ChatListPreview(
         }
     }
 
+    val compressionDividers = remember(conversation, filteredMessages, showCompressedHistory, searchQuery) {
+        conversation.compressionDividerLabels(
+            filteredMessages.map { it.second }, showCompressedHistory && searchQuery.isBlank(),
+        )
+    }
+
     val searchFieldShape: Shape = CircleShape
 
     Column(
@@ -762,6 +823,9 @@ private fun ChatListPreview(
                             }
                         }
                     }
+                }
+                compressionDividers[node.id].orEmpty().forEach { text ->
+                    CompressionHistoryDivider(text)
                 }
             }
         }

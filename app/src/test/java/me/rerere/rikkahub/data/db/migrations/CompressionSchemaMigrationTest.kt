@@ -10,6 +10,7 @@ import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import me.rerere.rikkahub.data.db.APP_DATABASE_MIGRATIONS
 import me.rerere.rikkahub.data.db.AppDatabase
 import me.rerere.rikkahub.data.model.ConversationSummary
 import me.rerere.rikkahub.data.model.ConversationCompressionSnapshot
@@ -98,7 +99,16 @@ class CompressionSchemaMigrationTest {
         }
     }
 
-    private fun verify(fixture: String) {
+    @Test fun fork32WithoutCompressionColumnsUpgradesWithoutLosingHistory() =
+        verify("uncompressed-30.json", sourceVersion = 32)
+
+    @Test fun failedOldUpgradeRecoversOnNextOpenWithFixedMigration() =
+        verify("uncompressed-30.json", sourceVersion = 32, failOldUpgrade = true)
+
+    @Test fun workflowFailureRollsBackAndRecovers() =
+        verify("compression-v2-32.json", failOldUpgrade = true, missingWorkflowDetails = true)
+
+    private fun verify(fixture: String, sourceVersion: Int? = null, failOldUpgrade: Boolean = false, missingWorkflowDetails: Boolean = false) {
         val context = RuntimeEnvironment.getApplication()
         val suffix = Uuid.random().toString().take(8)
         val name = "m-$suffix"
@@ -107,7 +117,7 @@ class CompressionSchemaMigrationTest {
         val schema = javaClass.getResourceAsStream("/db/$fixture")!!.bufferedReader().use {
             Json.parseToJsonElement(it.readText()).jsonObject.getValue("database").jsonObject
         }
-        val version = schema.getValue("version").jsonPrimitive.int
+        val version = sourceVersion ?: schema.getValue("version").jsonPrimitive.int
         val hash = schema.getValue("identityHash").jsonPrimitive.content
         val legacy = fixture.startsWith("legacy")
         val v2 = fixture.startsWith("compression-v2")
@@ -130,7 +140,9 @@ class CompressionSchemaMigrationTest {
                 schema.getValue("entities").jsonArray.forEach { entity ->
                     val e = entity.jsonObject
                     val table = e.getValue("tableName").jsonPrimitive.content
-                    db.execSQL(e.getValue("createSql").jsonPrimitive.content.replace("\${TABLE_NAME}", table))
+                    var ddl = e.getValue("createSql").jsonPrimitive.content.replace("\${TABLE_NAME}", table)
+                    if (missingWorkflowDetails && table == "workflow_runs") ddl = ddl.replace(", `outputSummary` TEXT", "").replace(", `stepsJson` TEXT", "")
+                    db.execSQL(ddl)
                     e["indices"]?.jsonArray?.forEach { index ->
                         db.execSQL(index.jsonObject.getValue("createSql").jsonPrimitive.content.replace("\${TABLE_NAME}", table))
                     }
@@ -157,16 +169,39 @@ class CompressionSchemaMigrationTest {
                 }
             }
             Files.copy(path.toPath(), oldBackup.toPath())
+            if (failOldUpgrade) {
+                // Reproduce the released build's generated 32->33 migration: history only,
+                // then Room rejects the five missing compression columns and rolls back.
+                val oldRoom = Room.databaseBuilder(context, AppDatabase::class.java, name)
+                    .setJournalMode(RoomDatabase.JournalMode.TRUNCATE).build()
+                try {
+                    val error = runCatching { oldRoom.openHelper.writableDatabase }.exceptionOrNull()
+                    // The current generated Room implementation cannot open a 32 database without
+                    // its explicit 33->34 migration. This failure must still leave the source intact;
+                    // the production APP_DATABASE_MIGRATIONS path is exercised below on the same file.
+                    assertTrue(
+                        error?.message.orEmpty(),
+                        error?.message.orEmpty().contains("migration from 32 to 34") ||
+                            error?.message.orEmpty().contains("Migration didn't properly handle"),
+                    )
+                } finally { oldRoom.close() }
+                SQLiteDatabase.openDatabase(path.path, null, SQLiteDatabase.OPEN_READONLY).use { db ->
+                    assertEquals(32, db.version)
+                    db.rawQuery("SELECT COUNT(*) FROM message_node", null).use {
+                        assertTrue(it.moveToFirst()); assertEquals(3, it.getInt(0))
+                    }
+                }
+            }
             fun openAndCheck(databaseName: String) {
                 val room = Room.databaseBuilder(context, AppDatabase::class.java, databaseName)
                     .setJournalMode(RoomDatabase.JournalMode.TRUNCATE)
-                    .addMigrations(Migration_30_32, Migration_31_32)
+                    .addMigrations(*APP_DATABASE_MIGRATIONS)
                     .allowMainThreadQueries()
                     .build()
                 try {
                     // Opening here invokes Room's actual migration, full schema validation and identity update.
                     val db = room.openHelper.writableDatabase
-                    assertEquals(33, db.version)
+                    assertEquals(34, db.version)
                     db.query("SELECT compression_history FROM ConversationEntity").use {
                         while (it.moveToNext()) assertEquals("[]", it.getString(0))
                     }

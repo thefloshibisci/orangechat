@@ -15,50 +15,57 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.SettingsStore
+import me.rerere.rikkahub.data.datastore.withAssistantOrder
+import me.rerere.rikkahub.data.datastore.withAssistantTagOrder
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.Avatar
 import me.rerere.rikkahub.data.repository.ConversationRepository
 import me.rerere.rikkahub.data.repository.MemoryRepository
+import me.rerere.rikkahub.service.ChatService
+import kotlin.uuid.Uuid
 
 class AssistantVM(
     private val settingsStore: SettingsStore,
     private val memoryRepository: MemoryRepository,
     private val conversationRepo: ConversationRepository,
     private val filesManager: FilesManager,
+    private val chatService: ChatService,
 ) : ViewModel() {
     val settings: StateFlow<Settings> = settingsStore.settingsFlow
         .stateIn(viewModelScope, SharingStarted.Eagerly, Settings.dummy())
 
-    fun updateSettings(settings: Settings) {
+    fun reorderAssistants(ids: List<Uuid>) {
         viewModelScope.launch {
-            settingsStore.update(settings)
+            settingsStore.update { it.withAssistantOrder(ids) }
+        }
+    }
+
+    fun reorderTags(ids: List<Uuid>) {
+        viewModelScope.launch {
+            settingsStore.update { it.withAssistantTagOrder(ids) }
         }
     }
 
     fun addAssistant(assistant: Assistant) {
         viewModelScope.launch {
-            val settings = settings.value
-            settingsStore.update(
-                settings.copy(
-                    assistants = settings.assistants.plus(assistant)
-                )
-            )
+            settingsStore.update { current ->
+                if (current.assistants.any { it.id == assistant.id }) current
+                else current.copy(assistants = current.assistants + assistant)
+            }
         }
     }
 
     fun removeAssistant(assistant: Assistant) {
         viewModelScope.launch {
-            cleanupAssistantFiles(assistant)
-
-            val settings = settings.value
-            settingsStore.update(
-                settings.copy(
-                    assistants = settings.assistants.filter { it.id != assistant.id }
-                )
-            )
+            var removed: Assistant? = null
+            settingsStore.update { current ->
+                removed = current.assistants.find { it.id == assistant.id }
+                current.copy(assistants = current.assistants.filter { it.id != assistant.id })
+            }
+            removed?.let { cleanupAssistantFiles(it) }
             memoryRepository.deleteMemoriesOfAssistant(assistant.id.toString())
-            conversationRepo.deleteConversationOfAssistant(assistant.id)
+            chatService.deleteConversationsOfAssistant(assistant.id)
         }
     }
 
@@ -75,17 +82,16 @@ class AssistantVM(
 
     fun copyAssistant(assistant: Assistant) {
         viewModelScope.launch {
-            val settings = settings.value
-            val copiedAssistant = assistant.copy(
-                id = kotlin.uuid.Uuid.random(),
-                name = "${assistant.name} (Clone)",
-                avatar = if(assistant.avatar is Avatar.Image) Avatar.Dummy else assistant.avatar,
-            )
-            settingsStore.update(
-                settings.copy(
-                    assistants = settings.assistants.plus(copiedAssistant)
+            val newId = Uuid.random()
+            settingsStore.update { current ->
+                val source = current.assistants.find { it.id == assistant.id } ?: return@update current
+                val copiedAssistant = source.copy(
+                    id = newId,
+                    name = "${source.name} (Clone)",
+                    avatar = if (source.avatar is Avatar.Image) Avatar.Dummy else source.avatar,
                 )
-            )
+                current.copy(assistants = current.assistants + copiedAssistant)
+            }
         }
     }
 

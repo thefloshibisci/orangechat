@@ -55,7 +55,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import me.rerere.highlight.LocalHighlighter
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.ui.components.nav.BackButton
-import me.rerere.rikkahub.ui.components.richtext.HighlightCodeVisualTransformation
+import me.rerere.rikkahub.ui.components.richtext.rememberHighlightCodeVisualTransformation
 import me.rerere.rikkahub.ui.components.ui.FormItem
 import me.rerere.rikkahub.ui.components.ui.OutlinedNumberInput
 import me.rerere.rikkahub.ui.context.LocalNavController
@@ -177,6 +177,24 @@ private fun SearchServiceOptionsEditor(
     onUpdateOptions: (SearchServiceOptions) -> Unit
 ) {
     when (options) {
+        is SearchServiceOptions.DeepSeekOptions -> SimpleSearchApiKey(options.apiKey) {
+            onUpdateOptions(options.copy(apiKey = it))
+        }
+        is SearchServiceOptions.SerperOptions -> SimpleSearchApiKey(options.apiKey) {
+            onUpdateOptions(options.copy(apiKey = it))
+        }
+        is SearchServiceOptions.DoubaoOptions -> {
+            SimpleSearchApiKey(options.apiKey) { onUpdateOptions(options.copy(apiKey = it)) }
+            Row {
+                me.rerere.search.DoubaoSearchMode.entries.forEach { mode ->
+                    androidx.compose.material3.FilterChip(
+                        selected = options.mode == mode,
+                        onClick = { onUpdateOptions(options.copy(mode = mode)) },
+                        label = { Text(if (mode == me.rerere.search.DoubaoSearchMode.GLOBAL) "全网搜索" else "自定义搜索") },
+                    )
+                }
+            }
+        }
         is SearchServiceOptions.TavilyOptions -> {
             TavilyOptions(options) { onUpdateOptions(it) }
         }
@@ -935,7 +953,8 @@ internal fun CustomJsOptions(
             modifier = Modifier.fillMaxWidth(),
             minLines = 8,
             maxLines = 20,
-            visualTransformation = HighlightCodeVisualTransformation(
+            visualTransformation = rememberHighlightCodeVisualTransformation(
+                text = options.searchScript,
                 language = "javascript",
                 highlighter = highlighter,
                 darkMode = darkMode
@@ -967,12 +986,20 @@ internal fun CustomJsOptions(
                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
                 )
             },
-            visualTransformation = HighlightCodeVisualTransformation(
+            visualTransformation = rememberHighlightCodeVisualTransformation(
+                text = options.scrapeScript,
                 language = "javascript",
                 highlighter = highlighter,
                 darkMode = darkMode
             ),
             textStyle = MaterialTheme.typography.bodySmall.merge(fontFamily = JetbrainsMono),
         )
+    }
+}
+
+@Composable
+private fun SimpleSearchApiKey(value: String, onChange: (String) -> Unit) {
+    FormItem(label = { Text(stringResource(R.string.search_detail_api_key)) }) {
+        OutlinedTextField(value = value, onValueChange = onChange, modifier = Modifier.fillMaxWidth())
     }
 }

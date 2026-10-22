@@ -1,0 +1,115 @@
+package me.rerere.rikkahub.web
+
+import com.auth0.jwt.JWT
+import com.auth0.jwt.JWTVerifier
+import com.auth0.jwt.algorithms.Algorithm
+import io.ktor.http.HttpHeaders
+import io.ktor.http.HttpStatusCode
+import io.ktor.http.auth.HttpAuthHeader
+import io.ktor.server.application.Application
+import io.ktor.server.application.install
+import io.ktor.server.auth.Authentication
+import io.ktor.server.auth.jwt.jwt
+import io.ktor.server.response.respond
+import me.rerere.rikkahub.web.dto.ErrorResponse
+import java.security.MessageDigest
+import java.util.Date
+import java.util.UUID
+
+private const val WEB_JWT_ISSUER = "rikkahub-web"
+private const val WEB_JWT_AUDIENCE = "rikkahub-web-client"
+private const val WEB_JWT_SUBJECT = "web-access"
+private const val WEB_JWT_TTL_MILLIS = 30L * 24 * 60 * 60 * 1000
+private const val WEB_ACCESS_TOKEN_QUERY_KEY = "access_token"
+private const val WEB_AUTH_REALM = "rikkahub-web-api"
+
+internal data class WebAccessPolicy(val enabled: Boolean, val password: String)
+
+/** Install once; evaluate enabled/password for every request, including servers started without auth. */
+internal fun Application.installWebAuthentication(policy: () -> WebAccessPolicy) {
+    install(Authentication) {
+        jwt("auth-jwt") {
+            realm = WEB_AUTH_REALM
+            skipWhen { !policy().enabled }
+            verifier { _ ->
+                // Dynamically read the current password on each request so that
+                // tokens signed after a password change are validated correctly.
+                val currentPassword = policy().password
+                val secret = currentPassword.ifBlank {
+                    // Keep protected routes closed when jwt is enabled but password is missing.
+                    "__missing_password_${UUID.randomUUID()}__"
+                }
+                buildWebJwtVerifier(secret)
+            }
+            authHeader { call ->
+                extractAccessToken(
+                    authorizationHeader = call.request.headers[HttpHeaders.Authorization],
+                    queryToken = call.request.queryParameters[WEB_ACCESS_TOKEN_QUERY_KEY]
+                )?.let { token ->
+                    HttpAuthHeader.Single("Bearer", token)
+                }
+            }
+            validate { credential ->
+                val currentPassword = policy().password
+                if (currentPassword.isBlank()) {
+                    null
+                } else {
+                    credential.payload.subject?.takeIf { it == WEB_JWT_SUBJECT }?.let {
+                        io.ktor.server.auth.jwt.JWTPrincipal(credential.payload)
+                    }
+                }
+            }
+            challenge { _, _ ->
+                val currentPassword = policy().password
+                if (currentPassword.isBlank()) {
+                    call.respond(
+                        HttpStatusCode.Forbidden,
+                        ErrorResponse("Access password is not configured", HttpStatusCode.Forbidden.value)
+                    )
+                } else {
+                    call.respond(
+                        HttpStatusCode.Unauthorized,
+                        ErrorResponse("Unauthorized", HttpStatusCode.Unauthorized.value)
+                    )
+                }
+            }
+        }
+    }
+}
+
+internal fun createWebJwt(secret: String): Pair<String, Long> {
+    val now = System.currentTimeMillis()
+    val expiresAt = now + WEB_JWT_TTL_MILLIS
+    val token = JWT.create()
+        .withIssuer(WEB_JWT_ISSUER)
+        .withAudience(WEB_JWT_AUDIENCE)
+        .withSubject(WEB_JWT_SUBJECT)
+        .withIssuedAt(Date(now))
+        .withExpiresAt(Date(expiresAt))
+        .sign(Algorithm.HMAC256(secret))
+    return token to expiresAt
+}
+
+private fun buildWebJwtVerifier(secret: String): JWTVerifier {
+    return JWT.require(Algorithm.HMAC256(secret))
+        .withIssuer(WEB_JWT_ISSUER)
+        .withAudience(WEB_JWT_AUDIENCE)
+        .withSubject(WEB_JWT_SUBJECT)
+        .build()
+}
+
+private fun extractBearerToken(authorizationHeader: String?): String? {
+    if (authorizationHeader.isNullOrBlank()) return null
+    val prefix = "Bearer "
+    if (!authorizationHeader.startsWith(prefix, ignoreCase = true)) return null
+    return authorizationHeader.substring(prefix.length).trim().takeIf { it.isNotEmpty() }
+}
+
+private fun extractAccessToken(authorizationHeader: String?, queryToken: String?): String? {
+    return extractBearerToken(authorizationHeader)
+        ?: queryToken?.trim()?.takeIf { it.isNotEmpty() }
+}
+
+internal fun secureEquals(left: String, right: String): Boolean {
+    return MessageDigest.isEqual(left.toByteArray(Charsets.UTF_8), right.toByteArray(Charsets.UTF_8))
+}
