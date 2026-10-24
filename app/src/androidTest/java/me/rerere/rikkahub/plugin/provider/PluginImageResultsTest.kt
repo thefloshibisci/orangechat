@@ -17,6 +17,11 @@ import java.util.UUID
 
 @RunWith(AndroidJUnit4::class)
 class PluginImageResultsTest {
+    private companion object {
+        const val TWO_FRAME_GIF =
+            "R0lGODlhBAAEAIEAAP8AAAAAAAAAAAAAACH/C05FVFNDQVBFMi4wAwEAAAAh+QQACgAAACwAAAAABAAEAAAICQABCBxIsCCAgAAh+QQBCgABACwAAAAABAAEAIEAAP8AAAAAAAAAAAAICQABCBxIsCCAgAA7"
+    }
+
     @Test fun attachesOwnedImageAndRejectsMissingOrForeignAssets() = runBlocking {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val owner = "image_test_${UUID.randomUUID()}"
@@ -44,6 +49,16 @@ class PluginImageResultsTest {
             assertFalse(converter.convert(owner, result).any { it is UIMessagePart.Image })
             val plain = buildJsonObject { put("success", true) }
             assertEquals(listOf(UIMessagePart.Text(plain.toString())), converter.convert(owner, plain))
+
+            // Two-frame 4x4 GIF (red, then blue) becomes a PNG contact sheet with a frames note.
+            store.setData("test.image", """{"chunks":1}""")
+            store.setData("test.image.0", TWO_FRAME_GIF)
+            val gif = converter.convert(owner, result)
+            val image = gif.filterIsInstance<UIMessagePart.Image>().single()
+            assertTrue(image.url.endsWith(".png"))
+            val meta = Json.parseToJsonElement((gif.first() as UIMessagePart.Text).text).jsonObject
+            assertEquals(true, meta["image_attached"]?.jsonPrimitive?.boolean)
+            assertTrue(meta["image_frames_note"]!!.jsonPrimitive.content.contains("GIF"))
         } finally {
             store.clearAll()
             directory.deleteRecursively()
