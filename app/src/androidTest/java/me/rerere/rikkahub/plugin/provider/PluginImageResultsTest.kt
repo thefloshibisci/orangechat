@@ -1,12 +1,15 @@
 package me.rerere.rikkahub.plugin.provider
 
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Color
 import android.util.Base64
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.*
 import me.rerere.ai.ui.UIMessagePart
+import me.rerere.ai.util.GifContactSheet
 import me.rerere.rikkahub.plugin.data.PluginDataStore
 import org.junit.Assert.*
 import org.junit.Test
@@ -17,6 +20,17 @@ import java.util.UUID
 
 @RunWith(AndroidJUnit4::class)
 class PluginImageResultsTest {
+    @Test fun animatedGifSamplesBothFramesInOrder() {
+        val sheet = GifContactSheet.render(Base64.decode(TWO_FRAME_GIF, Base64.DEFAULT))
+        assertEquals(2, sheet.frames)
+        val bitmap = BitmapFactory.decodeByteArray(sheet.png, 0, sheet.png.size)
+        try {
+            assertEquals(Color.RED, bitmap.getPixel(1, 1))
+            assertEquals(Color.BLUE, bitmap.getPixel(9, 1))
+            assertTrue(bitmap.width <= 728 && bitmap.height <= 728)
+        } finally { bitmap.recycle() }
+    }
+
     private companion object {
         const val TWO_FRAME_GIF =
             "R0lGODlhBAAEAIEAAP8AAAAAAAAAAAAAACH/C05FVFNDQVBFMi4wAwEAAAAh+QQACgAAACwAAAAABAAEAAAICQABCBxIsCCAgAAh+QQBCgABACwAAAAABAAEAIEAAP8AAAAAAAAAAAAICQABCBxIsCCAgAA7"

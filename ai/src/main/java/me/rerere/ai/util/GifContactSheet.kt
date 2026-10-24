@@ -5,6 +5,7 @@ import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Movie
+import android.graphics.Rect
 import java.io.ByteArrayOutputStream
 import kotlin.math.ceil
 import kotlin.math.max
@@ -22,6 +23,8 @@ import kotlin.math.sqrt
  * white background (GIF transparency would otherwise render black in most viewers).
  */
 object GifContactSheet {
+    const val MAX_INPUT_BYTES = 12_000_000
+    private const val MAX_SOURCE_PIXELS = 6_000_000L
     private const val MAX_FRAMES = 9
     private const val CELL = 240
     private const val GAP = 4
@@ -30,6 +33,15 @@ object GifContactSheet {
     class Sheet(val png: ByteArray, val frames: Int, val durationMs: Int)
 
     fun render(gif: ByteArray): Sheet {
+        require(gif.size in 13..MAX_INPUT_BYTES) { "Invalid or oversized GIF" }
+        val header = gif.copyOfRange(0, 6).toString(Charsets.US_ASCII)
+        require(header == "GIF87a" || header == "GIF89a") { "Invalid GIF header" }
+        fun word(offset: Int) = (gif[offset].toInt() and 255) or ((gif[offset + 1].toInt() and 255) shl 8)
+        val width = word(6)
+        val height = word(8)
+        require(width in 1..8192 && height in 1..8192 && width.toLong() * height <= MAX_SOURCE_PIXELS) {
+            "GIF dimensions exceed the decode budget"
+        }
         @Suppress("DEPRECATION")
         val movie = Movie.decodeByteArray(gif, 0, gif.size)
         if (movie == null || movie.width() <= 0 || movie.height() <= 0) return firstFrame(gif)
@@ -70,22 +82,34 @@ object GifContactSheet {
     }
 
     private fun firstFrame(gif: ByteArray): Sheet {
-        val decoded = BitmapFactory.decodeByteArray(gif, 0, gif.size) ?: error("Unsupported image format")
-        val flat = Bitmap.createBitmap(decoded.width, decoded.height, Bitmap.Config.ARGB_8888)
+        val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(gif, 0, gif.size, options)
+        options.inSampleSize = 1
+        while (max(options.outWidth, options.outHeight) / options.inSampleSize > CELL * 2) {
+            options.inSampleSize *= 2
+        }
+        options.inJustDecodeBounds = false
+        val decoded = BitmapFactory.decodeByteArray(gif, 0, gif.size, options) ?: error("Unsupported image format")
         try {
-            Canvas(flat).apply {
-                drawColor(Color.WHITE)
-                drawBitmap(decoded, 0f, 0f, null)
+            val scale = min(1f, CELL.toFloat() / max(decoded.width, decoded.height))
+            val flat = Bitmap.createBitmap(max(1, (decoded.width * scale).roundToInt()),
+                max(1, (decoded.height * scale).roundToInt()), Bitmap.Config.ARGB_8888)
+            try {
+                Canvas(flat).apply {
+                    drawColor(Color.WHITE)
+                    drawBitmap(decoded, null, Rect(0, 0, flat.width, flat.height), null)
+                }
+                return Sheet(encode(flat), 1, 0)
+            } finally {
+                flat.recycle()
             }
-            return Sheet(encode(flat), 1, 0)
         } finally {
             decoded.recycle()
-            flat.recycle()
         }
     }
 
     private fun encode(bitmap: Bitmap): ByteArray = ByteArrayOutputStream().use { out ->
-        bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+        check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)) { "GIF sheet encoding failed" }
         out.toByteArray()
     }
 }
