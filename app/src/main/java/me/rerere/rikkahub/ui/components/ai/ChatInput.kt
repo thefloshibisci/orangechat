@@ -336,7 +336,9 @@ fun ChatInput(
         rememberLauncherForActivityResult(ActivityResultContracts.GetMultipleContents()) { selectedUris ->
             if (selectedUris.isNotEmpty()) {
                 Log.d("ImagePickButton", "Selected URIs: $selectedUris")
-                if (settings.displaySetting.skipCropImage) {
+                // Cropping re-encodes to a still image, which would drop GIF animation.
+                val hasGif = selectedUris.any { filesManager.getFileMimeType(it) == "image/gif" }
+                if (settings.displaySetting.skipCropImage || hasGif) {
                     state.addImages(filesManager.createChatFilesByContents(selectedUris))
                     dismissExpand()
                 } else {
@@ -411,6 +413,9 @@ fun ChatInput(
                         val extracted = filesManager.extractZipToChatFiles(uri, fileName)
                         allDocuments.addAll(extracted.documents)
                         allImageUris.addAll(extracted.images)
+                    } else if (mime in setOf("image/jpeg", "image/png", "image/gif", "image/webp")) {
+                        // Images (including GIFs) picked via the file picker go in as images, not documents.
+                        allImageUris.addAll(filesManager.createChatFilesByContents(listOf(uri)))
                     } else {
                         val isAllowed = allowedMimeTypes.contains(mime) || mime.startsWith("text/") ||
                             mime == "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||

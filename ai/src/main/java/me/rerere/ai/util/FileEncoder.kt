@@ -132,9 +132,11 @@ private fun File.compressAndEncode(
     maxPixels: Long = 16_000_000L,
     quality: Int = 85
 ): Pair<String, String> {
-    // GIF 保持原样（可能是动图）
+    // Bound input before reading or invoking the native GIF decoder.
     if (mimeType == "image/gif") {
-        return Pair(encodeToBase64Streaming(), mimeType)
+        require(length() in 1..GifContactSheet.MAX_INPUT_BYTES.toLong()) { "GIF is too large" }
+        val sheet = GifContactSheet.render(readBytes())
+        return Pair(Base64.encodeToString(sheet.png, Base64.NO_WRAP), "image/png")
     }
 
     // 读取图片尺寸
