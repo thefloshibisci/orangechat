@@ -1,4 +1,4 @@
-package me.rerere.rikkahub.plugin.provider
+package me.rerere.ai.util
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -14,13 +14,14 @@ import kotlin.math.sqrt
 
 /**
  * Turns an animated GIF into one PNG still that vision models can read.
+ * Shared by chat image attachments ([compressAndEncode]) and plugin image results.
  *
  * Providers only accept a single still image, so an animated GIF would otherwise be
  * reduced to its first frame (or rejected). Instead, up to [MAX_FRAMES] frames are sampled
  * evenly over the animation and laid out left-to-right, top-to-bottom in time order on a
  * white background (GIF transparency would otherwise render black in most viewers).
  */
-internal object GifContactSheet {
+object GifContactSheet {
     private const val MAX_FRAMES = 9
     private const val CELL = 240
     private const val GAP = 4

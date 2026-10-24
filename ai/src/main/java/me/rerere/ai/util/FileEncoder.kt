@@ -132,9 +132,11 @@ private fun File.compressAndEncode(
     maxPixels: Long = 16_000_000L,
     quality: Int = 85
 ): Pair<String, String> {
-    // GIF 保持原样（可能是动图）
+    // 模型只能看静态图：动图按时间抽帧拼成一张 PNG，单帧 GIF 转成静态 PNG
     if (mimeType == "image/gif") {
-        return Pair(encodeToBase64Streaming(), mimeType)
+        val sheet = runCatching { GifContactSheet.render(readBytes()) }.getOrNull()
+            ?: return Pair(encodeToBase64Streaming(), mimeType)
+        return Pair(Base64.encodeToString(sheet.png, Base64.NO_WRAP), "image/png")
     }
 
     // 读取图片尺寸

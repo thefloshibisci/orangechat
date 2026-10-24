@@ -9,6 +9,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.*
 import me.rerere.ai.ui.UIMessagePart
+import me.rerere.ai.util.GifContactSheet
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.plugin.data.PluginDataStore
 import java.io.File
