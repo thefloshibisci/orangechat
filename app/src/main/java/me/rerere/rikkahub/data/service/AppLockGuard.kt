@@ -72,8 +72,14 @@ object AppLockGuard {
         lastInterceptAt = now
 
         Log.i(TAG, "Intercepting locked app: $pkg")
+        // Bounce the locked app off screen first, so it is never usable even if the
+        // unlock overlay launch below is delayed or blocked by the ROM.
+        goHome()
         runCatching {
-            val intent = Intent(appContext, AppLockUnlockActivity::class.java).apply {
+            // Start from the bound accessibility service when possible: it is exempt from
+            // background-activity-start restrictions, while the application context is not.
+            val launcher: Context = RikkaAccessibilityService.instance ?: appContext
+            val intent = Intent(launcher, AppLockUnlockActivity::class.java).apply {
                 addFlags(
                     Intent.FLAG_ACTIVITY_NEW_TASK or
                         Intent.FLAG_ACTIVITY_CLEAR_TOP or
@@ -81,7 +87,7 @@ object AppLockGuard {
                 )
                 putExtra(AppLockUnlockActivity.EXTRA_TARGET_PACKAGE, pkg)
             }
-            appContext.startActivity(intent)
+            launcher.startActivity(intent)
         }.onFailure { Log.e(TAG, "Failed to start unlock activity", it) }
     }
 }
