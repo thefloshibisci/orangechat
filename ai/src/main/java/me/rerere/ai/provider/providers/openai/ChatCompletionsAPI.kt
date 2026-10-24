@@ -844,7 +844,7 @@ class ChatCompletionsAPI(
                             put("type", "function")
                             put("function", buildJsonObject {
                                 put("name", tool.toolName)
-                                put("arguments", tool.input)
+                                put("arguments", tool.input.ifBlank { "{}" }) // no-arg calls stream "", which strict proxies reject
                             })
                         })
                     }
