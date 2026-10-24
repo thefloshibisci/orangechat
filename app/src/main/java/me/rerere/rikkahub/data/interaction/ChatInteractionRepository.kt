@@ -90,14 +90,22 @@ class ChatInteractionRepository(
         val latestIndex = clean.indexOfLast { it.role == MessageRole.USER }
         if (latestIndex < 0) return clean
         val latest = clean[latestIndex]
-        // Reactions made before the previous assistant reply finished were already shown in an earlier turn.
-        val since = clean.subList(0, latestIndex).lastOrNull { it.role == MessageRole.ASSISTANT }
-            ?.let { (it.finishedAt ?: it.createdAt).toInstant(TimeZone.currentSystemDefault()).toEpochMilliseconds() }
+        // Use full branch history: request context truncation may omit the previous reply.
+        val since = previousReactionBoundary(sourceMessages, latest.id)
         val context = buildInteractionContext(active, since)
         return clean.map {
             if (it.id == latest.id) it.copy(parts = it.parts + UIMessagePart.Text(context)) else it
         }
     }
+}
+
+internal fun previousReactionBoundary(messages: List<UIMessage>, userId: Uuid): Long? {
+    val userIndex = messages.indexOfLast { it.id == userId }
+    if (userIndex < 0) return null
+    // A reaction added while a response is streaming was not in its initial request.
+    // Creation time is a conservative boundary; finish time would silently suppress it.
+    return messages.take(userIndex).lastOrNull { it.role == MessageRole.ASSISTANT }
+        ?.createdAt?.toInstant(TimeZone.currentSystemDefault())?.toEpochMilliseconds()
 }
 
 /**
