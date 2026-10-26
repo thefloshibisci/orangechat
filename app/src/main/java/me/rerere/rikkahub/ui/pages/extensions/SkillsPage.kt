@@ -60,6 +60,7 @@ import me.rerere.hugeicons.stroke.MoreVertical
 import me.rerere.hugeicons.stroke.Puzzle
 import me.rerere.rikkahub.data.files.SkillFrontmatterParser
 import me.rerere.rikkahub.data.files.SkillMetadata
+import me.rerere.rikkahub.data.files.InvalidSkillDir
 import me.rerere.rikkahub.Screen
 import me.rerere.rikkahub.ui.components.nav.BackButton
 import me.rerere.rikkahub.ui.components.ui.RikkaConfirmDialog
@@ -75,6 +76,7 @@ fun SkillsPage() {
     val navController = LocalNavController.current
     val vm = koinViewModel<SkillsVM>()
     val skills by vm.skills.collectAsStateWithLifecycle()
+    val invalidSkillDirs by vm.invalidSkillDirs.collectAsStateWithLifecycle()
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
     val toaster = LocalToaster.current
     val context = LocalContext.current
@@ -82,6 +84,7 @@ fun SkillsPage() {
     var showAddDialog by rememberSaveable { mutableStateOf(false) }
     var showImportDialog by rememberSaveable { mutableStateOf(false) }
     var deleteTarget by remember { mutableStateOf<SkillMetadata?>(null) }
+    var invalidDeleteTarget by remember { mutableStateOf<InvalidSkillDir?>(null) }
 
     Scaffold(
         topBar = {
@@ -116,7 +119,7 @@ fun SkillsPage() {
             contentPadding = innerPadding + PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            if (skills.isEmpty()) {
+            if (skills.isEmpty() && invalidSkillDirs.isEmpty()) {
                 item {
                     Column(
                         modifier = Modifier
@@ -145,12 +148,31 @@ fun SkillsPage() {
                 }
             }
 
-            items(skills, key = { it.name }) { skill ->
+            items(skills, key = { "skill:${it.skillDir.name}" }) { skill ->
                 SkillCard(
                     skill = skill,
-                    onClick = { navController.navigate(Screen.SkillDetail(skill.name)) },
+                    onClick = { navController.navigate(Screen.SkillDetail(skill.skillDir.name)) },
                     onDelete = { deleteTarget = skill },
                 )
+            }
+            items(invalidSkillDirs, key = { "invalid:${it.dirName}" }) { dir ->
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CustomColors.cardColorsOnSurfaceContainer,
+                ) {
+                    Row(
+                        modifier = Modifier.padding(start = 16.dp, top = 12.dp, bottom = 12.dp, end = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(dir.dirName, style = MaterialTheme.typography.titleSmall)
+                            Text("无法识别的技能目录：${dir.reason}", style = MaterialTheme.typography.bodySmall)
+                        }
+                        IconButton(onClick = { invalidDeleteTarget = dir }) {
+                            Icon(HugeIcons.Delete01, contentDescription = stringResource(R.string.delete))
+                        }
+                    }
+                }
             }
         }
     }
@@ -191,12 +213,25 @@ fun SkillsPage() {
         confirmText = stringResource(R.string.delete),
         dismissText = stringResource(R.string.cancel),
         onConfirm = {
-            deleteTarget?.let { vm.deleteSkill(it.name) }
+            deleteTarget?.let { vm.deleteSkill(it) }
             deleteTarget = null
         },
         onDismiss = { deleteTarget = null },
     ) {
         Text(stringResource(R.string.skills_page_delete_message, deleteTarget?.name ?: ""))
+    }
+    RikkaConfirmDialog(
+        show = invalidDeleteTarget != null,
+        title = "删除无效技能目录",
+        confirmText = stringResource(R.string.delete),
+        dismissText = stringResource(R.string.cancel),
+        onConfirm = {
+            invalidDeleteTarget?.let { vm.deleteInvalidSkillDir(it.dirName) }
+            invalidDeleteTarget = null
+        },
+        onDismiss = { invalidDeleteTarget = null },
+    ) {
+        Text("将删除目录 ${invalidDeleteTarget?.dirName.orEmpty()} 及其中所有文件，是否继续？")
     }
 }
 

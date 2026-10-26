@@ -47,6 +47,109 @@ import kotlin.uuid.Uuid
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [28], manifest = Config.NONE, application = Application::class, shadows = [HostFileUriShadow::class])
 class AttachmentPersistenceIntegrationTest {
+    @Test fun `safe duplicate collection preserves rewritten history and removes redundant bytes`() = runBlocking {
+        fixture { _, repository, files, _ ->
+            val first = files.saveManagedFromBytes(FileFolders.UPLOAD, "same".toByteArray(), "one.txt", "text/plain")
+            files.saveManagedFromBytes(FileFolders.UPLOAD, "same".toByteArray(), "two.txt", "text/plain")
+            val directory = files.getFile(first).parentFile!!
+            val plan = me.rerere.rikkahub.data.files.planDuplicateAttachments(directory)
+            val (duplicate, survivor) = plan.canonicalByDuplicate.entries.single()
+            val copy = directory.resolve(duplicate)
+            val entity = files.list().single { files.getFile(it) == copy }
+            val chat = conversation(UIMessage.user("keep text").copy(parts = listOf(
+                UIMessagePart.Text("keep text"), UIMessagePart.Document(copy.toUri().toString(), "copy.txt"),
+            )))
+            repository.insertConversation(chat)
+            assertEquals(1, repository.remapDuplicateAttachmentReferences(plan))
+            val result = me.rerere.rikkahub.data.files.collectUnreferencedAttachments(
+                files, setOf(entity.id), repository::findUnreferencedChatFileNames,
+                survivors = plan.canonicalByDuplicate,
+            )
+            assertEquals(1 to 4L, result)
+            assertFalse(copy.exists())
+            assertEquals("same", survivor.readText())
+            val parts = repository.getConversationById(chat.id)!!.currentMessages.single().parts
+            assertEquals(UIMessagePart.Text("keep text"), parts[0])
+            assertEquals(survivor.toUri().toString(), (parts[1] as UIMessagePart.Document).url)
+        }
+    }
+
+    @Test fun `safe cleanup rechecks preview and skips files attached in the meantime`() = runBlocking {
+        fixture { _, repository, files, _ ->
+            val file = files.saveManagedFromBytes(FileFolders.UPLOAD, "keep".toByteArray(), "preview.txt", "text/plain")
+            val disk = files.getFile(file)
+            assertEquals(setOf(disk.name), repository.findUnreferencedChatFileNames(listOf(disk.name)))
+            val chat = conversation(UIMessage.user("").copy(parts = listOf(UIMessagePart.Document(disk.toUri().toString(), "preview.txt"))))
+            repository.insertConversation(chat)
+            val result = me.rerere.rikkahub.data.files.collectUnreferencedAttachments(files, setOf(file.id), repository::findUnreferencedChatFileNames)
+            assertEquals(0, result.first)
+            assertTrue(disk.isFile)
+            assertEquals(chat.currentMessages, repository.getConversationById(chat.id)!!.currentMessages)
+        }
+    }
+
+    @Test fun `safe cleanup loses to chat and favorite writes after reference scan`() = runBlocking {
+        for (favorite in listOf(false, true)) fixture { db, repository, files, _ ->
+            val file = files.saveManagedFromBytes(FileFolders.UPLOAD, "race".toByteArray(), "race.txt", "text/plain")
+            val disk = files.getFile(file)
+            val scanned = CompletableDeferred<Unit>()
+            val resume = CompletableDeferred<Unit>()
+            coroutineScope {
+                val cleanup = async(Dispatchers.IO) {
+                    me.rerere.rikkahub.data.files.collectUnreferencedAttachments(files, setOf(file.id), { names ->
+                        repository.findUnreferencedChatFileNames(names).also { scanned.complete(Unit); resume.await() }
+                    })
+                }
+                try {
+                    withTimeout(5_000) { scanned.await() }
+                    val chat = conversation(UIMessage.user("").copy(parts = listOf(UIMessagePart.Document(disk.toUri().toString(), "race.txt"))))
+                    if (favorite) {
+                        val favorites = FavoriteRepository(db.favoriteDao())
+                        val saved = favorites.addNodeFavorite(
+                            me.rerere.rikkahub.data.model.NodeFavoriteTarget(
+                                chat.id, "", chat.messageNodes.single().id, chat.messageNodes.single(),
+                            ),
+                        )
+                        // Current node favorites store an ID only; imported legacy snapshots
+                        // can own attachment URLs independently of an existing conversation.
+                        favorites.upsert(saved.copy(snapshotJson = JsonInstant.encodeToString(chat.messageNodes.single())))
+                    } else repository.insertConversation(chat)
+                } finally { resume.complete(Unit) }
+                assertEquals(0, withTimeout(5_000) { cleanup.await().first })
+            }
+            assertTrue(disk.isFile)
+            assertTrue(repository.findUnreferencedChatFileNames(listOf(disk.name)).isEmpty())
+        }
+    }
+
+    @Test fun `draft protects uncommitted attachment and later cleanup still releases unused bytes`() = runBlocking {
+        fixture { _, repository, files, _ ->
+            val file = files.saveManagedFromBytes(FileFolders.UPLOAD, "draft".toByteArray(), "draft.txt", "text/plain")
+            val disk = files.getFile(file)
+            val draft = me.rerere.rikkahub.ui.hooks.ChatInputState()
+            try {
+                draft.addFiles(listOf(UIMessagePart.Document(disk.toUri().toString(), "draft.txt")))
+                assertEquals(0, me.rerere.rikkahub.data.files.collectUnreferencedAttachments(files, setOf(file.id), repository::findUnreferencedChatFileNames).first)
+                assertTrue(disk.isFile)
+            } finally { draft.clearInput() }
+            assertEquals(1 to 5L, me.rerere.rikkahub.data.files.collectUnreferencedAttachments(files, setOf(file.id), repository::findUnreferencedChatFileNames))
+            assertFalse(disk.exists())
+            assertNull(files.get(file.id))
+        }
+    }
+
+    @Test fun `duplicate collection keeps copy when survivor vanished`() = runBlocking {
+        fixture { _, repository, files, _ ->
+            val file = files.saveManagedFromBytes(FileFolders.UPLOAD, "same".toByteArray(), "copy.txt", "text/plain")
+            val disk = files.getFile(file)
+            val missing = disk.parentFile!!.resolve("missing-survivor-${Uuid.random()}.txt")
+            val result = me.rerere.rikkahub.data.files.collectUnreferencedAttachments(files, setOf(file.id), repository::findUnreferencedChatFileNames,
+                survivors = mapOf(disk.name to missing))
+            assertEquals(0, result.first)
+            assertTrue(disk.isFile)
+        }
+    }
+
     @Test fun `slow attachment validation leaves the chat database writer available`() = runBlocking {
         fixture { db, repository, files, _ ->
             val original = conversation(UIMessage.user("keep text").copy(parts = listOf(

@@ -55,13 +55,17 @@ class OpenAIProvider(
 
     private val chatCompletionsAPI = ChatCompletionsAPI(client = client, keyRoulette = keyRoulette)
     private val responseAPI = ResponseAPI(client = client, keyRoulette = keyRoulette)
+    private val openCodeClaude by lazy { ClaudeProvider(client, context) }
+    private val openCodeGoogle by lazy { GoogleProvider(client, context) }
 
 
     override suspend fun listModels(providerSetting: ProviderSetting.OpenAI): List<Model> =
         withContext(Dispatchers.IO) {
+            val openCodeRoot = openCodeApiRoot(providerSetting.baseUrl)
             val key = keyRoulette.next(providerSetting.apiKey, providerSetting.id.toString())
             val request = Request.Builder()
-                .url("${providerSetting.baseUrl}/models")
+                .url("${openCodeRoot?.let { "$it/v1" } ?: providerSetting.baseUrl.trimEnd('/')}/models")
+                .apply { if (openCodeRoot != null) header("User-Agent", "OrangeChat/1.0") }
                 .addHeader("Authorization", "Bearer $key")
                 .get()
                 .build()
@@ -78,6 +82,8 @@ class OpenAIProvider(
             data.mapNotNull { modelJson ->
                 val modelObj = modelJson.jsonObject
                 val id = modelObj["id"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+                // SystemOne uses a separate protocol that this provider does not implement.
+                if (openCodeRoot != null && id.startsWith("jev-")) return@mapNotNull null
 
                 Model(
                     modelId = id,
@@ -118,6 +124,20 @@ class OpenAIProvider(
         providerSetting: ProviderSetting.OpenAI,
         messages: List<UIMessage>,
         params: TextGenerationParams
+    ): Flow<MessageChunk> {
+        val adapted = adaptOpenCodeRequest(providerSetting, params, messages.firstOrNull()?.id?.toString())
+        return when (val setting = adapted.provider) {
+            is ProviderSetting.Claude -> openCodeClaude.streamText(setting, messages, adapted.params)
+            is ProviderSetting.Google -> openCodeGoogle.streamText(setting, messages, adapted.params)
+            is ProviderSetting.OpenAI -> streamOpenAI(setting, messages, adapted.params)
+            else -> error("Unsupported OpenCode protocol")
+        }
+    }
+
+    private suspend fun streamOpenAI(
+        providerSetting: ProviderSetting.OpenAI,
+        messages: List<UIMessage>,
+        params: TextGenerationParams,
     ): Flow<MessageChunk> = if (providerSetting.useResponseApi) {
         responseAPI.streamText(
             providerSetting = providerSetting,
@@ -136,6 +156,20 @@ class OpenAIProvider(
         providerSetting: ProviderSetting.OpenAI,
         messages: List<UIMessage>,
         params: TextGenerationParams
+    ): MessageChunk {
+        val adapted = adaptOpenCodeRequest(providerSetting, params, messages.firstOrNull()?.id?.toString())
+        return when (val setting = adapted.provider) {
+            is ProviderSetting.Claude -> openCodeClaude.generateText(setting, messages, adapted.params)
+            is ProviderSetting.Google -> openCodeGoogle.generateText(setting, messages, adapted.params)
+            is ProviderSetting.OpenAI -> generateOpenAI(setting, messages, adapted.params)
+            else -> error("Unsupported OpenCode protocol")
+        }
+    }
+
+    private suspend fun generateOpenAI(
+        providerSetting: ProviderSetting.OpenAI,
+        messages: List<UIMessage>,
+        params: TextGenerationParams,
     ): MessageChunk = if (providerSetting.useResponseApi) {
         responseAPI.generateText(
             providerSetting = providerSetting,

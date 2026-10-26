@@ -43,6 +43,8 @@ class ToolSurfaceBuilder(
     private val workspaceRepository: WorkspaceRepository,
     private val json: Json,
     private val memoryRepository: MemoryRepository,
+    private val localScenes: me.rerere.rikkahub.data.serein.LocalSceneRepository,
+    private val localSceneSettings: me.rerere.rikkahub.data.datastore.SettingsStore,
 ) {
     suspend fun build(
         assistant: me.rerere.rikkahub.data.model.Assistant,
@@ -51,6 +53,12 @@ class ToolSurfaceBuilder(
         recentMessages: List<UIMessage> = emptyList(),
         workspaceCwd: String? = null,
     ): List<Tool> = buildList {
+        if (!localSceneSettings.settingsFlow.value.sereinHook.usableBy(assistant.id.toString())) addAll(me.rerere.rikkahub.data.serein.buildLocalSceneTools(assistant, localScenes) {
+            localSceneSettings.settingsFlow.value.let { live ->
+                !live.sereinHook.usableBy(assistant.id.toString()) &&
+                    live.assistants.any { it.id == assistant.id && it.enableLocalSceneTools }
+            }
+        })
         // Memory tools - mirror GenerationHandler: only when the assistant has memory enabled.
         if (assistant.enableMemory) {
             val memoryAssistantId = if (assistant.useGlobalMemory) {

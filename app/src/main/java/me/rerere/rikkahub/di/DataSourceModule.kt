@@ -22,6 +22,7 @@ import me.rerere.rikkahub.data.ai.AIRequestInterceptor
 import me.rerere.rikkahub.data.ai.RequestLoggingInterceptor
 import me.rerere.rikkahub.data.ai.transformers.AssistantTemplateLoader
 import me.rerere.rikkahub.data.ai.GenerationHandler
+import me.rerere.rikkahub.data.ai.UsageRecorder
 import me.rerere.rikkahub.data.ai.transformers.TemplateTransformer
 import me.rerere.rikkahub.data.api.RikkaHubAPI
 import me.rerere.rikkahub.data.api.SponsorAPI
@@ -30,6 +31,7 @@ import me.rerere.rikkahub.data.db.APP_DATABASE_MIGRATIONS
 import me.rerere.rikkahub.data.db.appSQLiteOpenHelperFactory
 import me.rerere.rikkahub.data.db.AppDatabase
 import me.rerere.rikkahub.data.sync.DatabaseBackupCoordinator
+import me.rerere.rikkahub.data.db.fts.ensureMessageFtsLookup
 import me.rerere.rikkahub.data.db.fts.MessageFtsManager
 import me.rerere.rikkahub.data.db.fts.SimpleDictManager
 import me.rerere.rikkahub.data.ai.mcp.McpManager
@@ -90,6 +92,7 @@ val dataSourceModule = module {
                         )
                         """.trimIndent()
                     )
+                    ensureMessageFtsLookup(db)
                 }
             })
             .openHelperFactory(appSQLiteOpenHelperFactory(context))
@@ -115,6 +118,10 @@ val dataSourceModule = module {
     }
 
     single { DatabaseBackupCoordinator(context = get(), database = get()) }
+    single { get<AppDatabase>().translationHistoryDao() }
+
+    single { get<AppDatabase>().usageRecordDao() }
+    single { UsageRecorder(dao = get(), scope = get<AppScope>()) }
 
     single {
         get<AppDatabase>().memoryDao()
@@ -175,6 +182,9 @@ val dataSourceModule = module {
             memoryBankService = get(),
             filesManager = get(),
             chatInteractionRepository = get(),
+            localScenes = get(),
+            localSceneSettings = get(),
+            usageRecorder = get(),
         )
     }
 

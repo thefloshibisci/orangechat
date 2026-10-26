@@ -6,6 +6,8 @@
 
 package me.rerere.rikkahub.di
 
+import org.koin.dsl.onClose
+
 import android.content.Context
 import me.rerere.rikkahub.data.files.FileFolders
 import me.rerere.rikkahub.data.files.FilesManager
@@ -17,6 +19,7 @@ import me.rerere.rikkahub.data.repository.FolderRepository
 import me.rerere.rikkahub.data.repository.GenMediaRepository
 import me.rerere.rikkahub.data.repository.MemoryRepository
 import me.rerere.rikkahub.data.repository.WorkspaceRepository
+import me.rerere.rikkahub.data.repository.TranslationHistoryRepository
 import me.rerere.rikkahub.data.security.SecurityAuditRepository
 import me.rerere.workspace.ProotShellRunner
 import me.rerere.workspace.RootfsInstaller
@@ -26,6 +29,12 @@ import org.koin.dsl.module
 import java.io.File
 
 val repositoryModule = module {
+    single { me.rerere.workspace.ssh.SshConnectionPool() } onClose { it?.close() }
+    single { TranslationHistoryRepository(get()) }
+    single { me.rerere.rikkahub.data.serein.SereinHookClient() }
+    single { me.rerere.rikkahub.data.serein.SereinUploadClient() }
+    single { me.rerere.rikkahub.data.serein.SereinHookRepository(get(), get()) }
+    single { me.rerere.rikkahub.data.serein.LocalSceneRepository(get()) }
     single { me.rerere.rikkahub.data.sync.ChatHistoryBackup(get(), get(), get()) }
     single {
         ConversationRepository(get(), get(), get(), get(), get(), get(), get())
@@ -76,7 +85,7 @@ val repositoryModule = module {
     }
 
     single {
-        WorkspaceRepository(get(), get(), get(), get())
+        WorkspaceRepository(get(), get(), get(), get(), get())
     }
 
     single {

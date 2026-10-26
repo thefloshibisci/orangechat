@@ -97,6 +97,16 @@ private fun AssistantLocalToolContent(
     ) {
         CardGroup {
             item(
+                headlineContent = { Text("图表展示") },
+                supportingContent = { Text("允许 AI 在聊天中展示折线图、柱状图和散点图，可切换数据表并导出图片") },
+                trailingContent = {
+                    Switch(
+                        checked = assistant.localTools.contains(LocalToolOption.ChartDisplay),
+                        onCheckedChange = { toggleLocalTool(LocalToolOption.ChartDisplay, it) }
+                    )
+                }
+            )
+            item(
                 headlineContent = {
                     Text(stringResource(R.string.assistant_page_local_tools_javascript_engine_title))
                 },

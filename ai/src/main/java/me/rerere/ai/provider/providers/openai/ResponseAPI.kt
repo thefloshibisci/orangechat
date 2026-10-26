@@ -1,4 +1,4 @@
-﻿/*
+/*
  * 橘瓣 OrangeChat
  * 衍生自 RikkaHub (https://github.com/rikkahub/rikkahub)，原作者 RE
  * 本项目基于 GNU AGPL v3 开源，详见根目录 LICENSE 文件
@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.buffer
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonArrayBuilder
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -132,6 +133,8 @@ class ResponseAPI(
 
         Log.i(TAG, "streamText: ${json.encodeToString(requestBody)}")
 
+        // State belongs to this request; conversations must not share tool IDs or argument snapshots.
+        val toolState = ResponseToolStreamState()
         val listener = object : EventSourceListener() {
             override fun onEvent(
                 eventSource: EventSource,
@@ -164,7 +167,12 @@ class ResponseAPI(
                     )
                     return
                 }
-                val chunk = parseResponseDelta(chunkJson)
+                val chunk = try {
+                    parseResponseDelta(chunkJson, toolState)
+                } catch (e: Exception) {
+                    close(e)
+                    return
+                }
                 if (chunk != null) {
                     trySend(chunk)
                 }
@@ -388,9 +396,17 @@ class ResponseAPI(
                             put("type", "function_call")
                             put("call_id", tool.toolCallId)
                             put("name", tool.toolName)
-                            put("arguments", tool.input)
+                            put("arguments", tool.input.ifBlank { "{}" })
                         })
-                        val textOutput = tool.output.filterIsInstance<UIMessagePart.Text>().joinToString("\n") { it.text }
+                        val textOutput = tool.output.filterIsInstance<UIMessagePart.Text>()
+                            .joinToString("\n") { it.text }
+                            .ifBlank {
+                                if (tool.output.any { it is UIMessagePart.Image }) {
+                                    "[Tool returned an image; see the following attachment.]"
+                                } else {
+                                    "[Tool completed with no text output.]"
+                                }
+                            }
                         val imageOutput = tool.output.filterIsInstance<UIMessagePart.Image>()
 
                         add(buildJsonObject {
@@ -415,7 +431,7 @@ class ResponseAPI(
                                                 put("image_url", encodedImage.base64)
                                             }.onFailure {
                                                 put("type", "input_text")
-                                                put("text", "[Image encoding failed: ${it.message}]")
+                                                put("text", "[Image unavailable: the attachment could not be read.]")
                                             }
                                         })
                                     }
@@ -441,16 +457,23 @@ class ResponseAPI(
     }
 
     private fun JsonArrayBuilder.addContentItem(role: MessageRole, parts: List<UIMessagePart>) {
-        if (parts.isEmpty()) return
+        val usableParts = parts.filter { part ->
+            when (part) {
+                is UIMessagePart.Text -> part.text.isNotBlank()
+                is UIMessagePart.Image -> part.url.isNotBlank()
+                else -> false
+            }
+        }
+        if (usableParts.isEmpty()) return
 
         add(buildJsonObject {
             put("role", JsonPrimitive(role.name.lowercase()))
 
-            if (parts.isOnlyTextPart()) {
-                put("content", (parts.first() as UIMessagePart.Text).text)
+            if (usableParts.isOnlyTextPart()) {
+                put("content", (usableParts.first() as UIMessagePart.Text).text)
             } else {
                 putJsonArray("content") {
-                    parts.forEach { part ->
+                    usableParts.forEach { part ->
                         when (part) {
                             is UIMessagePart.Text -> {
                                 add(buildJsonObject {
@@ -465,9 +488,8 @@ class ResponseAPI(
                                         put("type", if (role == MessageRole.USER) "input_image" else "output_image")
                                         put("image_url", encodedImage.base64)
                                     }.onFailure {
-                                        it.printStackTrace()
-                                        put("type", "input_text")
-                                        put("text", "Error: Failed to encode image to base64")
+                                        put("type", if (role == MessageRole.USER) "input_text" else "output_text")
+                                        put("text", "[Image unavailable: the attachment could not be read.]")
                                     }
                                 })
                             }
@@ -480,7 +502,10 @@ class ResponseAPI(
         })
     }
 
-    private fun parseResponseDelta(jsonObject: JsonObject): MessageChunk? {
+    internal fun parseResponseDelta(
+        jsonObject: JsonObject,
+        toolState: ResponseToolStreamState,
+    ): MessageChunk? {
         val chunkType = jsonObject["type"]?.jsonPrimitive?.content ?: error("chunk type not found")
 
         when (chunkType) {
@@ -529,8 +554,14 @@ class ResponseAPI(
             "response.output_item.added" -> {
                 val item = jsonObject["item"]?.jsonObject ?: error("chunk item not found")
                 val type = item["type"]?.jsonPrimitive?.content ?: error("chunk type not found")
-                val id = item["id"]?.jsonPrimitive?.content ?: error("chunk id not found")
+                if (type == "function_call_output") {
+                    toolState.rememberOutput(item)
+                    return null // The added item may still have a provisional/empty output.
+                }
+                val id = item["id"]?.jsonPrimitive?.contentOrNull
+                    ?: item["call_id"]?.jsonPrimitive?.contentOrNull ?: error("chunk id not found")
                 if (type == "function_call") {
+                    val tool = toolState.functionCall(item, jsonObject["output_index"]?.jsonPrimitive?.intOrNull)
                     return MessageChunk(
                         id = id,
                         model = "",
@@ -541,13 +572,7 @@ class ResponseAPI(
                                 delta = UIMessage(
                                     role = MessageRole.ASSISTANT,
                                     parts = listOf(
-                                        UIMessagePart.Tool(
-                                            toolCallId = id,
-                                            toolName = item["name"]?.jsonPrimitive?.content ?: "",
-                                            input = item["arguments"]?.jsonPrimitive?.content
-                                                ?: "",
-                                            output = emptyList()
-                                        )
+                                        tool
                                     )
                                 ),
                                 finishReason = null
@@ -611,6 +636,15 @@ class ResponseAPI(
             "response.output_item.done" -> {
                 val item = jsonObject["item"]?.jsonObject ?: error("chunk item not found")
                 val type = item["type"]?.jsonPrimitive?.content ?: error("chunk type not found")
+                if (type == "function_call_output") {
+                    toolState.rememberOutput(item)
+                    return toolState.outputChunk(item["call_id"]?.jsonPrimitive?.contentOrNull)
+                }
+                if (type == "function_call") {
+                    return toolState.chunk(listOf(
+                        toolState.functionCall(item, jsonObject["output_index"]?.jsonPrimitive?.intOrNull)
+                    ))
+                }
                 val id = item["id"]?.jsonPrimitive?.content ?: error("chunk id not found")
                 if (type == "reasoning") {
                     val encryptedContent = item["encrypted_content"]?.jsonPrimitive?.content
@@ -667,8 +701,9 @@ class ResponseAPI(
             }
 
             "response.function_call_arguments.done" -> {
-                val toolCallId =
+                val itemId =
                     jsonObject["item_id"]?.jsonPrimitive?.content ?: error("item_id not found")
+                val toolCallId = toolState.callId(itemId, jsonObject["output_index"]?.jsonPrimitive?.intOrNull)
                 val arguments =
                     jsonObject["arguments"]?.jsonPrimitive?.content ?: error("arguments not found")
                 return MessageChunk(
@@ -683,7 +718,7 @@ class ResponseAPI(
                                     UIMessagePart.Tool(
                                         toolCallId = toolCallId,
                                         toolName = "",
-                                        input = arguments,
+                                        input = toolState.argumentSuffix(toolCallId, arguments),
                                         output = emptyList()
                                     )
                                 )
@@ -696,11 +731,24 @@ class ResponseAPI(
             }
 
             "response.completed" -> {
+                val response = jsonObject["response"]?.jsonObjectOrNull
+                (response?.get("output") as? JsonArray)?.forEach { element ->
+                    val item = element.jsonObjectOrNull ?: return@forEach
+                    if (item["type"]?.jsonPrimitive?.contentOrNull == "function_call_output") {
+                        toolState.rememberOutput(item)
+                    }
+                }
+                val outputs = toolState.remainingOutputs()
                 return MessageChunk(
                     id = jsonObject["item_id"]?.jsonPrimitive?.contentOrNull ?: "",
                     model = "",
-                    choices = emptyList(),
-                    usage = parseTokenUsage(jsonObject["response"]?.jsonObject?.get("usage")?.jsonObject)
+                    choices = if (outputs.isEmpty()) emptyList() else listOf(UIMessageChoice(
+                        index = 0,
+                        delta = UIMessage(role = MessageRole.ASSISTANT, parts = outputs),
+                        message = null,
+                        finishReason = null,
+                    )),
+                    usage = parseTokenUsage(response?.get("usage")?.jsonObjectOrNull)
                 )
             }
         }
@@ -708,8 +756,7 @@ class ResponseAPI(
         return null
     }
 
-    private fun parseResponseOutput(jsonObject: JsonObject): MessageChunk {
-        println(jsonObject)
+    internal fun parseResponseOutput(jsonObject: JsonObject): MessageChunk {
         val outputs = jsonObject["output"]?.jsonArray ?: error("output not found")
         val parts = arrayListOf<UIMessagePart>()
 
@@ -772,6 +819,18 @@ class ResponseAPI(
             }
         }
 
+        // Resolve by call_id after collecting calls, including gateways that return outputs first.
+        outputs.forEach { outputItem ->
+            val output = outputItem.jsonObjectOrNull ?: return@forEach
+            if (output["type"]?.jsonPrimitive?.contentOrNull != "function_call_output") return@forEach
+            val callId = output["call_id"]?.jsonPrimitive?.contentOrNull ?: return@forEach
+            val index = parts.indexOfLast { it is UIMessagePart.Tool && it.toolCallId == callId }
+            if (index >= 0) {
+                val tool = parts[index] as UIMessagePart.Tool
+                parts[index] = tool.copy(output = listOf(UIMessagePart.Text(output.functionCallOutputText())))
+            }
+        }
+
         return MessageChunk(
             id = jsonObject["id"]?.jsonPrimitive?.contentOrNull ?: "",
             model = jsonObject["model"]?.jsonPrimitive?.contentOrNull ?: "",
@@ -786,7 +845,7 @@ class ResponseAPI(
                     delta = null
                 )
             ),
-            usage = parseTokenUsage(jsonObject["usage"]?.jsonObject)
+            usage = parseTokenUsage(jsonObject["usage"]?.jsonObjectOrNull)
         )
     }
 

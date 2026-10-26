@@ -9,6 +9,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.*
 import me.rerere.ai.ui.UIMessagePart
+import me.rerere.ai.util.GifContactSheet
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.plugin.data.PluginDataStore
 import java.io.File
@@ -39,7 +40,7 @@ class PluginImageResults internal constructor(private val context: Context, priv
                 require(chunk.length <= 24000 && encoded.length + chunk.length <= 16000000)
                 encoded.append(chunk)
             }
-            val bytes = Base64.decode(encoded.toString(), Base64.DEFAULT)
+            var bytes = Base64.decode(encoded.toString(), Base64.DEFAULT)
             require(bytes.isNotEmpty() && bytes.size <= 12000000)
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
@@ -49,6 +50,20 @@ class PluginImageResults internal constructor(private val context: Context, priv
                 "image/png" -> "png"
                 "image/jpeg" -> "jpg"
                 "image/webp" -> "webp"
+                "image/gif" -> {
+                    // Models only see one still; send sampled frames as a single PNG sheet.
+                    val sheet = GifContactSheet.render(bytes)
+                    bytes = sheet.png
+                    clean["image_frames_note"] = JsonPrimitive(
+                        if (sheet.frames > 1) {
+                            "Animated GIF (${sheet.durationMs} ms). The attached image shows ${sheet.frames} " +
+                                "frames sampled evenly in time order, left to right, top to bottom."
+                        } else {
+                            "Single-frame GIF, converted to a still image."
+                        }
+                    )
+                    "png"
+                }
                 else -> error("Unsupported image format")
             }
             val file = File(imagesDir(), "plugin_${UUID.randomUUID()}.$extension")
@@ -62,6 +77,7 @@ class PluginImageResults internal constructor(private val context: Context, priv
             throw e
         } catch (e: Exception) {
             output?.delete()
+            clean.remove("image_frames_note")
             clean["image_attached"] = JsonPrimitive(false)
             clean["image_attachment_error"] = JsonPrimitive("Image attachment could not be loaded; the generation result is unchanged. Retrieve the existing asset; do not generate again.")
             null

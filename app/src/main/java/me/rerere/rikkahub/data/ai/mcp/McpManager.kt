@@ -782,8 +782,12 @@ internal val McpJson: Json by lazy {
     }
 }
 
-private fun ToolSchema.toSchema(): InputSchema {
-    return InputSchema.Obj(properties = this.properties ?: JsonObject(emptyMap()), required = this.required)
+internal fun ToolSchema.toSchema(): InputSchema {
+    return InputSchema.Obj(
+        properties = this.properties ?: JsonObject(emptyMap()),
+        required = this.required,
+        defs = this.defs,
+    )
 }
 
 /**

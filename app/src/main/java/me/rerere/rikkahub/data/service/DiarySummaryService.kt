@@ -6,6 +6,10 @@
 
 package me.rerere.rikkahub.data.service
 
+import me.rerere.rikkahub.data.ai.UsageRecorder
+import me.rerere.rikkahub.data.ai.UsageSource
+import me.rerere.rikkahub.data.ai.UsageTag
+
 import android.app.AlarmManager
 import android.app.PendingIntent
 import android.app.Service
@@ -273,6 +277,9 @@ class DiarySummaryService {
                     groupedMessages.forEach { (assistantId, assistantMessages) ->
                         // 获取当前助手及其关联的日记配置
                         val assistant = settings.assistants.find { it.id.toString() == assistantId }
+                        val recordedProvider = GlobalContext.get().get<UsageRecorder>().wrap(
+                            providerImpl, UsageTag(UsageSource.MEMORY, assistant?.id),
+                        )
                         val assistantDiaryConfigs = diaryConfigs.filter {
                             it.id in (assistant?.externalMemoryIds ?: emptySet())
                         }
@@ -322,7 +329,7 @@ class DiarySummaryService {
                             appendLine(conversationText)
                         }
 
-                        val result = providerImpl.generateText(
+                        val result = recordedProvider.generateText(
                             providerSetting = provider,
                             messages = listOf(
                                 UIMessage(

@@ -63,6 +63,12 @@ interface ConversationDAO {
     @Query("SELECT * FROM conversationentity WHERE id = :id")
     suspend fun getConversationById(id: String): ConversationEntity?
 
+    @Query("SELECT conversation_config FROM conversationentity WHERE id = :id")
+    suspend fun getConfig(id: String): String?
+
+    @Query("UPDATE conversationentity SET conversation_config = :config WHERE id = :id")
+    suspend fun updateConfig(id: String, config: String): Int
+
     @Query("SELECT EXISTS(SELECT 1 FROM conversationentity WHERE id = :id)")
     suspend fun existsById(id: String): Boolean
 

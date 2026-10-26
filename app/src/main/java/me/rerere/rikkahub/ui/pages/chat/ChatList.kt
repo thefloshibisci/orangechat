@@ -353,6 +353,9 @@ private fun ChatListNormal(
         val reactionsByMessageId = remember(reactions) {
             reactions.groupBy { it.messageId }
         }
+        val compressedNodeIds = remember(conversation.messageNodes, conversation.compressedMessageNodeIds) {
+            conversation.activeCompressedMessageNodeIds
+        }
 
         LazyColumn(
             state = state,
@@ -404,7 +407,7 @@ private fun ChatListNormal(
                             } else {
                                 null
                             },
-                            readOnly = node.id in conversation.activeCompressedMessageNodeIds,
+                            readOnly = node.id in compressedNodeIds,
                             model = node.currentMessage.modelId?.let { settings.findModelById(it) },
                             assistant = interactionAssistant,
                             loading = loading && index == displayNodes.lastIndex,
@@ -687,8 +690,9 @@ private fun ChatListPreview(
 
     // 过滤消息，同时保留原始 index 避免后续 O(n) indexOf 查找
     val filteredMessages = remember(conversation.messageNodes, conversation.compressionRevision, showCompressedHistory, searchQuery) {
+        val visibleIds = if (showCompressedHistory) null else conversation.visibleMessageNodes.mapTo(hashSetOf()) { it.id }
         val visible = conversation.messageNodes.mapIndexed { index, node -> index to node }
-            .filter { (_, node) -> showCompressedHistory || node in conversation.visibleMessageNodes }
+            .filter { (_, node) -> visibleIds == null || node.id in visibleIds }
         if (searchQuery.isBlank()) {
             visible
         } else {

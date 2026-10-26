@@ -44,6 +44,7 @@ import me.rerere.ai.provider.Provider
 import me.rerere.ai.provider.ProviderSetting
 import me.rerere.ai.provider.TextGenerationParams
 import me.rerere.ai.provider.providers.vertex.ServiceAccountTokenProvider
+import me.rerere.ai.provider.providers.google.InteractionsAPI
 import me.rerere.ai.registry.ModelRegistry
 import me.rerere.ai.ui.ImageAspectRatio
 import me.rerere.ai.ui.ImageGenerationItem
@@ -59,8 +60,8 @@ import me.rerere.ai.util.encodeBase64
 import me.rerere.ai.util.audioMimeType
 import me.rerere.ai.util.json
 import me.rerere.ai.util.mergeCustomBody
-import me.rerere.ai.util.removeElements
 import me.rerere.ai.util.stringSafe
+import me.rerere.ai.util.toGeminiFunctionParameters
 import me.rerere.ai.util.toHeaders
 import me.rerere.common.http.await
 import me.rerere.common.http.jsonPrimitiveOrNull
@@ -79,9 +80,11 @@ import kotlin.time.Clock
 import kotlin.uuid.Uuid
 
 private const val TAG = "GoogleProvider"
+private const val THOUGHT_SIGNATURE_VALIDATION_BYPASS = "skip_thought_signature_validator"
 
 class GoogleProvider(private val client: OkHttpClient, context: Context? = null) : Provider<ProviderSetting.Google> {
     private val keyRoulette = if (context != null) KeyRoulette.lru(context) else KeyRoulette.default()
+    private val interactionsApi by lazy { InteractionsAPI(client, keyRoulette) }
     private val serviceAccountTokenProvider by lazy {
         ServiceAccountTokenProvider(client)
     }
@@ -166,6 +169,9 @@ class GoogleProvider(private val client: OkHttpClient, context: Context? = null)
         messages: List<UIMessage>,
         params: TextGenerationParams,
     ): MessageChunk = withContext(Dispatchers.IO) {
+        if (providerSetting.useInteractionsApi) {
+            return@withContext interactionsApi.generateText(providerSetting, messages, params)
+        }
         val requestBody = buildCompletionRequestBody(messages, params)
 
         val url = buildUrl(
@@ -222,6 +228,11 @@ class GoogleProvider(private val client: OkHttpClient, context: Context? = null)
         messages: List<UIMessage>,
         params: TextGenerationParams,
     ): Flow<MessageChunk> = callbackFlow {
+        if (providerSetting.useInteractionsApi) {
+            interactionsApi.streamText(providerSetting, messages, params).collect { send(it) }
+            close()
+            return@callbackFlow
+        }
         val requestBody = buildCompletionRequestBody(messages, params)
 
         val url = buildUrl(
@@ -422,7 +433,10 @@ class GoogleProvider(private val client: OkHttpClient, context: Context? = null)
         // Contents (user messages)
         put(
             "contents",
-            buildContents(messages)
+            buildContents(
+                messages = messages,
+                requireThoughtSignature = requiresThoughtSignature(params.model.modelId)
+            )
         )
 
         // Tools
@@ -437,16 +451,7 @@ class GoogleProvider(private val client: OkHttpClient, context: Context? = null)
                                 put(
                                     key = "parameters",
                                     element = json.encodeToJsonElement(tool.parameters())
-                                        .removeElements(
-                                            listOf(
-                                                "const",
-                                                "exclusiveMaximum",
-                                                "exclusiveMinimum",
-                                                "format",
-                                                "additionalProperties",
-                                                "enum",
-                                            )
-                                        )
+                                        .toGeminiFunctionParameters()
                                 )
                             })
                         }
@@ -562,21 +567,28 @@ class GoogleProvider(private val client: OkHttpClient, context: Context? = null)
             jsonObject.containsKey("text") -> {
                 val thought = jsonObject["thought"]?.jsonPrimitive?.booleanOrNull ?: false
                 val text = jsonObject["text"]?.jsonPrimitive?.content ?: ""
+                val metadata = jsonObject.thoughtSignatureOrNull()?.let {
+                    buildJsonObject { put("thoughtSignature", it) }
+                }
                 if (thought) UIMessagePart.Reasoning(
                     reasoning = text,
                     createdAt = Clock.System.now(),
-                    finishedAt = null
-                ) else UIMessagePart.Text(text)
+                    finishedAt = null,
+                    metadata = metadata
+                ) else UIMessagePart.Text(text, metadata)
             }
 
             jsonObject.containsKey("functionCall") -> {
+                val thoughtSignature = jsonObject.thoughtSignatureOrNull()
                 UIMessagePart.Tool(
-                    toolCallId = Uuid.random().toString(),
+                    toolCallId = jsonObject["functionCall"]!!.jsonObject["id"]
+                        ?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+                        ?: Uuid.random().toString(),
                     toolName = jsonObject["functionCall"]!!.jsonObject["name"]!!.jsonPrimitive.content,
                     input = json.encodeToString(jsonObject["functionCall"]!!.jsonObject["args"]),
                     output = emptyList(),
-                    metadata = buildJsonObject {
-                        put("thoughtSignature", jsonObject["thoughtSignature"]?.jsonPrimitive?.contentOrNull)
+                    metadata = thoughtSignature?.let {
+                        buildJsonObject { put("thoughtSignature", it) }
                     }
                 )
             }
@@ -586,7 +598,7 @@ class GoogleProvider(private val client: OkHttpClient, context: Context? = null)
                 val mime = inlineData["mimeType"]?.jsonPrimitive?.content ?: "image/png"
                 val data = inlineData["data"]?.jsonPrimitive?.content ?: ""
                 val thought = jsonObject["thought"]?.jsonPrimitive?.booleanOrNull ?: false
-                val thoughtSignature = jsonObject["thoughtSignature"]?.jsonPrimitive?.contentOrNull
+                val thoughtSignature = jsonObject.thoughtSignatureOrNull()
                 require(mime.startsWith("image/")) {
                     "Only image mime type is supported"
                 }
@@ -600,8 +612,8 @@ class GoogleProvider(private val client: OkHttpClient, context: Context? = null)
                 }
                 UIMessagePart.Image(
                     url = data,
-                    metadata = buildJsonObject {
-                        put("thoughtSignature", thoughtSignature)
+                    metadata = thoughtSignature?.let {
+                        buildJsonObject { put("thoughtSignature", it) }
                     }
                 )
             }
@@ -610,13 +622,27 @@ class GoogleProvider(private val client: OkHttpClient, context: Context? = null)
         }
     }
 
-    private fun buildContents(messages: List<UIMessage>): JsonArray {
+    /** Kept for tests and callers that do not need Gemini 3/4 signature compatibility. */
+    private fun buildContents(messages: List<UIMessage>): JsonArray =
+        buildContents(messages, requireThoughtSignature = false)
+
+    private fun buildContents(
+        messages: List<UIMessage>,
+        requireThoughtSignature: Boolean
+    ): JsonArray {
         return buildJsonArray {
             messages
                 .filter { it.role != MessageRole.SYSTEM && it.isValidToUpload() }
-                .forEach { message ->
+                .forEachIndexed { messageIndex, original ->
+                    // Old/imported records may lack IDs. Give each occurrence a stable,
+                    // request-only identity shared by its call and result; never match by name.
+                    val message = original.copy(parts = original.parts.mapIndexed { partIndex, part ->
+                        if (part is UIMessagePart.Tool && part.toolCallId.isBlank()) {
+                            part.copy(toolCallId = "orangechat_call_${messageIndex}_$partIndex")
+                        } else part
+                    })
                     if (message.role == MessageRole.ASSISTANT) {
-                        addModelMessage(message)
+                        addModelMessage(message, requireThoughtSignature)
                     } else {
                         addUserMessage(message)
                     }
@@ -624,7 +650,10 @@ class GoogleProvider(private val client: OkHttpClient, context: Context? = null)
         }
     }
 
-    private fun JsonArrayBuilder.addModelMessage(message: UIMessage) {
+    private fun JsonArrayBuilder.addModelMessage(
+        message: UIMessage,
+        requireThoughtSignature: Boolean
+    ) {
         val groups = groupPartsByToolBoundary(message.parts)
         val partsBuffer = mutableListOf<JsonObject>()
 
@@ -636,7 +665,22 @@ class GoogleProvider(private val client: OkHttpClient, context: Context? = null)
 
                 is PartGroup.Tools -> {
                     // 添加 functionCall 到 parts 缓冲
-                    group.tools.forEach { partsBuffer.add(it.toFunctionCallPart()) }
+                    group.tools.forEachIndexed { index, tool ->
+                        // Gemini 3/4 strictly validates the first function call in every
+                        // sequential/parallel step. Imported conversations and calls created by
+                        // another provider legitimately have no Gemini signature. Google
+                        // documents this sentinel specifically for those histories.
+                        val fallbackSignature = if (
+                            requireThoughtSignature &&
+                            index == 0 &&
+                            tool.thoughtSignatureOrNull() == null
+                        ) {
+                            THOUGHT_SIGNATURE_VALIDATION_BYPASS
+                        } else {
+                            null
+                        }
+                        partsBuffer.add(tool.toFunctionCallPart(fallbackSignature))
+                    }
 
                     // 输出 model 消息
                     add(buildJsonObject {
@@ -708,8 +752,19 @@ class GoogleProvider(private val client: OkHttpClient, context: Context? = null)
     }
 
     private fun UIMessagePart.toGooglePart(): JsonObject? = when (this) {
+        is UIMessagePart.Reasoning -> metadata?.thoughtSignatureOrNull()?.let { signature ->
+            buildJsonObject {
+                put("text", reasoning)
+                put("thought", true)
+                put("thoughtSignature", signature)
+            }
+        }
+
         is UIMessagePart.Text -> buildJsonObject {
             put("text", text)
+            metadata?.thoughtSignatureOrNull()?.let {
+                put("thoughtSignature", it)
+            }
         }
 
         is UIMessagePart.Image -> {
@@ -719,7 +774,7 @@ class GoogleProvider(private val client: OkHttpClient, context: Context? = null)
                         put("mimeType", encoded.mimeType)
                         put("data", encoded.base64)
                     })
-                    metadata?.get("thoughtSignature")?.jsonPrimitive?.contentOrNull?.let {
+                    metadata?.thoughtSignatureOrNull()?.let {
                         put("thoughtSignature", it)
                     }
                 }
@@ -751,18 +806,34 @@ class GoogleProvider(private val client: OkHttpClient, context: Context? = null)
         else -> null
     }
 
-    private fun UIMessagePart.Tool.toFunctionCallPart() = buildJsonObject {
+    private fun UIMessagePart.Tool.toFunctionCallPart(fallbackThoughtSignature: String? = null) = buildJsonObject {
         put("functionCall", buildJsonObject {
+            put("id", toolCallId)
             put("name", toolName)
             put("args", inputAsJson())
         })
-        metadata?.get("thoughtSignature")?.let {
+        (thoughtSignatureOrNull() ?: fallbackThoughtSignature)?.let {
             put("thoughtSignature", it)
         }
     }
 
+    private fun UIMessagePart.Tool.thoughtSignatureOrNull(): String? =
+        metadata?.thoughtSignatureOrNull()
+
+    private fun JsonObject.thoughtSignatureOrNull(): String? =
+        this["thoughtSignature"]?.jsonPrimitiveOrNull?.contentOrNull?.takeIf { it.isNotBlank() }
+            ?: this["thought_signature"]?.jsonPrimitiveOrNull?.contentOrNull?.takeIf { it.isNotBlank() }
+
+    private fun requiresThoughtSignature(modelId: String): Boolean {
+        val normalized = modelId.lowercase()
+        return Regex("gemini[-._/ ]+[34](?:[^0-9]|$)").containsMatchIn(normalized) ||
+            normalized.contains("gemini-flash-latest") ||
+            normalized.contains("gemini-pro-latest")
+    }
+
     private fun UIMessagePart.Tool.toFunctionResponsePart() = buildJsonObject {
         put("functionResponse", buildJsonObject {
+            put("id", toolCallId)
             put("name", toolName)
             put("response", buildJsonObject {
                 put(

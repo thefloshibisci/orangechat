@@ -6,6 +6,8 @@
 
 package me.rerere.rikkahub.service
 
+import me.rerere.rikkahub.data.files.attachmentReferenceGuard
+
 import android.util.Log
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -15,11 +17,14 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import me.rerere.rikkahub.data.model.Conversation
+import java.io.Closeable
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
@@ -36,8 +41,13 @@ class ConversationSession(
         Log.d(TAG, message)
         Unit
     },
+    private val onGenerationIdle: (Uuid) -> Unit = {},
     private val onIdle: (Uuid) -> Unit,
 ) {
+    val messageQueue = MessageQueue()
+    private var queueDispatchBarriers = 0
+    private val queueBarrierState = MutableStateFlow(0)
+    private var cleanedUp = false
     // 会话状态
     val state = MutableStateFlow(initial)
     private val deleted = AtomicBoolean(false)
@@ -47,14 +57,26 @@ class ConversationSession(
     private val lifecycleEpoch = AtomicLong(0)
     internal val epoch: Long get() = lifecycleEpoch.get()
 
+    /** Message snapshots never own request controls. Resolve them at the atomic publish point. */
+    internal fun publishMessageSnapshot(snapshot: Conversation) {
+        state.update { current ->
+            if (current.messageNodesLoaded) snapshot.copy(config = current.config) else snapshot
+        }
+    }
+
     internal fun requireActive() {
         if (isDeleted) throw CancellationException("Conversation was deleted")
     }
 
     internal fun markDeleted(): List<Job> {
-        deleted.set(true)
-        lifecycleEpoch.incrementAndGet()
-        return cancelJobs()
+        val jobs = synchronized(this) {
+            deleted.set(true)
+            lifecycleEpoch.incrementAndGet()
+            activeJobs.toList()
+        }
+        messageQueue.clear()
+        jobs.asReversed().forEach { it.cancel() }
+        return jobs
     }
 
     internal suspend fun initialize(
@@ -85,14 +107,20 @@ class ConversationSession(
                 messageJournal.invalidate()
                 persistedConversation = restored
                 state.value = restored
-                deleted.set(false)
+                synchronized(this@ConversationSession) {
+                    cleanedUp = false
+                    deleted.set(false)
+                }
             }
         }
     }
 
     internal fun reopenAfterFailedDelete() {
         check(!isGenerating)
-        deleted.set(false)
+        synchronized(this) {
+            cleanedUp = false
+            deleted.set(false)
+        }
     }
 
     internal suspend fun deleteAndAwait(persistDeletion: suspend () -> Unit) = withContext(NonCancellable) {
@@ -117,8 +145,10 @@ class ConversationSession(
     private val _generationJob = MutableStateFlow<Job?>(null)
     private val activeJobs = mutableSetOf<Job>()
     val generationJob: StateFlow<Job?> = _generationJob.asStateFlow()
-    val isGenerating: Boolean get() = synchronized(this) { activeJobs.any { it.isActive } }
-    val isInUse: Boolean get() = refCount.get() > 0 || isGenerating
+    val isGenerating: Boolean get() = synchronized(this) { activeJobs.any { !it.isCompleted } }
+    val isInUse: Boolean get() = synchronized(this) {
+        refCount.get() > 0 || isGenerating || queueDispatchBarriers > 0 || messageQueue.hasPendingOrInFlight
+    }
 
     /**
      * 保存互斥锁：保护"读取最新对话状态 -> 修改 messageNodes -> 落库"这一整段操作的原子性。
@@ -135,7 +165,9 @@ class ConversationSession(
 
     /** Keep this session alive while serializing database loads and state/metadata saves. */
     internal suspend fun <T> withStateLock(block: suspend () -> T): T = withRefSuspend {
-        saveMutex.withLock { requireActive(); block() }
+        attachmentReferenceGuard.beginWrite().use {
+            saveMutex.withLock { requireActive(); block() }
+        }
     }
 
     /** Persist only metadata, then patch the latest state without replacing in-flight messages. */
@@ -194,31 +226,98 @@ class ConversationSession(
         }
     }
 
-    @Synchronized
     fun setJob(job: Job?, cancelPrevious: Boolean = true) {
-        if (isDeleted) { job?.cancel(); return }
-        val previous = _generationJob.value
-        _generationJob.value = job
-        if (cancelPrevious) previous?.cancel()
-        if (job != null) activeJobs.add(job)
-        job?.invokeOnCompletion {
-            synchronized(this) {
-                activeJobs.remove(job)
-                if (_generationJob.value === job) {
-                    _generationJob.value = null
-                }
-                if (refCount.get() <= 0 && !isGenerating) {
-                    scheduleIdleCheck()
-                }
-            }
+        val registration = synchronized(this) {
+            if (isDeleted || cleanedUp) null else registerJobLocked(job, cancelPrevious)
         }
+        if (registration == null) job?.cancel() else finishJobRegistration(registration)
     }
 
     fun getJob(): Job? = _generationJob.value
 
-    @Synchronized
-    fun cancelJobs(): List<Job> = activeJobs.toList().also { jobs ->
+    fun cancelJobs(): List<Job> = synchronized(this) { activeJobs.toList() }.also { jobs ->
         jobs.asReversed().forEach { it.cancel() }
+    }
+
+    private data class JobRegistration(val job: Job?, val previous: Job?, val attachmentWrite: AutoCloseable?)
+
+    /** The caller owns the one generation monitor; registration itself never invokes completion callbacks. */
+    private fun registerJobLocked(job: Job?, cancelPrevious: Boolean): JobRegistration {
+        val previous = _generationJob.value.takeIf { cancelPrevious && it !== job }
+        _generationJob.value = job
+        val attachmentWrite = if (job != null && activeJobs.add(job)) {
+            // Tool-generated attachments can exist before their first persisted checkpoint.
+            attachmentReferenceGuard.beginWrite()
+        } else null
+        if (job != null) cancelIdleCheck()
+        return JobRegistration(job, previous, attachmentWrite)
+    }
+
+    private fun finishJobRegistration(registration: JobRegistration) {
+        registration.previous?.cancel()
+        val job = registration.job ?: return
+        job.invokeOnCompletion {
+            registration.attachmentWrite?.close()
+            val wake = synchronized(this) {
+                activeJobs.remove(job)
+                if (_generationJob.value === job) _generationJob.value = null
+                if (!cleanedUp && !isDeleted && refCount.get() <= 0 && !isInUse) scheduleIdleCheck()
+                !isDeleted && !cleanedUp && !isGenerating && queueDispatchBarriers == 0
+            }
+            // A replaced job cannot clear its replacement, and wakeups never run under this monitor.
+            if (wake) onGenerationIdle(id)
+        }
+    }
+
+    /** Stop/structural edits hold this barrier through their final state checkpoint. */
+    internal fun blockQueueDispatch(): Closeable {
+        synchronized(this) {
+            queueDispatchBarriers++
+            queueBarrierState.value = queueDispatchBarriers
+            cancelIdleCheck()
+        }
+        val closed = AtomicBoolean(false)
+        return Closeable {
+            if (closed.compareAndSet(false, true)) {
+                val wake = synchronized(this) {
+                    queueDispatchBarriers--
+                    queueBarrierState.value = queueDispatchBarriers
+                    if (!isInUse && refCount.get() <= 0) scheduleIdleCheck()
+                    !isDeleted && !cleanedUp && queueDispatchBarriers == 0 && !isGenerating
+                }
+                if (wake) onGenerationIdle(id)
+            }
+        }
+    }
+
+    internal suspend fun awaitQueueDispatchUnblocked() {
+        queueBarrierState.first { it == 0 }
+    }
+
+    /** Atomically reserve the FIFO head and register an unstarted job before another producer can claim. */
+    internal fun dispatchNextQueuedMessage(createJob: (QueuedMessage) -> Job): Job? {
+        var failed: Pair<QueuedMessage, Throwable>? = null
+        val registration = synchronized(this) {
+            if (isDeleted || cleanedUp || queueDispatchBarriers > 0 || isGenerating ||
+                !state.value.messageNodesLoaded || state.value.currentMessages.any { message ->
+                    message.getTools().any { it.isPending || it.canResumeExecution }
+                }) return@synchronized null
+            val queued = messageQueue.takeNext() ?: return@synchronized null
+            try {
+                registerJobLocked(createJob(queued), cancelPrevious = false)
+            } catch (error: Throwable) {
+                failed = queued to error
+                null
+            }
+        }
+        failed?.let { (message, error) ->
+            messageQueue.pause()
+            messageQueue.complete(message.id, error = error)
+            throw error
+        }
+        registration ?: return null
+        finishJobRegistration(registration)
+        return registration.job
     }
 
     /**
@@ -226,26 +325,28 @@ class ConversationSession(
      * 用于主动消息/激进模式等"低优先级"生成源：如果已有生成在跑（无论是正常聊天还是
      * 另一路主动消息），直接返回 false，调用方应放弃本次触发，而不是排队等待。
      *
-     * 与 setJob() 的区别：setJob() 是"强制抢占"（会取消旧 job），用于用户主动发消息这种
-     * 应该无条件打断旧生成的场景；tryClaimGeneration() 是"礼貌性尝试"，用于不应该打断
+     * 与 setJob() 的区别：setJob() 是明确替换旧任务（例如重新生成），普通发送进入队列；
+     * tryClaimGeneration() 是"礼貌性尝试"，用于不应该打断
      * 已有生成的低优先级场景。
      *
      * 注意：调用方在拿不到 Job 引用（返回 false）时，应打印包含 conversationId 的 debug
      * 日志说明"因为会话正在生成中，跳过本次触发"，方便排查。
      */
-    private val claimLock = Any()
-
-    fun tryClaimGeneration(newJob: Job): Boolean = synchronized(claimLock) {
-        if (isDeleted || isGenerating) return@synchronized false
-        setJob(newJob)
-        true
+    fun tryClaimGeneration(newJob: Job): Boolean {
+        val registration = synchronized(this) {
+            if (isDeleted || cleanedUp || isGenerating || queueDispatchBarriers > 0 ||
+                messageQueue.hasPendingOrInFlight) null else registerJobLocked(newJob, cancelPrevious = false)
+        } ?: return false
+        finishJobRegistration(registration)
+        return true
     }
 
     private fun scheduleIdleCheck() {
+        if (cleanedUp || isDeleted) return
         idleCheckJob?.cancel()
         idleCheckJob = scope.launch {
             delay(IDLE_TIMEOUT_MS)
-            if (refCount.get() <= 0 && !isGenerating) {
+            if (!isInUse) {
                 onIdle(id)
             }
         }
@@ -257,10 +358,15 @@ class ConversationSession(
     }
 
     fun cleanup() {
-        _generationJob.value = null
-        cancelJobs()
-        idleCheckJob?.cancel()
-        idleCheckJob = null
+        val jobs = synchronized(this) {
+            cleanedUp = true
+            _generationJob.value = null
+            idleCheckJob?.cancel()
+            idleCheckJob = null
+            activeJobs.toList()
+        }
+        messageQueue.clear()
+        jobs.asReversed().forEach { it.cancel() }
     }
 }
 

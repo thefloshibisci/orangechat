@@ -361,7 +361,7 @@ class RouteActivity : ComponentActivity() {
         val eventBus = koinInject<AppEventBus>()
         val migrationState by DatabaseMigrationTracker.state.collectAsStateWithLifecycle()
 
-        val startScreen = Screen.Chat(
+        val startScreen = remember { Screen.Chat(
             id = if (readBooleanPreference("create_new_conversation_on_start", true)) {
                 Uuid.random().toString()
             } else {
@@ -370,7 +370,7 @@ class RouteActivity : ComponentActivity() {
                     Uuid.random().toString()
                 ) ?: Uuid.random().toString()
             }
-        )
+        ) }
 
         val backStack = rememberNavBackStack(startScreen)
         SideEffect { this@RouteActivity.navStack = backStack }
@@ -434,7 +434,9 @@ class RouteActivity : ComponentActivity() {
                                 rememberViewModelStoreNavEntryDecorator(),
                             ),
                             modifier = Modifier.fillMaxSize(),
-                            onBack = { backStack.removeLastOrNull() },
+                            onBack = {
+                                if (backStack.size > 1) backStack.removeLastOrNull()
+                            },
                             transitionSpec = {
                                 if (backStack.size == 1) fadeIn() togetherWith fadeOut()
                                 else {

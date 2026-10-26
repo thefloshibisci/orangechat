@@ -34,11 +34,11 @@ class MessageFtsManager(private val database: AppDatabase) {
 
     private val db get() = database.openHelper.writableDatabase
 
-    /** Whole-conversation replacement clears once; per-node FTS deletes would repeatedly scan
-     * the virtual table, including every unrelated conversation. Failures roll back the caller. */
+    /** Replace only this conversation through indexed row IDs. Failures roll back the caller. */
     suspend fun replaceConversationIndex(conversation: Conversation) = database.withTransaction {
         val conversationId = conversation.id.toString()
-        db.execSQL("DELETE FROM message_fts WHERE conversation_id = ?", arrayOf(conversationId))
+        ensureMessageFtsLookup(db)
+        deleteMessageFtsRows(db, conversationId)
         db.compileStatement(
             "INSERT INTO message_fts(text, node_id, message_id, conversation_id, title, update_at) VALUES (?, ?, ?, ?, ?, ?)"
         ).use { statement ->
@@ -53,7 +53,11 @@ class MessageFtsManager(private val database: AppDatabase) {
                         statement.bindString(4, conversationId)
                         statement.bindString(5, conversation.title)
                         statement.bindString(6, conversation.updateAt.toEpochMilli().toString())
-                        statement.executeInsert()
+                        val rowId = statement.executeInsert()
+                        db.execSQL(
+                            "INSERT INTO message_fts_lookup(fts_rowid, conversation_id, node_id) VALUES (?, ?, ?)",
+                            arrayOf<Any>(rowId, conversationId, node.id.toString()),
+                        )
                     }
                 }
             }
@@ -72,29 +76,9 @@ class MessageFtsManager(private val database: AppDatabase) {
      */
     suspend fun indexConversation(conversation: Conversation) {
         try {
-            database.withTransaction {
-                val conversationId = conversation.id.toString()
-                db.execSQL("DELETE FROM message_fts WHERE conversation_id = ?", arrayOf(conversationId))
-                conversation.messageNodes.forEach { node ->
-                    node.messages.forEach { message ->
-                        val text = message.extractFtsText()
-                        if (text.isNotBlank()) {
-                            db.execSQL(
-                                "INSERT INTO message_fts(text, node_id, message_id, conversation_id, title, update_at) VALUES (?, ?, ?, ?, ?, ?)",
-                                arrayOf(
-                                    text,
-                                    node.id.toString(),
-                                    message.id.toString(),
-                                    conversationId,
-                                    conversation.title,
-                                    conversation.updateAt.toEpochMilli().toString(),
-                                )
-                            )
-                        }
-                    }
-                }
-            }
+            replaceConversationIndex(conversation)
         } catch (e: Exception) {
+            coroutineContext.ensureActive()
             Log.e(TAG, "indexConversation failed, conversationId=${conversation.id}", e)
         }
     }
@@ -120,9 +104,11 @@ class MessageFtsManager(private val database: AppDatabase) {
         if (changedNodeIds.isEmpty()) return
         try {
             database.withTransaction {
+                ensureMessageFtsLookup(db)
                 val currentNodesById = currentNodes.associateBy { it.id.toString() }
                 changedNodeIds.forEach { nodeId ->
-                    db.execSQL("DELETE FROM message_fts WHERE node_id = ?", arrayOf(nodeId))
+                    coroutineContext.ensureActive()
+                    deleteMessageFtsRows(db, conversationId, nodeId)
                     val node = currentNodesById[nodeId] ?: return@forEach
                     node.messages.forEach { message ->
                         val text = message.extractFtsText()
@@ -138,11 +124,16 @@ class MessageFtsManager(private val database: AppDatabase) {
                                     updateAt.toEpochMilli().toString(),
                                 )
                             )
+                            db.execSQL(
+                                "INSERT INTO message_fts_lookup(fts_rowid, conversation_id, node_id) VALUES (last_insert_rowid(), ?, ?)",
+                                arrayOf(conversationId, nodeId),
+                            )
                         }
                     }
                 }
             }
         } catch (e: Exception) {
+            coroutineContext.ensureActive()
             Log.e(
                 TAG,
                 "reindexNodes failed, conversationId=$conversationId, changedNodeIds=$changedNodeIds",
@@ -155,7 +146,8 @@ class MessageFtsManager(private val database: AppDatabase) {
     suspend fun deleteConversation(conversationId: String) = withContext(Dispatchers.IO) {
         try {
             database.withTransaction {
-                db.execSQL("DELETE FROM message_fts WHERE conversation_id = ?", arrayOf(conversationId))
+                ensureMessageFtsLookup(db)
+                deleteMessageFtsRows(db, conversationId)
             }
         } catch (e: Exception) {
             Log.e(TAG, "deleteConversation failed, conversationId=$conversationId", e)
@@ -165,7 +157,9 @@ class MessageFtsManager(private val database: AppDatabase) {
     suspend fun deleteAll() = withContext(Dispatchers.IO) {
         try {
             database.withTransaction {
+                ensureMessageFtsLookup(db)
                 db.execSQL("DELETE FROM message_fts")
+                db.execSQL("DELETE FROM message_fts_lookup")
             }
         } catch (e: Exception) {
             Log.e(TAG, "deleteAll failed", e)

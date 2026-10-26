@@ -1,4 +1,4 @@
-﻿/*
+/*
  * 橘瓣 OrangeChat
  * 衍生自 RikkaHub (https://github.com/rikkahub/rikkahub)，原作者 RE
  * 本项目基于 GNU AGPL v3 开源，详见根目录 LICENSE 文件
@@ -19,6 +19,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonArrayBuilder
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.add
@@ -52,11 +53,11 @@ import me.rerere.ai.ui.UIMessagePart
 import me.rerere.ai.util.KeyRoulette
 import me.rerere.ai.util.configureReferHeaders
 import me.rerere.ai.util.encodeBase64
-import me.rerere.ai.util.openAiAudioFormat
 import me.rerere.ai.util.json
 import me.rerere.ai.util.mergeCustomBody
 import me.rerere.ai.util.parseErrorDetail
 import me.rerere.ai.util.stringSafe
+import me.rerere.ai.util.toGeminiFunctionParameters
 import me.rerere.ai.util.toHeaders
 import me.rerere.common.http.await
 import me.rerere.common.http.jsonArrayOrNull
@@ -74,6 +75,7 @@ import okhttp3.sse.EventSources
 import kotlin.time.Clock
 
 private const val TAG = "ChatCompletionsAPI"
+private const val THOUGHT_SIGNATURE_VALIDATION_BYPASS = "skip_thought_signature_validator"
 
 class ChatCompletionsAPI(
     private val client: OkHttpClient,
@@ -137,7 +139,7 @@ class ChatCompletionsAPI(
             val id = lastChunk["id"]?.jsonPrimitive?.contentOrNull ?: ""
             val model = lastChunk["model"]?.jsonPrimitive?.contentOrNull ?: ""
             val finishReason = lastChunk["choices"]
-                ?.jsonArray?.get(0)?.jsonObject
+                ?.jsonArrayOrNull?.getOrNull(0)?.jsonObjectOrNull
                 ?.get("finish_reason")?.jsonPrimitive?.contentOrNull ?: "unknown"
             val usage = parseTokenUsage(lastChunk["usage"] as? JsonObject)
 
@@ -145,10 +147,10 @@ class ChatCompletionsAPI(
             val mergedContent = buildString {
                 for (chunk in sseChunks) {
                     val delta = chunk["choices"]
-                        ?.jsonArray?.get(0)?.jsonObject
-                        ?.get("delta")?.jsonObject
-                        ?: chunk["choices"]?.jsonArray?.get(0)?.jsonObject
-                            ?.get("message")?.jsonObject
+                        ?.jsonArrayOrNull?.getOrNull(0)?.jsonObjectOrNull
+                        ?.get("delta")?.jsonObjectOrNull
+                        ?: chunk["choices"]?.jsonArrayOrNull?.getOrNull(0)?.jsonObjectOrNull
+                            ?.get("message")?.jsonObjectOrNull
                         ?: continue
                     delta["content"]?.jsonPrimitive?.contentOrNull?.let { append(it) }
                 }
@@ -156,10 +158,10 @@ class ChatCompletionsAPI(
 
             // 尝试从最后一个 chunk 的 delta 或 message 获取 tool_calls 等其他字段
             val lastDelta = lastChunk["choices"]
-                ?.jsonArray?.get(0)?.jsonObject
-                ?.get("delta")?.jsonObject
-                ?: lastChunk["choices"]?.jsonArray?.get(0)?.jsonObject
-                    ?.get("message")?.jsonObject
+                ?.jsonArrayOrNull?.getOrNull(0)?.jsonObjectOrNull
+                ?.get("delta")?.jsonObjectOrNull
+                ?: lastChunk["choices"]?.jsonArrayOrNull?.getOrNull(0)?.jsonObjectOrNull
+                    ?.get("message")?.jsonObjectOrNull
                 ?: buildJsonObject { put("content", mergedContent) }
 
             // 构建 merged message：用合并后的 content 替换原始 content
@@ -283,7 +285,7 @@ class ChatCompletionsAPI(
                     )
                     return
                 }
-                if (chunkJson["error"] != null) {
+                if (chunkJson["error"] != null && chunkJson["error"] !is JsonNull) {
                     // HTTP can be 200 while the stream itself contains a structured error.
                     val model = chunkJson["model"]?.jsonPrimitive?.contentOrNull ?: "unknown"
                     val error = chunkJson["error"]!!.parseErrorDetail()
@@ -298,8 +300,8 @@ class ChatCompletionsAPI(
                 // 如果不拦截, 错误信息会被当成 AI 正常回复存入历史, 导致后续请求全部失败。
                 val chunkId = chunkJson["id"]?.jsonPrimitive?.contentOrNull ?: ""
                 if (chunkId == "chatcmpl-error") {
-                    val errorContent = chunkJson["choices"]?.jsonArray?.getOrNull(0)
-                        ?.jsonObject?.get("delta")?.jsonObject?.get("content")
+                    val errorContent = chunkJson["choices"]?.jsonArrayOrNull?.getOrNull(0)
+                        ?.jsonObjectOrNull?.get("delta")?.jsonObjectOrNull?.get("content")
                         ?.jsonPrimitive?.contentOrNull ?: "unknown gateway error"
                     val safeError = sanitizeDiagnosticText(errorContent)
                     Log.e(TAG, "onEvent: gateway returned disguised error: $safeError")
@@ -307,38 +309,11 @@ class ChatCompletionsAPI(
                     close(Exception("Gateway error: $safeError"))
                     return
                 }
-                val id = chunkJson["id"]?.jsonPrimitive?.contentOrNull ?: ""
-                val model = chunkJson["model"]?.jsonPrimitive?.contentOrNull ?: ""
-
-                val choices = chunkJson["choices"]?.jsonArray ?: JsonArray(emptyList())
-                val choiceList = buildList {
-                    if (choices.isNotEmpty()) {
-                        val choice = choices[0].jsonObject
-                        val message =
-                            choice["delta"]?.jsonObject ?: choice["message"]?.jsonObject
-                            ?: throw Exception("delta/message is null")
-                        val finishReason =
-                            choice["finish_reason"]?.jsonPrimitive?.contentOrNull
-                                ?: "unknown"
-                        add(
-                            UIMessageChoice(
-                                index = 0,
-                                delta = parseMessage(message),
-                                message = null,
-                                finishReason = finishReason,
-                            )
-                        )
-                    }
+                try {
+                    trySend(parseStreamChunk(chunkJson))
+                } catch (e: Exception) {
+                    close(e)
                 }
-                val usage = parseTokenUsage(chunkJson["usage"] as? JsonObject)
-
-                val messageChunk = MessageChunk(
-                    id = id,
-                    model = model,
-                    choices = choiceList,
-                    usage = usage
-                )
-                trySend(messageChunk)
             }
 
             override fun onFailure(eventSource: EventSource, t: Throwable?, response: Response?) {
@@ -407,7 +382,7 @@ class ChatCompletionsAPI(
         val host = providerSetting.baseUrl.toHttpUrl().host
         return buildJsonObject {
             put("model", params.model.modelId)
-            put("messages", buildMessages(messages, params.model))
+            put("messages", buildMessages(messages, params.model, host == "generativelanguage.googleapis.com"))
 
             // 智谱 GLM 等 thinking 模型在开启深度思考时不允许设置 temperature/top_p,
             // 否则触发 "Invalid request body" (InvalidParameter) 400。
@@ -576,7 +551,16 @@ class ChatCompletionsAPI(
                                 // Fall back to an empty object schema so the request is always valid.
                                 val schema = tool.parameters()
                                 if (schema != null) {
-                                    put("parameters", json.encodeToJsonElement(schema))
+                                    val encodedSchema = json.encodeToJsonElement(schema)
+                                    val parameters = if (
+                                        host == "generativelanguage.googleapis.com" ||
+                                        params.model.modelId.contains("gemini", ignoreCase = true)
+                                    ) {
+                                        encodedSchema.toGeminiFunctionParameters()
+                                    } else {
+                                        encodedSchema
+                                    }
+                                    put("parameters", parameters)
                                 } else {
                                     put("parameters", buildJsonObject {
                                         put("type", "object")
@@ -632,7 +616,10 @@ class ChatCompletionsAPI(
             .take(maxLength)
     }
 
-    private fun buildMessages(messages: List<UIMessage>, model: Model) = buildJsonArray {
+    private fun buildMessages(messages: List<UIMessage>, model: Model) =
+        buildMessages(messages, model, googleEndpoint = false)
+
+    private fun buildMessages(messages: List<UIMessage>, model: Model, googleEndpoint: Boolean) = buildJsonArray {
         val filteredMessages = messages.filter { it.isValidToUpload() }
         // 纯文本模型 (如 GLM-5.2) 不接受 image_url, 收到会报 "Model only support text input"。
         // OcrTransformer 只覆盖 file: 图片, http/base64 图片会漏网; 这里在序列化层兜底,
@@ -641,14 +628,26 @@ class ChatCompletionsAPI(
 
         filteredMessages.forEach { message ->
             if (message.role == MessageRole.ASSISTANT) {
-                addAssistantMessages(message, includeReasoning = true, supportsImage = supportsImage)
+                addAssistantMessages(
+                    message = message,
+                    includeReasoning = true,
+                    supportsImage = supportsImage,
+                    requireThoughtSignature = requiresThoughtSignature(model.modelId),
+                    includeThoughtSignatures = googleEndpoint || model.modelId.contains("gemini", ignoreCase = true)
+                )
             } else {
                 addNonAssistantMessage(message, supportsImage = supportsImage)
             }
         }
     }
 
-    private fun JsonArrayBuilder.addAssistantMessages(message: UIMessage, includeReasoning: Boolean, supportsImage: Boolean = true) {
+    private fun JsonArrayBuilder.addAssistantMessages(
+        message: UIMessage,
+        includeReasoning: Boolean,
+        supportsImage: Boolean = true,
+        requireThoughtSignature: Boolean = false,
+        includeThoughtSignatures: Boolean = false,
+    ) {
         val groups = groupPartsByToolBoundary(message.parts)
         val contentBuffer = mutableListOf<UIMessagePart>()
         var reasoningPart: UIMessagePart.Reasoning? = null
@@ -674,6 +673,8 @@ class ChatCompletionsAPI(
                         tools = group.tools,
                         reasoningPart = reasoningPart,
                         supportsImage = supportsImage,
+                        requireThoughtSignature = requireThoughtSignature,
+                        includeThoughtSignatures = includeThoughtSignatures,
                     )?.let { assistantMessage ->
                         add(assistantMessage)
                     }
@@ -684,7 +685,15 @@ class ChatCompletionsAPI(
                     // Claude/Kimi-compatible gateways. Parallel calls still emit every tool
                     // result first, preserving the pairing fix from f5386781.
                     group.tools.forEach { tool ->
-                        val textOutput = tool.output.filterIsInstance<UIMessagePart.Text>().joinToString("\n") { it.text }
+                        val textOutput = tool.output.filterIsInstance<UIMessagePart.Text>()
+                            .joinToString("\n") { it.text }
+                            .ifBlank {
+                                if (tool.output.any { it is UIMessagePart.Image }) {
+                                    "[Tool returned an image; see the following attachment.]"
+                                } else {
+                                    "[Tool completed with no text output.]"
+                                }
+                            }
 
                         add(buildJsonObject {
                             put("role", "tool")
@@ -714,7 +723,7 @@ class ChatCompletionsAPI(
                                                 })
                                             }.onFailure {
                                                 put("type", "text")
-                                                put("text", "[Image encoding failed: ${it.message}]")
+                                                put("text", "[Image unavailable: the attachment could not be read.]")
                                             }
                                         })
                                     }
@@ -745,7 +754,7 @@ class ChatCompletionsAPI(
                                                     })
                                                 }.onFailure {
                                                     put("type", "text")
-                                                    put("text", "[Image encoding failed: ${it.message}]")
+                                                    put("text", "[Image unavailable: the attachment could not be read.]")
                                                 }
                                             })
                                         }
@@ -776,14 +785,11 @@ class ChatCompletionsAPI(
         tools: List<UIMessagePart.Tool>,
         reasoningPart: UIMessagePart.Reasoning?,
         supportsImage: Boolean = true,
+        requireThoughtSignature: Boolean = false,
+        includeThoughtSignatures: Boolean = false,
     ): JsonObject? {
-        val hasUsableContent = contentParts.any { part ->
-            when (part) {
-                is UIMessagePart.Text -> part.text.isNotBlank()
-                is UIMessagePart.Image -> supportsImage && part.url.isNotBlank()
-                else -> false
-            }
-        }
+        val encodedContent = encodeChatContentParts(contentParts, supportsImage, allowAudio = false)
+        val hasUsableContent = encodedContent.isNotEmpty()
         val hasReasoning = !reasoningPart?.reasoning.isNullOrBlank()
         if (!hasUsableContent && !hasReasoning && tools.isEmpty()) {
             return null
@@ -797,57 +803,32 @@ class ChatCompletionsAPI(
                 put("reasoning_content", reasoningPart.reasoning)
             }
 
-            // content
-            if (contentParts.isEmpty()) {
-                put("content", "")
-            } else if (contentParts.size == 1 && contentParts[0] is UIMessagePart.Text) {
-                put("content", (contentParts[0] as UIMessagePart.Text).text)
-            } else {
-                putJsonArray("content") {
-                    contentParts.forEach { part ->
-                        when (part) {
-                            is UIMessagePart.Text -> {
-                                add(buildJsonObject {
-                                    put("type", "text")
-                                    put("text", part.text)
-                                })
-                            }
-
-                            is UIMessagePart.Image -> {
-                                if (supportsImage) {
-                                    add(buildJsonObject {
-                                        part.encodeBase64().onSuccess { encodedImage ->
-                                            put("type", "image_url")
-                                            put("image_url", buildJsonObject {
-                                                put("url", encodedImage.base64)
-                                            })
-                                        }.onFailure {
-                                            it.printStackTrace()
-                                            put("type", "text")
-                                            put("text", "")
-                                        }
-                                    })
-                                }
-                                // 模型不支持图片时跳过, 不序列化 image_url
-                            }
-
-                            else -> {}
-                        }
-                    }
-                }
-            }
+            put("content", encodeChatMessageContent(encodedContent))
 
             // tool_calls
             if (tools.isNotEmpty()) {
                 put("tool_calls", buildJsonArray {
-                    tools.forEach { tool ->
+                    tools.forEachIndexed { index, tool ->
                         add(buildJsonObject {
                             put("id", tool.toolCallId)
                             put("type", "function")
                             put("function", buildJsonObject {
                                 put("name", tool.toolName)
-                                put("arguments", tool.input)
+                                put("arguments", tool.input.ifBlank { "{}" })
                             })
+                            val thoughtSignature = tool.thoughtSignatureOrNull()
+                                ?: if (requireThoughtSignature && index == 0) {
+                                    THOUGHT_SIGNATURE_VALIDATION_BYPASS
+                                } else {
+                                    null
+                                }
+                            thoughtSignature?.takeIf { includeThoughtSignatures }?.let {
+                                put("extra_content", buildJsonObject {
+                                    put("google", buildJsonObject {
+                                        put("thought_signature", it)
+                                    })
+                                })
+                            }
                         })
                     }
                 })
@@ -856,52 +837,35 @@ class ChatCompletionsAPI(
     }
 
     private fun JsonArrayBuilder.addNonAssistantMessage(message: UIMessage, supportsImage: Boolean = true) {
+        val content = encodeChatContentParts(message.parts, supportsImage, allowAudio = message.role == MessageRole.USER)
+        if (content.isEmpty()) return
         add(buildJsonObject {
             put("role", JsonPrimitive(message.role.name.lowercase()))
-
-            // 模型不支持图片时, 先过滤掉 Image part, 避免发送 image_url 触发 "Model only support text input"
-            val parts = if (supportsImage) message.parts else message.parts.filter { it !is UIMessagePart.Image }
-            if (parts.isOnlyTextPart()) {
-                put("content", parts.filterIsInstance<UIMessagePart.Text>().first().text)
-            } else {
-                putJsonArray("content") {
-                    parts.forEach { part ->
-                        when (part) {
-                            is UIMessagePart.Text -> {
-                                add(buildJsonObject {
-                                    put("type", "text")
-                                    put("text", part.text)
-                                })
-                            }
-
-                            is UIMessagePart.Image -> {
-                                add(buildJsonObject {
-                                    part.encodeBase64().onSuccess { encodedImage ->
-                                        put("type", "image_url")
-                                        put("image_url", buildJsonObject {
-                                            put("url", encodedImage.base64)
-                                        })
-                                    }.onFailure {
-                                        it.printStackTrace()
-                                        put("type", "text")
-                                        put("text", "")
-                                    }
-                                })
-                            }
-
-                            is UIMessagePart.Audio -> add(buildJsonObject {
-                                put("type", "input_audio")
-                                putJsonObject("input_audio") {
-                                    put("format", part.openAiAudioFormat())
-                                    put("data", part.encodeBase64(false).getOrThrow())
-                                }
-                            })
-                            else -> {}
-                        }
-                    }
-                }
-            }
+            put("content", encodeChatMessageContent(content))
         })
+    }
+
+    internal fun parseStreamChunk(chunkJson: JsonObject): MessageChunk {
+        val choices = chunkJson["choices"]?.jsonArrayOrNull.orEmpty()
+        val choiceList = buildList {
+            val choice = choices.firstOrNull()?.jsonObjectOrNull
+            val message = choice?.get("delta")?.jsonObjectOrNull
+                ?: choice?.get("message")?.jsonObjectOrNull
+            if (message != null) {
+                add(UIMessageChoice(
+                    index = 0,
+                    delta = parseMessage(message),
+                    message = null,
+                    finishReason = choice?.get("finish_reason")?.jsonPrimitiveOrNull?.contentOrNull ?: "unknown",
+                ))
+            }
+        }
+        return MessageChunk(
+            id = chunkJson["id"]?.jsonPrimitiveOrNull?.contentOrNull.orEmpty(),
+            model = chunkJson["model"]?.jsonPrimitiveOrNull?.contentOrNull.orEmpty(),
+            choices = choiceList,
+            usage = parseTokenUsage(chunkJson["usage"] as? JsonObject),
+        )
     }
 
     private fun parseMessage(jsonObject: JsonObject): UIMessage {
@@ -936,19 +900,24 @@ class ChatCompletionsAPI(
                     )
                 }
                 toolCalls.forEach { toolCalls ->
-                    val type = toolCalls.jsonObject["type"]?.jsonPrimitive?.contentOrNull
+                    val toolCall = toolCalls.jsonObject
+                    val type = toolCall["type"]?.jsonPrimitive?.contentOrNull
                     if (!type.isNullOrEmpty() && type != "function") error("tool call type not supported: $type")
-                    val toolCallId = toolCalls.jsonObject["id"]?.jsonPrimitive?.contentOrNull
+                    val toolCallId = toolCall["id"]?.jsonPrimitive?.contentOrNull
                     val toolName =
-                        toolCalls.jsonObject["function"]?.jsonObject?.get("name")?.jsonPrimitive?.contentOrNull
+                        toolCall["function"]?.jsonObject?.get("name")?.jsonPrimitive?.contentOrNull
                     val arguments =
-                        toolCalls.jsonObject["function"]?.jsonObject?.get("arguments")?.jsonPrimitive?.contentOrNull
+                        toolCall["function"]?.jsonObject?.get("arguments")?.jsonPrimitive?.contentOrNull
+                    val thoughtSignature = toolCall.openAIThoughtSignatureOrNull()
                     add(
                         UIMessagePart.Tool(
                             toolCallId = toolCallId ?: "",
                             toolName = toolName ?: "",
                             input = arguments ?: "",
-                            output = emptyList()
+                            output = emptyList(),
+                            metadata = thoughtSignature?.let {
+                                buildJsonObject { put("thoughtSignature", it) }
+                            }
                         )
                     )
                 }
@@ -987,6 +956,24 @@ class ChatCompletionsAPI(
                 else -> error("unknown annotation type: $type")
             }
         }
+    }
+
+    private fun UIMessagePart.Tool.thoughtSignatureOrNull(): String? =
+        metadata?.get("thoughtSignature")?.jsonPrimitiveOrNull?.contentOrNull?.takeIf { it.isNotBlank() }
+            ?: metadata?.get("thought_signature")?.jsonPrimitiveOrNull?.contentOrNull?.takeIf { it.isNotBlank() }
+
+    private fun JsonObject.openAIThoughtSignatureOrNull(): String? =
+        this["extra_content"]?.jsonObjectOrNull
+            ?.get("google")?.jsonObjectOrNull
+            ?.get("thought_signature")?.jsonPrimitiveOrNull?.contentOrNull
+            ?: this["thought_signature"]?.jsonPrimitiveOrNull?.contentOrNull
+            ?: this["thoughtSignature"]?.jsonPrimitiveOrNull?.contentOrNull
+
+    private fun requiresThoughtSignature(modelId: String): Boolean {
+        val normalized = modelId.lowercase()
+        return Regex("gemini[-._/ ]+[34](?:[^0-9]|$)").containsMatchIn(normalized) ||
+            normalized.contains("gemini-flash-latest") ||
+            normalized.contains("gemini-pro-latest")
     }
 
     private fun parseTokenUsage(jsonObject: JsonObject?): TokenUsage? {

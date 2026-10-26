@@ -6,6 +6,10 @@
 
 package me.rerere.rikkahub.service
 
+import kotlinx.coroutines.async
+
+import me.rerere.rikkahub.data.files.attachmentReferenceGuard
+
 import me.rerere.rikkahub.diagnostics.LoadingDiagnostics
 import me.rerere.rikkahub.diagnostics.TaskWatchdog
 import kotlinx.coroutines.flow.onStart
@@ -29,6 +33,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.Flow
@@ -130,6 +136,11 @@ import me.rerere.rikkahub.data.datastore.getChatModelForAssistant
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.model.Assistant
+import me.rerere.rikkahub.data.model.ConversationConfig
+import me.rerere.rikkahub.data.model.bindConfig
+import me.rerere.rikkahub.data.model.getAssistantOf
+import me.rerere.rikkahub.data.model.getChatModelOf
+import me.rerere.rikkahub.data.model.withConversationConfig
 import me.rerere.rikkahub.data.model.AssistantAffectScope
 import me.rerere.rikkahub.data.model.replaceRegexes
 import me.rerere.rikkahub.data.model.toMessageNode
@@ -137,6 +148,8 @@ import me.rerere.rikkahub.data.repository.ConversationRepository
 import me.rerere.rikkahub.data.repository.FolderRepository
 import me.rerere.rikkahub.data.repository.MemoryRepository
 import me.rerere.rikkahub.data.interaction.ChatInteractionRepository
+import me.rerere.rikkahub.data.interaction.ReactionContextTurn
+import me.rerere.rikkahub.data.interaction.rebaseReactionReceipts
 import me.rerere.rikkahub.data.interaction.MAX_CUSTOM_CHAT_REACTION_PRESETS
 import me.rerere.rikkahub.data.interaction.ReactionPresetToolResult
 import me.rerere.rikkahub.data.interaction.buildChatInteractionTools
@@ -154,6 +167,9 @@ import java.time.Instant
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.uuid.Uuid
+import me.rerere.rikkahub.data.ai.UsageRecorder
+import me.rerere.rikkahub.data.ai.UsageSource
+import me.rerere.rikkahub.data.ai.UsageTag
 
 private const val TAG = "ChatService"
 
@@ -177,8 +193,7 @@ private val inputTransformers by lazy {
         PlaceholderTransformer,
         DocumentAsPromptTransformer,
         OcrTransformer,
-        ImageHistoryLimitTransformer,
-        VoiceMessageTransformer,
+        *me.rerere.rikkahub.data.ai.transformers.historyMediaTransformers.toTypedArray(),
     )
 }
 
@@ -210,6 +225,8 @@ class ChatService(
     private val memoryBankService: MemoryBankService,
     private val folderRepository: FolderRepository,
     private val extraInfoInjectionCollector: ExtraInfoInjectionCollector,
+    private val sereinHookRepository: me.rerere.rikkahub.data.serein.SereinHookRepository,
+    private val usageRecorder: UsageRecorder,
 ) {
     // workspace 系统提示注入 (依赖 workspaceRepository, 故在类内构造)
     private val workspaceReminderTransformer = WorkspaceReminderTransformer(workspaceRepository)
@@ -217,6 +234,8 @@ class ChatService(
 
     // 统一会话管理
     private val sessions = ConcurrentHashMap<Uuid, ConversationSession>()
+    private data class QueueGenerationOwner(val message: QueuedMessage, val job: Job)
+    private val activeQueueGenerations = ConcurrentHashMap<Uuid, QueueGenerationOwner>()
     private val deletedConversationIds = ConcurrentHashMap.newKeySet<Uuid>()
     private val conversationLifecycleLocks = ConcurrentHashMap<Uuid, Mutex>()
     private val _sessionsVersion = MutableStateFlow(0L)
@@ -338,6 +357,7 @@ class ChatService(
                     assistantId = settings.getCurrentAssistant().id
                 ).copy(messageNodesLoaded = false),
                 scope = appScope,
+                onGenerationIdle = { processMessageQueue(it) },
                 onIdle = { removeSession(it) }
             ).also {
                 if (id in deletedConversationIds) it.markDeleted()
@@ -436,14 +456,134 @@ class ChatService(
         }
     }
 
+    /** Only explicit edits and generation bind controls; merely opening a legacy chat does not. */
+    suspend fun updateConversationConfig(
+        conversationId: Uuid,
+        edit: (ConversationConfig) -> ConversationConfig,
+    ) {
+        initializeConversation(conversationId, updateSelectedAssistant = false)
+        val session = getOrCreateSession(conversationId)
+        session.withStateLock {
+            val current = session.state.value
+            val bound = current.bindConfig(settingsStore.settingsFlow.first())
+            persistConversationConfigLocked(session, edit(requireNotNull(bound.config)))
+        }
+    }
+
+    suspend fun resetConversationConfig(conversationId: Uuid) {
+        initializeConversation(conversationId, updateSelectedAssistant = false)
+        val session = getOrCreateSession(conversationId)
+        session.withStateLock { persistConversationConfigLocked(session, null) }
+    }
+
+    suspend fun bindConversationConfig(conversationId: Uuid): Conversation {
+        initializeConversation(conversationId, updateSelectedAssistant = false)
+        val session = getOrCreateSession(conversationId)
+        return session.withStateLock {
+            val current = session.state.value
+            val bound = current.bindConfig(settingsStore.settingsFlow.first())
+            if (bound.config != current.config) persistConversationConfigLocked(session, bound.config)
+            session.state.value
+        }
+    }
+
+    /** Caller holds the session state lock. A control edit must never save an old message list. */
+    private suspend fun persistConversationConfigLocked(session: ConversationSession, config: ConversationConfig?) {
+        session.requireActive()
+        val current = session.state.value
+        current.requireMessageNodesLoaded()
+        if (conversationRepo.existsConversationById(current.id)) {
+            check(conversationRepo.updateConfig(current.id, config)) { "Conversation no longer exists" }
+            session.persistedConversation = session.persistedConversation?.copy(config = config)
+        } else {
+            val saved = conversationRepo.insertConversation(current.copy(config = config))
+            session.persistedConversation = saved
+            session.messageJournal.committed()
+        }
+        session.state.update { it.copy(config = config) }
+    }
+
     suspend fun replyToBot(conversationId: Uuid, assistantId: Uuid, text: String, timeoutMillis: Long): String =
-        getOrCreateSession(conversationId).awaitBotReply(
+        getOrCreateSession(conversationId).awaitQueuedBotReply(
             timeoutMillis = timeoutMillis,
             initialize = { initializeConversation(conversationId, assistantId, updateSelectedAssistant = false) },
-            send = { sendMessage(conversationId, listOf(UIMessagePart.Text(text))) },
+            submit = { submitMessage(conversationId, listOf(UIMessagePart.Text(text))) },
+            cancelRequest = { cancelQueuedMessage(conversationId, it) },
         )
 
     // ---- 发送消息 ----
+
+    fun getMessageQueueFlow(conversationId: Uuid): StateFlow<MessageQueueState> =
+        getOrCreateSession(conversationId).messageQueue.state
+
+    fun removeQueuedMessage(conversationId: Uuid, messageId: Uuid) {
+        sessions[conversationId]?.messageQueue?.remove(messageId)
+        processMessageQueue(conversationId)
+    }
+
+    fun beginQueuedMessageEdit(conversationId: Uuid, messageId: Uuid): QueuedMessage? =
+        sessions[conversationId]?.messageQueue?.beginEdit(messageId)
+
+    fun finishQueuedMessageEdit(conversationId: Uuid, messageId: Uuid, parts: List<UIMessagePart>?) {
+        sessions[conversationId]?.messageQueue?.finishEdit(messageId, parts)
+        processMessageQueue(conversationId)
+    }
+
+    fun pauseMessageQueue(conversationId: Uuid) {
+        sessions[conversationId]?.messageQueue?.pause()
+    }
+
+    fun resumeMessageQueue(conversationId: Uuid) {
+        sessions[conversationId]?.messageQueue?.resume()
+        processMessageQueue(conversationId)
+    }
+
+    /** Only this request can be withdrawn or interrupted; other callers retain their own turns. */
+    fun cancelQueuedMessage(conversationId: Uuid, requestId: Uuid) {
+        val session = sessions[conversationId] ?: return
+        if (session.messageQueue.remove(requestId) != null) {
+            processMessageQueue(conversationId)
+            return
+        }
+        if (activeQueueGenerations[conversationId]?.message?.id != requestId) return
+        appScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            stopGenerationInternal(conversationId, requestId = requestId, pauseQueue = false)
+        }
+    }
+
+    fun submitMessage(
+        conversationId: Uuid,
+        content: List<UIMessagePart>,
+        answer: Boolean = true,
+        transientSystemPrompt: String? = null,
+        enableTools: Boolean = true,
+        interaction: UIMessageAnnotation.AvatarInteraction? = null,
+    ): QueuedMessage? {
+        if (content.isEmptyInputMessage() || conversationId in deletedConversationIds) return null
+        val session = getOrCreateSession(conversationId)
+        val queued = synchronized(session) {
+            if (session.isDeleted) return null
+            // A fresh send after stopping an empty queue is explicit intent to continue.
+            // A manually paused backlog remains paused until the user resumes it.
+            if (session.messageQueue.state.value.messages.isEmpty()) session.messageQueue.resume()
+            session.messageQueue.enqueue(content, answer, interaction, transientSystemPrompt, enableTools)
+        } ?: return null
+        queued.completion.invokeOnCompletion { cause ->
+            if (cause is CancellationException && !queued.reply.isCompleted) cancelQueuedMessage(conversationId, queued.id)
+        }
+        appScope.launch {
+            try {
+                initializeConversation(conversationId, updateSelectedAssistant = false)
+                processMessageQueue(conversationId)
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (error: Exception) {
+                session.messageQueue.pause()
+                session.messageQueue.failReplyWaiters("会话初始化失败")
+                addError(error, conversationId, title = context.getString(R.string.error_title_send_message))
+            }
+        }
+        return queued
+    }
 
     fun sendMessage(
         conversationId: Uuid,
@@ -452,12 +592,24 @@ class ChatService(
         transientSystemPrompt: String? = null,
         enableTools: Boolean = true,
         interaction: UIMessageAnnotation.AvatarInteraction? = null,
-    ): Job? {
-        if (content.isEmptyInputMessage()) return null
+    ): Job? = submitMessage(conversationId, content, answer, transientSystemPrompt, enableTools, interaction)?.completion
 
-        val session = getOrCreateSession(conversationId)
-        session.getJob()?.cancel()
+    private fun processMessageQueue(conversationId: Uuid) {
+        val session = sessions[conversationId] ?: return
+        session.dispatchNextQueuedMessage { queued ->
+            createQueuedMessageJob(session, queued).also { job ->
+                activeQueueGenerations[conversationId] = QueueGenerationOwner(queued, job)
+            }
+        }?.start()
+    }
 
+    private fun createQueuedMessageJob(session: ConversationSession, queued: QueuedMessage): Job {
+        val conversationId = session.id
+        val content = queued.parts
+        val answer = queued.answer
+        val transientSystemPrompt = queued.transientSystemPrompt
+        val enableTools = queued.enableTools
+        val interaction = queued.interaction
         // 用户一开口就立即撤销旧主动闹钟。新的休眠计时必须等本轮正常回复结束后再开始，
         // 避免 AI 正在聊天时主动器到点，也避免长回复吃掉休眠间隔。
         val currentProactiveSetting = settingsStore.settingsFlow.value.proactiveMessageSetting
@@ -466,7 +618,8 @@ class ChatService(
         }
 
         val trace = LoadingDiagnostics.begin(context, "chat.send", timeoutMillis = 0)
-        val job = appScope.launch {
+        val job = appScope.launch(start = CoroutineStart.LAZY) {
+            var failure: Throwable? = null
             try {
                 trace.stage("initializing conversation")
                 initializeConversation(conversationId, updateSelectedAssistant = false)
@@ -477,8 +630,7 @@ class ChatService(
                 trace.stage("waiting for conversation state lock")
                 val (assistant, processedContent) = session.withStateLock {
                     val latestConversation = session.state.value
-                    val assistant = settings.getAssistantById(latestConversation.assistantId)
-                        ?: settings.getCurrentAssistant()
+                    val assistant = settings.getAssistantOf(latestConversation)
                     val processedContent = if (interaction == null) {
                         preprocessUserInputParts(content, assistant)
                     } else {
@@ -487,6 +639,7 @@ class ChatService(
 
                     val newConversation = latestConversation.copy(
                         messageNodes = latestConversation.messageNodes + UIMessage(
+                            id = queued.id,
                             role = MessageRole.USER,
                             parts = processedContent,
                             annotations = listOfNotNull(interaction),
@@ -560,24 +713,48 @@ class ChatService(
 
                 // 开始补全
                 if (answer) {
-                    handleMessageComplete(
+                    val completed = handleMessageComplete(
                         conversationId = conversationId,
                         transientSystemPrompt = transientSystemPrompt,
                         enableTools = enableTools,
                         diagnosticTrace = trace,
                     )
+                    if (!completed) {
+                        failure = IllegalStateException("生成失败，请检查会话中的错误信息")
+                        session.messageQueue.pause()
+                    }
+                }
+                if (session.state.value.currentMessages.lastOrNull()?.getTools().orEmpty().any { it.isPending || it.canResumeExecution }) {
+                    queued.reply.completeExceptionally(IllegalStateException("请先处理工具审批"))
                 }
 
                 _generationDoneFlow.emit(conversationId)
 
+            } catch (e: CancellationException) {
+                failure = e
+                throw e
             } catch (e: Exception) {
-                e.printStackTrace()
+                // A cancelled provider may throw a transport error during cleanup. It cannot pause a newer queue.
+                if (!coroutineContext.isActive) {
+                    failure = CancellationException("Generation cancelled", e)
+                    throw CancellationException("Generation cancelled", e)
+                }
+                failure = e
+                session.messageQueue.pause()
                 Log.e(TAG, "sendMessage failed, conversationId=$conversationId", e)
                 addError(e, conversationId, title = context.getString(R.string.error_title_send_message))
             } finally {
+                session.messageQueue.complete(
+                    queued.id,
+                    result = queuedReplyText(session.state.value.currentMessages, queued.id),
+                    error = failure,
+                )
+                activeQueueGenerations.computeIfPresent(conversationId) { _, owner ->
+                    owner.takeUnless { it.message.id == queued.id }
+                }
                 // An API failure must not leave the proactive timer cancelled forever. Do not
                 // restart it for a cancelled job that was superseded by a newer user message.
-                if (coroutineContext.isActive) {
+                if (coroutineContext.isActive && !session.messageQueue.hasPendingOrInFlight) {
                     val proactiveSetting = settingsStore.settingsFlow.value.proactiveMessageSetting
                     if (proactiveSetting.enabled) {
                         me.rerere.rikkahub.data.service.ProactiveMessageService.resetTimer(context, proactiveSetting)
@@ -585,8 +762,15 @@ class ChatService(
                 }
             }
         }
-        job.invokeOnCompletion { trace.close() }
-        session.setJob(job)
+        job.invokeOnCompletion { cause ->
+            trace.close()
+            // A lazy request can be cancelled before its body (and finally block) ever starts.
+            session.messageQueue.complete(queued.id,
+                result = queuedReplyText(session.state.value.currentMessages, queued.id), error = cause)
+            activeQueueGenerations.computeIfPresent(conversationId) { _, owner ->
+                    owner.takeUnless { it.message.id == queued.id }
+                }
+        }
         return job
     }
 
@@ -810,13 +994,12 @@ class ChatService(
                     }
                 }
 
-                val settings = settingsStore.settingsFlow.first()
-                // 优先从数据库取完整对话, 避免 session 被 idle 清除后用空对话覆盖
-                val currentConversation = conversationRepo.getConversationById(conversationId)
-                    ?: getConversationFlow(conversationId).value
-                val assistant = settings.getAssistantById(currentConversation.assistantId)
-                    ?: settings.getCurrentAssistant()
-                val model = settings.findModelById(assistant.chatModelId ?: settings.chatModelId)
+                // Initialize from durable history and bind controls for this actual request.
+                val currentConversation = bindConversationConfig(conversationId)
+                val baseSettings = settingsStore.settingsFlow.first()
+                val settings = baseSettings.withConversationConfig(currentConversation)
+                val assistant = settings.getAssistantOf(currentConversation)
+                val model = settings.getChatModelOf(currentConversation)
                 if (model == null) {
                     Log.e(TAG, "notifyVoiceCallDeclined: no model found, conversationId=$conversationId")
                     return@launch
@@ -826,7 +1009,10 @@ class ChatService(
                     Log.e(TAG, "notifyVoiceCallDeclined: no provider found, conversationId=$conversationId, modelId=${model.id}")
                     return@launch
                 }
-                val providerHandler = providerManager.getProviderByType(provider)
+                val providerHandler = usageRecorder.wrap(
+                    providerManager.getProviderByType(provider),
+                    UsageTag(UsageSource.VOICE_EVENT, assistant.id, conversationId),
+                )
 
                 val historyMessages = buildConversationRequestMessages(
                     assistant.systemPrompt, currentConversation.messagesForGeneration(),
@@ -937,10 +1123,17 @@ class ChatService(
             addError(e, conversationId)
             return
         }
-        session.getJob()?.cancel()
-
-        val job = appScope.launch {
+        val (previousJob, barrier) = synchronized(session) {
+            val barrier = session.blockQueueDispatch()
+            session.messageQueue.pause()
+            val previous = session.getJob()
+            previous?.cancel()
+            previous to barrier
+        }
+        val job = appScope.launch(start = CoroutineStart.LAZY) {
             try {
+                previousJob?.join()
+                session.awaitQueueDispatchUnblocked()
                 if (message.role == MessageRole.USER) {
                     // 如果是用户消息，则截止到当前消息
                     session.withStateLock {
@@ -953,13 +1146,13 @@ class ChatService(
                         )
                         saveConversationLocked(conversationId, newConversation)
                     }
-                    handleMessageComplete(conversationId)
+                    if (!handleMessageComplete(conversationId)) session.messageQueue.pause()
                 } else {
                     if (regenerateAssistantMsg) {
                         val conversation = session.state.value
                         val node = conversation.getMessageNodeByMessage(message)
                         val nodeIndex = conversation.messageNodes.indexOf(node)
-                        handleMessageComplete(conversationId, messageRange = 0..<nodeIndex)
+                        if (!handleMessageComplete(conversationId, messageRange = 0..<nodeIndex)) session.messageQueue.pause()
                     } else {
                         session.withStateLock {
                             saveConversationLocked(conversationId, session.state.value)
@@ -968,13 +1161,22 @@ class ChatService(
                 }
 
                 _generationDoneFlow.emit(conversationId)
-            } catch (e: Exception) {
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) {
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                session.messageQueue.pause()
                 Log.e(TAG, "regenerateAtMessage failed, conversationId=$conversationId", e)
                 addError(e, conversationId, title = context.getString(R.string.error_title_regenerate_message))
             }
         }
 
-        session.setJob(job)
+        try {
+            session.setJob(job)
+        } finally {
+            // The registered lazy job blocks new sends; only older stop barriers must be awaited.
+            barrier.close()
+        }
+        job.start()
     }
 
     // ---- 处理工具调用审批 ----
@@ -989,9 +1191,10 @@ class ChatService(
         val session = getOrCreateSession(conversationId)
         val previousJob = session.getJob()
 
-        val job = appScope.launch {
+        val job = appScope.launch(start = CoroutineStart.LAZY) {
             try {
                 afterPreviousGeneration(previousJob) {
+                    session.awaitQueueDispatchUnblocked()
                     val newApprovalState = when {
                         answer != null -> ToolApprovalState.Answered(answer)
                         approved -> ToolApprovalState.Approved
@@ -1024,18 +1227,21 @@ class ChatService(
                     val hasPendingTools = updatedNodes.any { node ->
                         node.currentMessage.parts.any { it is UIMessagePart.Tool && it.isPending }
                     }
-                    if (!hasPendingTools) handleMessageComplete(conversationId)
+                    if (!hasPendingTools && !handleMessageComplete(conversationId)) session.messageQueue.pause()
 
                     _generationDoneFlow.emit(conversationId)
                 }
             } catch (e: Exception) {
                 if (e is CancellationException) throw e
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                session.messageQueue.pause()
                 Log.e(TAG, "handleToolApproval failed, conversationId=$conversationId, toolCallId=$toolCallId", e)
                 addError(e, conversationId, title = context.getString(R.string.error_title_tool_approval))
             }
         }
 
         session.setJob(job, cancelPrevious = false)
+        job.start()
     }
 
     // ---- 处理消息补全 ----
@@ -1046,13 +1252,12 @@ class ChatService(
         transientSystemPrompt: String? = null,
         enableTools: Boolean = true,
         diagnosticTrace: TaskWatchdog.Trace? = null,
-    ) {
+    ): Boolean {
         diagnosticTrace?.stage("reading generation settings")
-        val settings = settingsStore.settingsFlow.first()
-        val initialConversation = getConversationFlow(conversationId).value
-        val assistant = settings.getAssistantById(initialConversation.assistantId)
-            ?: settings.getCurrentAssistant()
-        val model = settings.getChatModelForAssistant(initialConversation.assistantId) ?: return
+        val initialConversation = bindConversationConfig(conversationId)
+        val settings = settingsStore.settingsFlow.first().withConversationConfig(initialConversation)
+        val assistant = settings.getAssistantOf(initialConversation)
+        val model = settings.getChatModelOf(initialConversation) ?: error("请先为会话选择可用的聊天模型")
 
         val senderName = if (assistant.useAssistantAvatar) {
             assistant.name.ifEmpty { context.getString(R.string.assistant_page_default_assistant) }
@@ -1068,8 +1273,18 @@ class ChatService(
         var activitySnapshot = emptyList<me.rerere.rikkahub.data.service.ProactiveActivity>()
         var activityUserId: String? = null
         var activityTransformer: me.rerere.rikkahub.data.service.ProactiveActivityTransformer? = null
+        var reactionTurn: ReactionContextTurn? = null
+        val rawArchiveOwner = kotlinx.coroutines.currentCoroutineContext()[kotlinx.coroutines.Job]
+        val rawArchiveMessageIds = mutableSetOf<String>()
+        val hookConfig = settings.sereinHook
+        fun hookIsCurrent(): Boolean = settingsStore.settingsFlow.value.let { live ->
+            live.sereinHook == hookConfig && hookConfig.usableBy(assistant.id.toString()) &&
+                live.assistants.any { it.id == assistant.id } && !session.isDeleted
+        }
+        var hookTransformer: me.rerere.rikkahub.data.serein.SereinRecallTransformer? = null
+        var hookParticipating = false
 
-        runCatching {
+        val generationResult = runCatching {
 
             // reset suggestions
             updateConversation(conversationId, initialConversation.copy(chatSuggestions = emptyList()))
@@ -1095,27 +1310,43 @@ class ChatService(
             var regenerationMessageId: Uuid? = null
             val latestUserMessage = messagesForGeneration.lastOrNull { it.role == MessageRole.USER }
             diagnosticTrace?.stage("collecting extra information")
-            val extraInfoContext = if (latestUserMessage != null && messageRange == null) {
-                extraInfoRequestCache.resolve(
-                    conversationId = conversationId,
-                    assistantId = assistant.id,
-                    user = latestUserMessage,
-                    option = settings.systemToolsSetting,
-                    allowCollection = messagesForGeneration.lastOrNull()?.role == MessageRole.USER,
-                ) {
-                    session.processingStatus.value = "正在读取额外信息…"
-                    try {
-                        extraInfoInjectionCollector.collect(
-                            settings = settings,
-                            assistantId = assistant.id.toString(),
-                            queryText = latestUserMessage.toText().take(300),
-                        )
-                    } finally {
-                        session.processingStatus.value = null
+            val extraInfoContext = kotlinx.coroutines.coroutineScope {
+                val hookPending = async {
+                    if (latestUserMessage == null || messageRange != null || transientSystemPrompt != null || !hookIsCurrent()) null
+                    else {
+                        hookParticipating = true
+                        sereinHookRepository.prepare(hookConfig, assistant.id.toString(), conversationId.toString(),
+                            latestUserMessage, messagesForGeneration.lastOrNull()?.role == MessageRole.USER, ::hookIsCurrent)
                     }
                 }
-            } else {
-                null
+                val extra = if (latestUserMessage != null && messageRange == null) {
+                    extraInfoRequestCache.resolve(
+                        conversationId = conversationId,
+                        assistantId = assistant.id,
+                        user = latestUserMessage,
+                        option = settings.systemToolsSetting,
+                        allowCollection = messagesForGeneration.lastOrNull()?.role == MessageRole.USER,
+                    ) {
+                        session.processingStatus.value = "正在读取额外信息…"
+                        try {
+                            extraInfoInjectionCollector.collect(
+                                settings = settings,
+                                assistantId = assistant.id.toString(),
+                                queryText = latestUserMessage.toText().take(300),
+                            )
+                        } finally {
+                            session.processingStatus.value = null
+                        }
+                    }
+                } else {
+                    null
+                }
+                hookPending.await()?.let { recalled ->
+                    latestUserMessage?.let {
+                        hookTransformer = me.rerere.rikkahub.data.serein.SereinRecallTransformer(it.id, recalled, ::hookIsCurrent)
+                    }
+                }
+                extra
             }
             // Every historical user message keeps the snapshot it was first sent with, so the
             // request prefix stays byte-identical across turns and the provider cache survives.
@@ -1170,6 +1401,7 @@ class ChatService(
                     add(workspaceReminderTransformer)
                     add(requireNotNull(activityTransformer))
                     add(ExtraInfoRequestTransformer(extraInfoSnapshots))
+                    hookTransformer?.let { add(it) }
                 },
                 outputTransformers = outputTransformers,
                 tools = if (enableTools) buildAvailableTools(
@@ -1185,6 +1417,10 @@ class ChatService(
                     settings.displaySetting.buildAnniversaryPrompt()?.let(::add)
                 },
                 conversationId = conversationId.toString(),
+                reactionSourceMessages = conversation.currentMessages.take(
+                    conversation.currentMessages.indexOfLast { it.id in requestMessageIds } + 1,
+                ),
+                onReactionContextPrepared = { reactionTurn = it },
                 onToolCheckpoint = { checkpointMessages ->
                     diagnosticTrace?.stage("saving tool checkpoint")
                     session.withStateLock {
@@ -1224,6 +1460,9 @@ class ChatService(
                 diagnosticTrace?.stage("applying generation update")
                 when (chunk) {
                     is GenerationChunk.Messages -> {
+                        chunk.messages.lastOrNull()?.takeIf { it.role == MessageRole.ASSISTANT }?.let {
+                            rawArchiveMessageIds += it.id.toString()
+                        }
                         if (regenerationNodeId != null && regenerationMessageId == null) {
                             regenerationMessageId = chunk.messages.firstOrNull { it.id !in requestMessageIds }?.id
                         }
@@ -1245,17 +1484,55 @@ class ChatService(
             // 取消 Live Update 通知
             cancelLiveUpdateNotification(conversationId)
 
+            // Freeze only already-persisted partial originals. Never archive request injections
+            // or let a cancelled writer overwrite a newer session checkpoint.
+            withContext(NonCancellable) {
+                runCatching {
+                    session.withStateLock {
+                        if (!session.isDeleted && session.getJob() === rawArchiveOwner) {
+                            conversationRepo.interruptPendingRawOriginals(conversationId, rawArchiveMessageIds)
+                        }
+                    }
+                }.onFailure { Log.w(TAG, "Could not finalize local original-text archive") }
+            }
+
+            if (it is CancellationException) throw it
+            kotlinx.coroutines.currentCoroutineContext().ensureActive()
             it.printStackTrace()
             addError(it, conversationId, title = context.getString(R.string.error_title_generation))
             Logging.log(TAG, "handleMessageComplete: $it")
             Logging.log(TAG, it.stackTraceToString())
         }.onSuccess {
+            kotlinx.coroutines.currentCoroutineContext().ensureActive()
             val finalConversation = session.withStateLock {
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
                 val latest = getConversationFlow(conversationId).value
-                saveConversationLocked(conversationId, latest)
-                latest
+                check(latest.assistantId == assistant.id) { "助手已变更，请重新发送" }
+                val reply = latest.currentMessages.lastOrNull()
+                val receipted = reply?.let {
+                    reactionTurn?.finish(it, latest.currentMessages, latest.id.toString(), latest.assistantId.toString())
+                } ?: reply
+                if (receipted != null && receipted != reply) {
+                    applyMessageMutationLocked(conversationId, latest.generationMessageMutation(listOf(receipted)))
+                }
+                try {
+                    saveConversationLocked(conversationId, session.state.value)
+                } catch (error: Exception) {
+                    if (receipted != null && receipted != reply && reply != null) {
+                        applyMessageMutationLocked(conversationId, session.state.value.generationMessageMutation(listOf(reply)))
+                    }
+                    throw error
+                }
+                session.state.value
             }
             val completedReply = finalConversation.currentMessages.lastOrNull()
+            if (hookParticipating && hookIsCurrent() && completedReply != null) {
+                try {
+                    sereinHookRepository.acknowledge(hookConfig, conversationId.toString(), completedReply,
+                        hookTransformer?.deliveredIds.orEmpty())
+                } catch (e: CancellationException) { throw e }
+                catch (_: Exception) { Log.w(TAG, "Could not record Serein recall delivery") }
+            }
             if (activityUserId != null && completedReply?.role == MessageRole.ASSISTANT &&
                 completedReply.finishedAt != null && completedReply.getTools().isEmpty()
             ) {
@@ -1288,7 +1565,7 @@ class ChatService(
                         val cleanedMessage = lastAssistantMessage.copy(
                             parts = lastAssistantMessage.parts.map { part ->
                                 if (part is UIMessagePart.Text) {
-                                    UIMessagePart.Text(part.text.replace("\\[JUMP]".toRegex(RegexOption.IGNORE_CASE), "").trim())
+                                    part.copy(text = part.text.replace("\\[JUMP]".toRegex(RegexOption.IGNORE_CASE), "").trim())
                                 } else {
                                     part
                                 }
@@ -1387,6 +1664,7 @@ class ChatService(
                 Log.w(TAG, "Failed to save assistant message to external memory", e)
             }
         }
+        return generationResult.isSuccess
     }
 
     internal suspend fun buildProactiveMemoryTools(assistant: Assistant): List<Tool> = buildList {
@@ -1441,9 +1719,6 @@ class ChatService(
         val systemToolsOptions = settings.systemToolsSetting.getEnabledOptions().toMutableSet()
         if (!allowAppUsage) {
             systemToolsOptions.remove(me.rerere.rikkahub.data.ai.tools.SystemToolOption.AppUsage)
-        }
-        if (settings.externalMemories.any { it.enabled }) {
-            systemToolsOptions.add(me.rerere.rikkahub.data.ai.tools.SystemToolOption.SupabaseQuery)
         }
         if (systemToolsOptions.isNotEmpty()) {
             addAll(
@@ -1557,7 +1832,10 @@ class ChatService(
                 val model = settings.findModelById(settings.titleModelId) ?: return
                 val provider = model.findProvider(settings.providers) ?: return
 
-                val providerHandler = providerManager.getProviderByType(provider)
+                val providerHandler = usageRecorder.wrap(
+                    providerManager.getProviderByType(provider),
+                    UsageTag(UsageSource.TITLE, conversation.assistantId, conversationId),
+                )
                 val result = providerHandler.generateText(
                     providerSetting = provider,
                     messages = listOf(
@@ -1608,7 +1886,10 @@ class ChatService(
                     }
                 }
 
-                val providerHandler = providerManager.getProviderByType(provider)
+                val providerHandler = usageRecorder.wrap(
+                    providerManager.getProviderByType(provider),
+                    UsageTag(UsageSource.SUGGESTION, conversation.assistantId, conversationId),
+                )
                 val result = providerHandler.generateText(
                     providerSetting = provider,
                     messages = listOf(
@@ -1661,8 +1942,8 @@ class ChatService(
             "请先处理待执行的工具调用再压缩对话"
         }
         val settings = settingsStore.settingsFlow.first()
-        val compressor = me.rerere.rikkahub.data.ai.CompressionEngine(providerManager)
-            .request(settings, base.assistantId, targetTokens, additionalPrompt)
+        val compressor = me.rerere.rikkahub.data.ai.CompressionEngine(providerManager, usageRecorder)
+            .request(settings, base.assistantId, targetTokens, additionalPrompt, conversationId)
         suspend fun compressContent(content: String): String = compressor(content)
 
         val summaries = withCompressionDeadline {
@@ -1701,8 +1982,8 @@ class ChatService(
         check(session.state.value.compressionRevision == revision) { "摘要已变更，请关闭后重新打开。" }
         val draft = mergeExistingSummaryDraft(summaries, enabled) { content ->
             val settings = settingsStore.settingsFlow.first()
-            val compressor = me.rerere.rikkahub.data.ai.CompressionEngine(providerManager)
-                .request(settings, session.state.value.assistantId, targetTokens, additionalPrompt)
+            val compressor = me.rerere.rikkahub.data.ai.CompressionEngine(providerManager, usageRecorder)
+                .request(settings, session.state.value.assistantId, targetTokens, additionalPrompt, conversationId)
             compressTextOnce(listOf(content), compressor)
         }
         check(session.state.value.compressionRevision == revision) { "摘要已变更，请关闭后重新打开。" }
@@ -1844,44 +2125,51 @@ class ChatService(
     // ---- 对话状态更新 ----
 
     internal fun updateConversation(conversationId: Uuid, conversation: Conversation) {
-        if (conversation.id != conversationId) return
-        val session = getOrCreateSession(conversationId)
-        session.requireActive()
-        check(conversation.compressionRevision >= session.state.value.compressionRevision) {
-            "摘要已变更，请重新打开会话后操作。"
+        attachmentReferenceGuard.beginWrite().use {
+            if (conversation.id != conversationId) return
+            val session = getOrCreateSession(conversationId)
+            session.requireActive()
+            check(conversation.compressionRevision >= session.state.value.compressionRevision) {
+                "摘要已变更，请重新打开会话后操作。"
+            }
+            // Stream/title snapshots may predate a settings edit. Config has its own writer.
+            val latest = session.state.value
+            val incoming = if (latest.messageNodesLoaded) conversation.copy(config = latest.config) else conversation
+            val cleaned = if (incoming.messageNodes === latest.messageNodes) incoming else
+                conversationRepo.withoutDeletedAttachments(incoming)
+            if (cleaned.messageNodes !== session.state.value.messageNodes) {
+                session.messageJournal.invalidate()
+            }
+            session.publishMessageSnapshot(cleaned)
         }
-        val cleaned = if (conversation.messageNodes === session.state.value.messageNodes) conversation else
-            conversationRepo.withoutDeletedAttachments(conversation)
-        if (cleaned.messageNodes !== session.state.value.messageNodes) {
-            session.messageJournal.invalidate()
-        }
-        session.state.value = cleaned
     }
 
     /** Caller holds the pinned state lock; unknown full-history edits keep the conservative path. */
     internal fun applyMessageMutationLocked(conversationId: Uuid, mutation: ConversationMessageMutation) {
-        val session = getOrCreateSession(conversationId)
-        session.requireActive()
-        require(mutation.previous.id == conversationId && mutation.conversation.id == conversationId)
-        check(session.state.value === mutation.previous) { "Message mutation no longer matches current state" }
-        // Filter only changed nodes on this hot path; maintenance separately cleans untouched
-        // active history. A delayed stream chunk cannot reintroduce a manually deleted file.
-        var nodes: MutableList<me.rerere.rikkahub.data.model.MessageNode>? = null
-        val upserts = mutation.changes.upserts.map { (index, node) ->
-            val messages = filesManager.withoutDeletedAttachments(node.messages)
-            val cleaned = if (messages === node.messages) node else node.copy(messages = messages)
-            if (cleaned !== node) {
-                if (nodes == null) nodes = mutation.conversation.messageNodes.toMutableList()
-                nodes!![index] = cleaned
+        attachmentReferenceGuard.beginWrite().use {
+            val session = getOrCreateSession(conversationId)
+            session.requireActive()
+            require(mutation.previous.id == conversationId && mutation.conversation.id == conversationId)
+            check(session.state.value === mutation.previous) { "Message mutation no longer matches current state" }
+            // Filter only changed nodes on this hot path; maintenance separately cleans untouched
+            // active history. A delayed stream chunk cannot reintroduce a manually deleted file.
+            var nodes: MutableList<me.rerere.rikkahub.data.model.MessageNode>? = null
+            val upserts = mutation.changes.upserts.map { (index, node) ->
+                val messages = filesManager.withoutDeletedAttachments(node.messages)
+                val cleaned = if (messages === node.messages) node else node.copy(messages = messages)
+                if (cleaned !== node) {
+                    if (nodes == null) nodes = mutation.conversation.messageNodes.toMutableList()
+                    nodes!![index] = cleaned
+                }
+                index to cleaned
             }
-            index to cleaned
+            val cleaned = nodes?.let { mutation.conversation.copy(messageNodes = it) } ?: mutation.conversation
+            val safeMutation = if (cleaned === mutation.conversation) mutation else ConversationMessageMutation(
+                mutation.previous, cleaned, ConversationNodeChanges(upserts, mutation.changes.deletions),
+            )
+            session.messageJournal.record(safeMutation, session.persistedConversation)
+            session.state.value = cleaned
         }
-        val cleaned = nodes?.let { mutation.conversation.copy(messageNodes = it) } ?: mutation.conversation
-        val safeMutation = if (cleaned === mutation.conversation) mutation else ConversationMessageMutation(
-            mutation.previous, cleaned, ConversationNodeChanges(upserts, mutation.changes.deletions),
-        )
-        session.messageJournal.record(safeMutation, session.persistedConversation)
-        session.state.value = cleaned
     }
 
     fun updateConversationState(conversationId: Uuid, update: (Conversation) -> Conversation) {
@@ -2026,7 +2314,7 @@ class ChatService(
     /**
      * Managed upload entries whose bytes nothing references any more (for example the copies a
      * chat-history overwrite restore left behind). Read-only; deletion goes through the normal
-     * confirmation and [deleteManagedAttachments]. Files held by any open session's in-memory
+     * confirmation and [deleteUnreferencedAttachments]. Files held by any open session's in-memory
      * state are always kept, so an unsaved turn's attachment is never reported as unused.
      */
     suspend fun findUnreferencedAttachments(): Set<Long> = attachmentMaintenanceMutex.withLock {
@@ -2035,6 +2323,7 @@ class ChatService(
             val entities = filesManager.list()
             val byName = entities.associateBy { filesManager.getFile(it).name }
             val sessionNames = buildSet {
+                addAll(attachmentReferenceGuard.protectedNames())
                 sessions.values.toList().forEach { session ->
                     if (!session.isDeleted) session.state.value.files.forEach { uri ->
                         me.rerere.rikkahub.data.files.localAttachmentFile(uri.toString())?.let { add(it.name) }
@@ -2045,6 +2334,23 @@ class ChatService(
                 .mapNotNullTo(mutableSetOf()) { byName[it]?.id }
         }
     }
+
+    /** Revalidate the preview and skip the whole remaining batch if any reference writer races it. */
+    suspend fun deleteUnreferencedAttachments(ids: Set<Long>): Int = attachmentMaintenanceMutex.withLock {
+        collectUnreferencedAttachments(ids).first
+    }
+
+    private suspend fun collectUnreferencedAttachments(
+        ids: Set<Long>,
+        survivors: Map<String, File> = emptyMap(),
+    ): Pair<Int, Long> = me.rerere.rikkahub.data.files.collectUnreferencedAttachments(
+        filesManager, ids, conversationRepo::findUnreferencedChatFileNames,
+        protectedNames = {
+            sessions.values.toList().filterNot { it.isDeleted }.flatMap { it.state.value.files }
+                .mapNotNull { me.rerere.rikkahub.data.files.localAttachmentFile(it.toString())?.name }.toSet()
+        },
+        survivors = survivors,
+    )
 
     data class DuplicateAttachmentSummary(val files: Int, val bytes: Long)
     data class DuplicateMergeResult(val removed: Int, val freedBytes: Long, val kept: Int, val rewrittenNodes: Int)
@@ -2069,33 +2375,30 @@ class ChatService(
     suspend fun mergeDuplicateAttachments(): DuplicateMergeResult = attachmentMaintenanceMutex.withLock {
         withContext(Dispatchers.IO) {
             val dir = uploadDirectory()
-            val plan = me.rerere.rikkahub.data.files.planDuplicateAttachments(dir)
-            if (plan.isEmpty) return@withContext DuplicateMergeResult(0, 0, 0, 0)
-            val rewritten = withContext(NonCancellable) { conversationRepo.remapDuplicateAttachmentReferences(plan) }
-            filesManager.syncFolder()
-            val entities = filesManager.list().associateBy { filesManager.getFile(it).name }
-            val sessionNames = buildSet {
-                sessions.values.toList().forEach { session ->
-                    if (!session.isDeleted) session.state.value.files.forEach { uri ->
-                        me.rerere.rikkahub.data.files.localAttachmentFile(uri.toString())?.let { add(it.name) }
-                    }
+            val guard = attachmentReferenceGuard
+            val pin = Any()
+            try {
+                val plan = guard.beginWrite().use {
+                    guard.updateDraft(pin, dir.listFiles().orEmpty().map { it.name }.toSet())
+                    val planned = me.rerere.rikkahub.data.files.planDuplicateAttachments(dir)
+                    // Keep survivors alive while references are moved and duplicate bytes collected.
+                    planned
                 }
-            }
-            val unused = conversationRepo.findUnreferencedChatFileNames(plan.canonicalByDuplicate.keys - sessionNames)
-            var removed = 0
-            var freed = 0L
-            withContext(NonCancellable) {
-                unused.forEach { name ->
-                    val canonical = plan.canonicalByDuplicate.getValue(name)
-                    // Never delete a duplicate unless its survivor still exists with the same size.
-                    if (!canonical.isFile || canonical.length() != File(dir, name).length()) return@forEach
-                    val size = File(dir, name).length()
-                    val entity = entities[name]
-                    val deleted = if (entity != null) filesManager.delete(entity.id) else File(dir, name).delete()
-                    if (deleted) { removed++; freed += size }
+                if (plan.isEmpty) return@withContext DuplicateMergeResult(0, 0, 0, 0)
+                val rewritten = withContext(NonCancellable) {
+                    guard.beginWrite().use { conversationRepo.remapDuplicateAttachmentReferences(plan) }
                 }
+                guard.updateDraft(pin, plan.canonicalByDuplicate.values.map { it.name }.toSet())
+                filesManager.syncFolder()
+                val entities = filesManager.list().associateBy { filesManager.getFile(it).name }
+                val (removed, freed) = collectUnreferencedAttachments(
+                    plan.canonicalByDuplicate.keys.mapNotNullTo(mutableSetOf()) { entities[it]?.id },
+                    survivors = plan.canonicalByDuplicate,
+                )
+                DuplicateMergeResult(removed, freed, plan.canonicalByDuplicate.size - removed, rewritten)
+            } finally {
+                guard.updateDraft(pin, emptySet())
             }
-            DuplicateMergeResult(removed, freed, plan.canonicalByDuplicate.size - removed, rewritten)
         }
     }
 
@@ -2236,37 +2539,42 @@ class ChatService(
     ) {
         if (parts.isEmptyInputMessage()) return
 
-        val currentConversation = getConversationFlow(conversationId).value
-        currentConversation.requireEditableMessage(messageId)
-        val settings = settingsStore.settingsFlow.first()
-        val assistant = settings.getAssistantById(currentConversation.assistantId)
-            ?: settings.getCurrentAssistant()
-        val processedParts = preprocessUserInputParts(parts, assistant)
         val session = getOrCreateSession(conversationId)
-        session.withStateLock {
-            val currentConversation = session.state.value
-            currentConversation.requireEditableMessage(messageId)
-            var edited = false
-
-            val updatedNodes = currentConversation.messageNodes.map { node ->
-                if (!node.messages.any { it.id == messageId }) {
-                    return@map node
-                }
-                edited = true
-
-                node.copy(
-                    messages = node.messages + UIMessage(
-                        role = node.role,
-                        parts = processedParts,
-                    ),
-                    selectIndex = node.messages.size
-                )
-            }
-
-            if (!edited) return@withStateLock
-
-            saveConversationLocked(conversationId, currentConversation.copy(messageNodes = updatedNodes))
+        val barrier = synchronized(session) {
+            check(!session.isGenerating) { "请先停止生成再编辑历史消息" }
+            session.blockQueueDispatch()
         }
+        try {
+            val currentConversation = getConversationFlow(conversationId).value
+            currentConversation.requireEditableMessage(messageId)
+            val settings = settingsStore.settingsFlow.first()
+            val assistant = settings.getAssistantOf(currentConversation)
+            val processedParts = preprocessUserInputParts(parts, assistant)
+            session.withStateLock {
+                val currentConversation = session.state.value
+                currentConversation.requireEditableMessage(messageId)
+                var edited = false
+
+                val updatedNodes = currentConversation.messageNodes.map { node ->
+                    if (!node.messages.any { it.id == messageId }) {
+                        return@map node
+                    }
+                    edited = true
+
+                    node.copy(
+                        messages = node.messages + UIMessage(
+                            role = node.role,
+                            parts = processedParts,
+                        ),
+                        selectIndex = node.messages.size
+                    )
+                }
+
+                if (!edited) return@withStateLock
+
+                saveConversationLocked(conversationId, currentConversation.copy(messageNodes = updatedNodes))
+            }
+        } finally { barrier.close() }
     }
 
     suspend fun forkConversationAtMessage(
@@ -2281,6 +2589,7 @@ class ChatService(
             throw NotFoundException("Message not found")
         }
 
+        val forkConversationId = Uuid.random()
         val copiedNodes = currentConversation.messageNodes
             .subList(0, targetNodeIndex + 1)
             .map { node ->
@@ -2291,6 +2600,8 @@ class ChatService(
                             parts = message.parts.map { part ->
                                 part.copyWithForkedFileUrl()
                             }
+                        ).rebaseReactionReceipts(
+                            conversationId.toString(), forkConversationId.toString(), currentConversation.assistantId.toString(),
                         )
                     }
                 )
@@ -2300,8 +2611,9 @@ class ChatService(
             currentConversation.messageNodes.take(targetNodeIndex + 1), copiedNodes,
         )
         val forkConversation = Conversation(
-            id = Uuid.random(),
+            id = forkConversationId,
             assistantId = currentConversation.assistantId,
+            config = currentConversation.config,
             messageNodes = copiedNodes,
             customSystemPrompt = currentConversation.customSystemPrompt,
             compressionSummaries = forkState.compressionSummaries,
@@ -2450,26 +2762,33 @@ class ChatService(
     }
 
     // 停止当前会话生成任务（不清理会话缓存）
-    suspend fun stopGeneration(conversationId: Uuid) {
-        val session = sessions[conversationId] ?: return
-        val jobs = session.cancelJobs()
-        if (jobs.isEmpty()) return
-        jobs.forEach { runCatching { it.join() } }
+    suspend fun stopGeneration(conversationId: Uuid) =
+        stopGenerationInternal(conversationId, requestId = null, pauseQueue = true)
 
-        session.withStateLock {
-            val currentConversation = session.state.value
-            val lastNode = currentConversation.messageNodes.lastOrNull() ?: return@withStateLock
-            val lastMessage = lastNode.currentMessage
-            val updatedMessage = lastMessage.finishReasoning().finishPendingTools(::cancelToolByUser)
-            val updatedConversation = currentConversation.copy(
-                messageNodes = currentConversation.messageNodes.dropLast(1) + lastNode.copy(
-                    messages = lastNode.messages.map { message ->
-                        if (message.id == lastMessage.id) updatedMessage else message
-                    }
+    private suspend fun stopGenerationInternal(conversationId: Uuid, requestId: Uuid?, pauseQueue: Boolean) {
+        val session = sessions[conversationId] ?: return
+        session.stopQueuedGeneration(
+            pauseQueue = pauseQueue,
+            ownsRequest = {
+                requestId == null || activeQueueGenerations[conversationId]?.let { owner ->
+                    owner.message.id == requestId && session.getJob() === owner.job
+                } == true
+            },
+        ) {
+            session.withStateLock {
+                val currentConversation = session.state.value
+                val lastNode = currentConversation.messageNodes.lastOrNull() ?: return@withStateLock
+                val lastMessage = lastNode.currentMessage
+                val updatedMessage = lastMessage.finishReasoning().finishPendingTools(::cancelToolByUser)
+                val updatedConversation = currentConversation.copy(
+                    messageNodes = currentConversation.messageNodes.dropLast(1) + lastNode.copy(
+                        messages = lastNode.messages.map { message ->
+                            if (message.id == lastMessage.id) updatedMessage else message
+                        }
+                    )
                 )
-            )
-            // Also persists an interrupted ordinary text/reasoning reply, not just pending tools.
-            saveConversationLocked(conversationId, updatedConversation)
+                saveConversationLocked(conversationId, updatedConversation)
+            }
         }
     }
 

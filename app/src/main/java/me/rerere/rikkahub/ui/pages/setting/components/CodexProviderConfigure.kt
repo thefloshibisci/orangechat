@@ -79,7 +79,7 @@ fun CodexProviderConfigure(provider: ProviderSetting.Codex, onEdit: (ProviderSet
                     Text("在 ChatGPT 安全设置开启设备码登录，再输入下方一次性代码：")
                     SelectionContainer { Text(current.userCode, style = MaterialTheme.typography.headlineSmall) }
                     OutlinedButton(onClick = { try { oauth.openDevicePage() } catch (_: Exception) { feedback = "无法打开浏览器" } }) { Text("打开 ChatGPT 授权页面") }
-                } else Text("等待浏览器授权；完成后请返回橘瓣。")
+                } else Text("等待浏览器页面授权；完成后请返回西瓜瓣。若无法完成，可取消后改用设备码登录。")
                 TextButton(onClick = oauth::cancel) { Text("取消登录") }
             }
             is CodexOAuthStatus.Error -> Text(current.message, color = MaterialTheme.colorScheme.error)

@@ -177,11 +177,11 @@ class CompressionSchemaMigrationTest {
                 try {
                     val error = runCatching { oldRoom.openHelper.writableDatabase }.exceptionOrNull()
                     // The current generated Room implementation cannot open a 32 database without
-                    // its explicit 33->34 migration. This failure must still leave the source intact;
+                    // its explicit migrations to the current version. The failure must leave the source intact;
                     // the production APP_DATABASE_MIGRATIONS path is exercised below on the same file.
                     assertTrue(
                         error?.message.orEmpty(),
-                        error?.message.orEmpty().contains("migration from 32 to 34") ||
+                        error?.message.orEmpty().contains("A migration from 32 to 42 was required but not found") ||
                             error?.message.orEmpty().contains("Migration didn't properly handle"),
                     )
                 } finally { oldRoom.close() }
@@ -201,7 +201,7 @@ class CompressionSchemaMigrationTest {
                 try {
                     // Opening here invokes Room's actual migration, full schema validation and identity update.
                     val db = room.openHelper.writableDatabase
-                    assertEquals(34, db.version)
+                    assertEquals(42, db.version)
                     db.query("SELECT compression_history FROM ConversationEntity").use {
                         while (it.moveToNext()) assertEquals("[]", it.getString(0))
                     }

@@ -55,6 +55,9 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.ui.components.nav.BackButton
+import me.rerere.rikkahub.data.db.entity.WorkspaceEntity
+import me.rerere.rikkahub.data.repository.WorkspaceRepository
+import org.koin.compose.koinInject
 import org.koin.androidx.compose.koinViewModel
 import org.koin.core.parameter.parametersOf
 
@@ -87,7 +90,7 @@ fun WorkspaceTerminalPage(id: String) {
         containerColor = Color.Black,
     ) { innerPadding ->
         WorkspaceTerminalContent(
-            root = state.workspace?.root,
+            workspace = state.workspace,
             contentPadding = innerPadding,
         )
     }
@@ -95,20 +98,22 @@ fun WorkspaceTerminalPage(id: String) {
 
 @Composable
 private fun WorkspaceTerminalContent(
-    root: String?,
+    workspace: WorkspaceEntity?,
     contentPadding: PaddingValues,
 ) {
+    val root = workspace?.root
+    val repository: WorkspaceRepository = koinInject()
     val context = LocalContext.current
     val terminalTextSizePx = with(LocalDensity.current) { 12.sp.roundToPx() }
-    var finished by remember(root) { mutableStateOf(false) }
-    var controlDown by remember(root) { mutableStateOf(false) }
-    var altDown by remember(root) { mutableStateOf(false) }
-    val sessionClient = remember(root) {
+    var finished by remember(root, workspace?.sshConfig) { mutableStateOf(false) }
+    var controlDown by remember(root, workspace?.sshConfig) { mutableStateOf(false) }
+    var altDown by remember(root, workspace?.sshConfig) { mutableStateOf(false) }
+    val sessionClient = remember(root, workspace?.sshConfig) {
         WorkspaceTerminalSessionClient(context.applicationContext) {
             finished = true
         }
     }
-    val viewClient = remember(root) {
+    val viewClient = remember(root, workspace?.sshConfig) {
         WorkspaceTerminalViewClient(context)
     }
     viewClient.controlDown = controlDown
@@ -117,11 +122,27 @@ private fun WorkspaceTerminalContent(
     val sessionState by produceState<TerminalSessionUiState>(
         initialValue = TerminalSessionUiState.Loading,
         root,
+        workspace?.sshConfig,
         sessionClient,
     ) {
         val current = root
         value = if (current == null) {
             TerminalSessionUiState.Loading
+        } else if (workspace?.isSsh() == true) {
+            val settings = workspace.sshSettings()
+            if (settings == null) {
+                TerminalSessionUiState.Error("SSH 配置无效，请返回编辑连接。")
+            } else {
+                val transport = SshTerminalTransport("${settings.username}@${settings.host}:${settings.port}") { columns, rows ->
+                    repository.openSshShell(workspace, columns, rows).asTerminalHandle()
+                }
+                val created = TerminalSession(transport, 2_000, sessionClient)
+                if (!isActive) {
+                    created.finishIfRunning()
+                    return@produceState
+                }
+                TerminalSessionUiState.Ready(created)
+            }
         } else {
             // rootfs stat 与 RootfsPatcher().patch()/DNS 查询都是阻塞 I/O，放到 IO 线程执行；
             // TerminalSession 构造内部会创建 Handler，必须回到主线程执行
@@ -157,10 +178,10 @@ private fun WorkspaceTerminalContent(
             contentAlignment = Alignment.Center,
         ) {
             Text(
-                text = if (currentState is TerminalSessionUiState.NotInstalled) {
-                    stringResource(R.string.workspace_terminal_not_installed)
-                } else {
-                    stringResource(R.string.workspace_terminal_loading)
+                text = when (currentState) {
+                    is TerminalSessionUiState.NotInstalled -> stringResource(R.string.workspace_terminal_not_installed)
+                    is TerminalSessionUiState.Error -> currentState.message
+                    else -> stringResource(R.string.workspace_terminal_loading)
                 },
                 style = MaterialTheme.typography.bodyLarge,
                 color = Color.White.copy(alpha = 0.7f),
@@ -314,5 +335,6 @@ private fun TerminalSession.writeText(text: String) {
 private sealed interface TerminalSessionUiState {
     data object Loading : TerminalSessionUiState
     data object NotInstalled : TerminalSessionUiState
+    data class Error(val message: String) : TerminalSessionUiState
     data class Ready(val session: TerminalSession) : TerminalSessionUiState
 }

@@ -85,7 +85,7 @@ fun ExtensionsPage() {
                         onClick = { navController.navigate(Screen.ExternalMemories) },
                         leadingContent = { Icon(HugeIcons.Brain01, null) },
                         headlineContent = { Text("进阶记忆") },
-                        supportingContent = { Text("管理外置记忆库，为助手配置独立的长期记忆") },
+                        supportingContent = { Text("Serein 自动召回、本地原话与记忆管理") },
                     )
                     item(
                         onClick = { navController.navigate(Screen.Workspaces) },

@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>西瓜瓣 · 使用说明</title><style>
+:root{color-scheme:light dark}body{max-width:48rem;margin:auto;padding:1.4rem;font-family:system-ui,sans-serif;line-height:1.75}h1{font-size:1.65rem}h2{font-size:1.15rem;margin-top:1.8rem}a{color:#db7100}code{overflow-wrap:anywhere}li{margin:.5rem 0}
+</style></head><body>
+<h1>西瓜瓣 · 使用说明</h1><p>这份说明随当前安装包提供，可以离线阅读。项目地址与问题反馈均属于当前西瓜瓣项目。</p>
+<h2>开始聊天</h2><ol><li>在设置中添加模型提供商，填写对应的接口地址、密钥并选择模型。</li><li>在助手中配置角色和需要的工具，再新建会话。会话可以单独保存模型、思考、搜索、MCP、技能和请求参数。</li><li>长按消息可以查看或操作这条消息；修改助手工具后，请在新的请求中使用。</li></ol>
+<h2>生成期间发送与消息队列</h2><p>回复生成期间继续发送，消息会进入当前会话的队列。可编辑、撤回、暂停和继续。队列暂存在当前进程中，应用被完全结束后不会恢复。</p>
+<h2>搜索</h2><p>Tavily 返回网页来源和内容，不再额外请求 Tavily 自动生成答案；助手会结合搜索结果作答。</p>
+<h2>语音通话</h2><p>在设置的语音页面可切换「回复期间继续监听」。开启时沿用持续监听；关闭时，助手生成回复或朗读期间暂停监听，结束后恢复。静音和挂断始终优先。</p>
+<h2>翻译与历史</h2><p>翻译完成后自动保存成功结果，历史最多保留最近 100 条。点按记录可恢复原文、译文和目标语言；删除与清空不会改动当前输入和译文。</p>
+<h2>表情回执</h2><p>贴上的表情会保留在消息旁。助手成功生成并保存可见回复后，本次送达的表情会记录为已读，之后不再作为新表情反复提醒。生成失败或取消时仍会在重试中送达；生成期间新贴的表情留给下一次回复。</p>
+<h2>图表</h2><p>在助手的本地工具中开启「图表展示」，模型可生成折线图、柱状图与散点图。图表可切换数据表并导出图片；表格图片仅包含首屏，完整数据可在表格中滚动查看。</p>
+<h2>远程 SSH 工作区</h2><p>在工作区中添加远程 SSH 连接，填写服务器、端口、用户名、工作目录和登录凭据。首次连接须核对服务器指纹；指纹变化时须重新核对。可浏览、上传、导出文件，编辑完整文本并打开交互式终端。移除连接不删除远程服务器文件。</p><p>登录凭据在本机加密保存；备份恢复至另一台设备后通常需要重新填写。原有 SSH 工具和远程工作区分别配置，请确认当前操作使用的连接。</p>
+<h2>ChatGPT 订阅登录</h2><p>在对应提供商配置中使用浏览器登录并返回西瓜瓣查看结果。若浏览器登录无法完成，可取消后选择设备码登录，并按页面提示在 ChatGPT 设置中启用该方式。登录凭据保存在本机，不随配置或备份导出。</p>
+<h2>备份与安装更新</h2><p>定期在数据设置中保存备份。覆盖更新须使用相同安装渠道和签名的安装包。关于页「检查更新」只查询当前项目正式版；没有兼容当前渠道的安装包时会明确提示，请通过发布页核对。</p>
+<h2>项目与反馈</h2><ul><li><a href="https://github.com/thefloshibisci/orangechat">西瓜瓣项目主页</a></li><li><a href="https://github.com/thefloshibisci/orangechat/issues">报告问题</a></li><li><a href="https://github.com/thefloshibisci/orangechat/releases">版本发布</a></li><li><a href="https://github.com/thefloshibisci/orangechat/blob/master/LICENSE">开源许可</a></li></ul>
+<p>报告问题时，请附上版本、复现步骤和相关错误信息；不要公开密钥、登录凭据或私人聊天内容。</p>
+</body></html>

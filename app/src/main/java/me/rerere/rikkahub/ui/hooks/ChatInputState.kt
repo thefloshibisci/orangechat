@@ -6,6 +6,8 @@
 
 package me.rerere.rikkahub.ui.hooks
 
+import me.rerere.rikkahub.data.files.attachmentReferenceGuard
+
 import android.net.Uri
 import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
@@ -13,11 +15,23 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import me.rerere.ai.ui.UIMessagePart
+import me.rerere.ai.ui.isEmptyInputMessage
 import kotlin.uuid.Uuid
 
 class ChatInputState {
     val textContent = TextFieldState()
-    var messageContent by mutableStateOf(listOf<UIMessagePart>())
+    private var content by mutableStateOf(listOf<UIMessagePart>())
+    var messageContent: List<UIMessagePart>
+        get() = content
+        set(value) {
+            attachmentReferenceGuard.beginWrite().use {
+                val names = me.rerere.rikkahub.data.files.attachmentUrls(
+                    listOf(me.rerere.ai.ui.UIMessage.user("").copy(parts = value))
+                ).mapNotNull { me.rerere.rikkahub.data.files.localAttachmentFile(it)?.name }.toSet()
+                attachmentReferenceGuard.updateDraft(this, names)
+                content = value
+            }
+        }
     var editingMessage by mutableStateOf<Uuid?>(null)
     private var editingParts: List<UIMessagePart>? = null
     private var editingAttachmentUrls: Set<String> = emptySet()
@@ -28,6 +42,11 @@ class ChatInputState {
         editingMessage = null
         editingParts = null
         editingAttachmentUrls = emptySet()
+    }
+
+    /** Release an editor that is leaving composition without unlinking any attachment files. */
+    fun releaseDraft() {
+        clearInput()
     }
 
     fun isEditing() = editingMessage != null
@@ -97,6 +116,7 @@ class ChatInputState {
     }
 
     fun isEmpty(): Boolean {
+        if (isEditing()) return getContents().isEmptyInputMessage()
         return textContent.text.isBlank() && messageContent.isEmpty()
     }
 

@@ -5,70 +5,84 @@
  */
 
 package me.rerere.rikkahub.utils
- 
+
+import me.rerere.rikkahub.ui.components.richtext.generateMarkdownHtml
+import org.jsoup.Jsoup
+import org.jsoup.nodes.Element
+import org.jsoup.nodes.Node
+import org.jsoup.nodes.TextNode
+
 /**
  * 移除字符串中的Markdown格式
  * @return 移除Markdown格式后的纯文本
  */
 fun String.stripMarkdown(): String {
-    return this
-        // 移除代码块 (```...``` 和 `...`)
-        .replace(Regex("```[\\s\\S]*?```|`[^`]*?`"), "")
-        // 移除图片和链接，但保留其文本内容
-        .replace(Regex("!?\\[([^\\]]+)\\]\\([^\\)]*\\)"), "$1")
-        // 移除加粗和斜体 (先处理两个星号的)
-        .replace(Regex("\\*\\*([^*]+?)\\*\\*"), "$1")
-        .replace(Regex("\\*([^*]+?)\\*"), "$1")
-        // 移除下划线
-        .replace(Regex("__([^_]+?)__"), "$1")
-        .replace(Regex("_([^_]+?)_"), "$1")
-        // 移除删除线
-        .replace(Regex("~~([^~]+?)~~"), "$1")
-        // 移除标题标记 (多行模式)
-        .replace(Regex("(?m)^#+\\s*"), "")
-        // 移除列表标记 (多行模式)
-        .replace(Regex("(?m)^\\s*[-*+]\\s+"), "")
-        .replace(Regex("(?m)^\\s*\\d+\\.\\s+"), "")
-        // 移除引用标记 (多行模式)
-        .replace(Regex("(?m)^>\\s*"), "")
-        // 移除水平分割线
-        .replace(Regex("(?m)^(\\s*[-*_]){3,}\\s*$"), "")
-        // 将多个换行符压缩，以保留段落
+    // Parse once: decoding &lt;tag&gt; and then stripping again would lose literal text.
+    val body = Jsoup.parse(generateMarkdownHtml(this, imageDescriptionsOnly = true)).body()
+    return buildString { appendSpokenNode(body) }
+        .replace(Regex("[ \\t]*\n\\s*"), "\n")
+        .replace(Regex("[ \\t]{2,}"), " ")
         .replace(Regex("\n{3,}"), "\n\n")
         .trim()
 }
- 
+
+private val unspokenHtmlTags = setOf(
+    "pre", "code", "kbd", "samp", "script", "style", "head", "title", "template", "noscript",
+    "svg", "math", "iframe", "object", "canvas", "audio", "video",
+)
+
+private fun StringBuilder.appendSpokenNode(node: Node) {
+    when (node) {
+        is TextNode -> append(node.wholeText)
+        is Element -> {
+            val tag = node.normalName()
+            if (tag in unspokenHtmlTags || node.hasClass("math")) return
+            when (tag) {
+                "br", "hr" -> append('\n')
+                "img" -> append(node.attr("alt")) // Preserve the existing image-description behavior.
+                else -> {
+                    val block = (node.tag().isBlock && tag != "td" && tag != "th") || tag == "summary"
+                    if (block && isNotEmpty() && last() != '\n') append('\n')
+                    node.childNodes().forEach { appendSpokenNode(it) }
+                    if (block && isNotEmpty() && last() != '\n') append('\n')
+                    if (tag == "td" || tag == "th") append(' ')
+                }
+            }
+        }
+    }
+}
+
 fun String.extractThinkingTitle(): String? {
     // 按行分割文本
     val lines = this.lines()
- 
+
     // 从后往前查找最后一个符合条件的加粗文本行
     for (i in lines.indices.reversed()) {
         val line = lines[i].trim()
- 
+
         // 检查是否为加粗格式且独占一整行
         val boldPattern = Regex("^\\*\\*(.+?)\\*\\*$")
         val match = boldPattern.find(line)
- 
+
         if (match != null) {
             // 返回加粗标记内的文本内容
             return match.groupValues[1].trim().takeUnless { it.isBlank() }
         }
     }
- 
+
     return null
 }
- 
+
 // ============================================================
 // 分句气泡: 按模型自己写的换行 (\n) 把一条助手回复拆成多个气泡片段
 // ============================================================
- 
+
 /**
  * 围栏代码块 (```...```)，内部的换行必须原样保留，不能被当作气泡边界。
  * 复用与 MarkdownNew.kt / stripMarkdown 相同的匹配方式，保持项目内一致的约定。
  */
 private val FENCED_CODE_BLOCK_REGEX = Regex("```[\\s\\S]*?```")
- 
+
 /**
  * 找出文本中「不可在其内部拆分气泡」的字符区间：
  * 1. 围栏代码块 (```...```) —— 内部换行是代码的一部分，拆开代码就碎了
@@ -80,21 +94,21 @@ private val FENCED_CODE_BLOCK_REGEX = Regex("```[\\s\\S]*?```")
  */
 private fun findProtectedRanges(text: String): List<IntRange> {
     val ranges = mutableListOf<IntRange>()
- 
+
     // 1. 围栏代码块
     FENCED_CODE_BLOCK_REGEX.findAll(text).forEach { ranges.add(it.range) }
- 
+
     // 2. Markdown 表格块
     fun isTableRow(line: String): Boolean {
         val trimmed = line.trim()
         return trimmed.length > 1 && trimmed.startsWith("|") && trimmed.endsWith("|")
     }
- 
+
     val lines = text.lines()
     var lineStartOffset = 0
     var tableStartLineIndex = -1
     var tableStartOffset = 0
- 
+
     lines.forEachIndexed { index, line ->
         if (isTableRow(line)) {
             if (tableStartLineIndex == -1) {
@@ -114,10 +128,10 @@ private fun findProtectedRanges(text: String): List<IntRange> {
     if (tableStartLineIndex != -1 && lines.size - tableStartLineIndex >= 2) {
         ranges.add(tableStartOffset until text.length)
     }
- 
+
     return ranges
 }
- 
+
 /**
  * 按模型自己写的换行符 (\n) 把一条助手回复拆分成多个"气泡"片段。
  *
@@ -130,10 +144,10 @@ private fun findProtectedRanges(text: String): List<IntRange> {
  */
 fun String.splitIntoBubbleSegments(): List<String> {
     if (isBlank()) return listOf(this)
- 
+
     val protectedRanges = findProtectedRanges(this)
     fun isProtectedIndex(index: Int) = protectedRanges.any { index in it }
- 
+
     val segments = mutableListOf<String>()
     val current = StringBuilder()
     for (index in indices) {
@@ -146,11 +160,11 @@ fun String.splitIntoBubbleSegments(): List<String> {
         }
     }
     segments.add(current.toString())
- 
+
     val result = segments
         .map { it.trim('\r').trim() }
         .filter { it.isNotBlank() }
- 
+
     return result.ifEmpty { listOf(this.trim()) }
 }
- 
+

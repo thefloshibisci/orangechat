@@ -12,6 +12,7 @@ import me.rerere.rikkahub.data.ai.prompts.DEFAULT_COMPRESS_PROMPT
 import me.rerere.rikkahub.data.ai.prompts.LEGACY_DEFAULT_COMPRESS_PROMPT
 import me.rerere.rikkahub.data.ai.prompts.STRUCTURED_V1_COMPRESS_PROMPT
 import me.rerere.rikkahub.data.ai.prompts.STRUCTURED_V2_COMPRESS_PROMPT
+import me.rerere.rikkahub.data.ai.prompts.STRUCTURED_V3_COMPRESS_PROMPT
 import me.rerere.rikkahub.data.ai.prompts.buildCompressionPrompt
 import me.rerere.rikkahub.data.ai.prompts.resolveCompressPrompt
 import me.rerere.rikkahub.data.datastore.Settings
@@ -112,10 +113,11 @@ class CompressionInputTest {
         assertEquals(DEFAULT_COMPRESS_PROMPT, resolveCompressPrompt(LEGACY_DEFAULT_COMPRESS_PROMPT))
         assertEquals(DEFAULT_COMPRESS_PROMPT, resolveCompressPrompt(STRUCTURED_V1_COMPRESS_PROMPT))
         assertEquals(DEFAULT_COMPRESS_PROMPT, resolveCompressPrompt(STRUCTURED_V2_COMPRESS_PROMPT))
+        assertEquals(DEFAULT_COMPRESS_PROMPT, resolveCompressPrompt(STRUCTURED_V3_COMPRESS_PROMPT))
         assertNotEquals(STRUCTURED_V1_COMPRESS_PROMPT, DEFAULT_COMPRESS_PROMPT)
         assertEquals(DEFAULT_COMPRESS_PROMPT, resolveCompressPrompt(DEFAULT_COMPRESS_PROMPT))
         listOf(LEGACY_DEFAULT_COMPRESS_PROMPT, STRUCTURED_V1_COMPRESS_PROMPT,
-            STRUCTURED_V2_COMPRESS_PROMPT, DEFAULT_COMPRESS_PROMPT).forEach {
+            STRUCTURED_V2_COMPRESS_PROMPT, STRUCTURED_V3_COMPRESS_PROMPT, DEFAULT_COMPRESS_PROMPT).forEach {
             val custom = it + "\nKeep my personal style"
             assertEquals(custom, resolveCompressPrompt(custom))
         }

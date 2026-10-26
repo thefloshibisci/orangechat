@@ -6,6 +6,8 @@
 
 package me.rerere.rikkahub.data.repository
 
+import me.rerere.rikkahub.data.files.attachmentReferenceGuard
+
 import kotlinx.coroutines.flow.Flow
 import me.rerere.rikkahub.data.db.dao.FavoriteDAO
 import me.rerere.rikkahub.data.db.entity.FavoriteEntity
@@ -29,17 +31,20 @@ class FavoriteRepository(
 
     suspend fun deleteById(id: String): Int = dao.deleteById(id)
 
-    suspend fun upsert(entity: FavoriteEntity) = dao.upsert(entity)
+    suspend fun upsert(entity: FavoriteEntity) =
+        attachmentReferenceGuard.beginWrite().use { dao.upsert(entity) }
 
     suspend fun addNodeFavorite(target: NodeFavoriteTarget): FavoriteEntity {
-        val refKey = NodeFavoriteAdapter.buildRefKey(target)
-        val existing = dao.getByRefKey(refKey)
-        val favorite = NodeFavoriteAdapter.buildFavoriteEntity(
-            target = target,
-            existing = existing,
-        )
-        dao.upsert(favorite)
-        return favorite
+        attachmentReferenceGuard.beginWrite().use {
+            val refKey = NodeFavoriteAdapter.buildRefKey(target)
+            val existing = dao.getByRefKey(refKey)
+            val favorite = NodeFavoriteAdapter.buildFavoriteEntity(
+                target = target,
+                existing = existing,
+            )
+            dao.upsert(favorite)
+            return favorite
+        }
     }
 
     suspend fun removeNodeFavorite(conversationId: Uuid, nodeId: Uuid): Int {

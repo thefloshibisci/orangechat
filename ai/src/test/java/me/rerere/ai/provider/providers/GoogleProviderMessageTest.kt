@@ -7,10 +7,19 @@
 package me.rerere.ai.provider.providers
 
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
 import me.rerere.ai.core.MessageRole
+import me.rerere.ai.core.InputSchema
+import me.rerere.ai.core.Tool
+import me.rerere.ai.provider.Model
+import me.rerere.ai.provider.ModelAbility
+import me.rerere.ai.provider.TextGenerationParams
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
 import okhttp3.OkHttpClient
@@ -31,6 +40,31 @@ import org.junit.Test
  */
 class GoogleProviderMessageTest {
 
+    @Test
+    fun `signed text and reasoning replay unchanged and blank signature gets fallback`() {
+        val text = invokeParseMessagePart(buildJsonObject {
+            put("text", "")
+            put("thoughtSignature", "text-signature")
+        })
+        val thought = invokeParseMessagePart(buildJsonObject {
+            put("text", "thinking")
+            put("thought", true)
+            put("thoughtSignature", "thought-signature")
+        })
+        val tool = createExecutedTool("id", "test", "{}", "ok").copy(
+            metadata = buildJsonObject { put("thoughtSignature", " ") }
+        )
+        val result = invokeBuildContents(listOf(UIMessage(
+            role = MessageRole.ASSISTANT, parts = listOf(text, thought, tool)
+        )), true)
+        val parts = result.first().jsonObject["parts"]!!.jsonArray
+        assertEquals("", parts[0].jsonObject["text"]!!.jsonPrimitive.content)
+        assertEquals("text-signature", parts[0].jsonObject["thoughtSignature"]!!.jsonPrimitive.content)
+        assertEquals("thought-signature", parts[1].jsonObject["thoughtSignature"]!!.jsonPrimitive.content)
+        assertEquals("true", parts[1].jsonObject["thought"]!!.jsonPrimitive.content)
+        assertEquals("skip_thought_signature_validator", parts[2].jsonObject["thoughtSignature"]!!.jsonPrimitive.content)
+    }
+
     private lateinit var provider: GoogleProvider
 
     @Before
@@ -46,6 +80,131 @@ class GoogleProviderMessageTest {
         )
         method.isAccessible = true
         return method.invoke(provider, messages) as JsonArray
+    }
+
+    private fun invokeBuildContents(
+        messages: List<UIMessage>,
+        requireThoughtSignature: Boolean
+    ): JsonArray {
+        val method = GoogleProvider::class.java.getDeclaredMethod(
+            "buildContents",
+            List::class.java,
+            Boolean::class.javaPrimitiveType!!
+        )
+        method.isAccessible = true
+        return method.invoke(provider, messages, requireThoughtSignature) as JsonArray
+    }
+
+    private fun invokeParseMessagePart(part: JsonObject): UIMessagePart {
+        val method = GoogleProvider::class.java.getDeclaredMethod(
+            "parseMessagePart",
+            JsonObject::class.java
+        )
+        method.isAccessible = true
+        return method.invoke(provider, part) as UIMessagePart
+    }
+
+    @Test
+    fun `Google response parser should preserve snake case thought signature`() {
+        val parsed = invokeParseMessagePart(buildJsonObject {
+            put("functionCall", buildJsonObject {
+                put("name", "message_reaction")
+                put("args", buildJsonObject {})
+            })
+            put("thought_signature", "real-signature")
+        }) as UIMessagePart.Tool
+
+        assertEquals(
+            "real-signature",
+            parsed.metadata?.get("thoughtSignature")?.jsonPrimitive?.content
+        )
+    }
+
+    @Test
+    fun `native Gemini request exposes reaction choices to the model`() {
+        val choices = JsonArray(listOf(JsonPrimitive("(ᵕ—ᴗ—)"), JsonPrimitive("(≧▽≦)")))
+        val tool = Tool(
+            name = "message_reaction",
+            description = "React to a message",
+            parameters = {
+                InputSchema.Obj(
+                    properties = buildJsonObject {
+                        put("emoji", buildJsonObject {
+                            put("type", "string")
+                            put("enum", choices)
+                        })
+                    },
+                    required = listOf("emoji"),
+                )
+            },
+            execute = { emptyList() },
+        )
+        val method = GoogleProvider::class.java.getDeclaredMethod(
+            "buildCompletionRequestBody", List::class.java, TextGenerationParams::class.java
+        )
+        method.isAccessible = true
+        val body = method.invoke(
+            provider,
+            listOf(UIMessage.user("React")),
+            TextGenerationParams(
+                model = Model(modelId = "gemini-3-flash", abilities = listOf(ModelAbility.TOOL)),
+                tools = listOf(tool),
+            ),
+        ) as JsonObject
+        val parameters = body["tools"]!!.jsonArray.single().jsonObject["functionDeclarations"]!!
+            .jsonArray.single().jsonObject["parameters"]!!.jsonObject
+        assertEquals(choices, parameters["properties"]!!.jsonObject["emoji"]!!.jsonObject["enum"])
+    }
+
+    @Test
+    fun `Gemini 3 history should add documented bypass when first tool signature is missing`() {
+        val assistantMessage = UIMessage(
+            role = MessageRole.ASSISTANT,
+            parts = listOf(
+                createExecutedTool("call_1", "message_reaction", "{}", "ok"),
+                createExecutedTool("call_2", "other_tool", "{}", "done")
+            )
+        )
+
+        val result = invokeBuildContents(
+            messages = listOf(UIMessage.user("React"), assistantMessage),
+            requireThoughtSignature = true
+        )
+        val calls = result
+            .flatMap { it.jsonObject["parts"]?.jsonArray.orEmpty() }
+            .filter { it.jsonObject.containsKey("functionCall") }
+
+        assertEquals(
+            "skip_thought_signature_validator",
+            calls[0].jsonObject["thoughtSignature"]?.jsonPrimitive?.content
+        )
+        assertTrue(
+            "Only the first call in a parallel group should receive the fallback",
+            !calls[1].jsonObject.containsKey("thoughtSignature")
+        )
+    }
+
+    @Test
+    fun `real thought signature should be preserved instead of bypass`() {
+        val signedTool = createExecutedTool("call_1", "message_reaction", "{}", "ok").copy(
+            metadata = buildJsonObject { put("thoughtSignature", "real-signature") }
+        )
+
+        val result = invokeBuildContents(
+            messages = listOf(
+                UIMessage.user("React"),
+                UIMessage(role = MessageRole.ASSISTANT, parts = listOf(signedTool))
+            ),
+            requireThoughtSignature = true
+        )
+        val call = result
+            .flatMap { it.jsonObject["parts"]?.jsonArray.orEmpty() }
+            .first { it.jsonObject.containsKey("functionCall") }
+
+        assertEquals(
+            "real-signature",
+            call.jsonObject["thoughtSignature"]?.jsonPrimitive?.content
+        )
     }
 
     @Test
@@ -422,6 +581,89 @@ class GoogleProviderMessageTest {
     }
 
     // ==================== Helper Functions ====================
+
+    @Test
+    fun `same-name calls keep distinct identities and corresponding results across rounds`() {
+        val first = UIMessage.assistant("").copy(parts = listOf(
+            createExecutedTool("hold-1", "hold", "{\"value\":1}", "saved-first"),
+            createExecutedTool("hold-2", "hold", "{\"value\":2}", "saved-second"),
+            UIMessagePart.Text("Another round"),
+            createExecutedTool("hold-3", "hold", "{\"value\":3}", "saved-third"),
+        ))
+        val history = listOf(UIMessage.user("save"), first, UIMessage.user("continue"))
+        val parts = invokeBuildContents(history).flatMap { it.jsonObject["parts"]!!.jsonArray }
+        val calls = parts.mapNotNull { it.jsonObject["functionCall"]?.jsonObject }
+        val results = parts.mapNotNull { it.jsonObject["functionResponse"]?.jsonObject }
+        assertEquals(listOf("hold-1", "hold-2", "hold-3"), calls.map { it["id"]!!.jsonPrimitive.content })
+        assertEquals(calls.map { it["id"] }, results.map { it["id"] })
+        assertTrue((calls + results).all { it["name"]!!.jsonPrimitive.content == "hold" })
+        assertEquals(listOf("saved-first", "saved-second", "saved-third"),
+            results.map { it["response"]!!.jsonObject["result"]!!.jsonPrimitive.content })
+    }
+
+    @Test
+    fun `different-name parallel calls and responses retain identical positional order`() {
+        val tools = listOf(
+            createExecutedTool("avatar-1", "avatar_interaction", "{}", "avatar-result"),
+            createExecutedTool("reaction-1", "message_reaction", "{}", "reaction-result"),
+        )
+        val parts = invokeBuildContents(listOf(UIMessage.assistant("").copy(parts = tools)))
+            .flatMap { it.jsonObject["parts"]!!.jsonArray }
+        val calls = parts.mapNotNull { it.jsonObject["functionCall"]?.jsonObject }
+        val results = parts.mapNotNull { it.jsonObject["functionResponse"]?.jsonObject }
+
+        assertEquals(listOf("avatar_interaction", "message_reaction"),
+            calls.map { it["name"]!!.jsonPrimitive.content })
+        assertEquals(calls.map { it["name"] }, results.map { it["name"] })
+        assertEquals(calls.map { it["id"] }, results.map { it["id"] })
+        assertEquals(listOf("avatar-result", "reaction-result"),
+            results.map { it["response"]!!.jsonObject["result"]!!.jsonPrimitive.content })
+    }
+
+    @Test
+    fun `old blank call identities get stable distinct request-only fallback ids`() {
+        val tools = List(2) { createExecutedTool("", "hold", "{}", "result-$it") }
+        val history = listOf(UIMessage.assistant("").copy(parts = tools))
+        val encoded = invokeBuildContents(history)
+        assertEquals(encoded, invokeBuildContents(history))
+        val parts = encoded.flatMap { it.jsonObject["parts"]!!.jsonArray }
+        val callIds = parts.mapNotNull { it.jsonObject["functionCall"]?.jsonObject?.get("id")?.jsonPrimitive?.content }
+        val resultIds = parts.mapNotNull { it.jsonObject["functionResponse"]?.jsonObject?.get("id")?.jsonPrimitive?.content }
+        assertEquals(2, callIds.toSet().size)
+        assertTrue(callIds.all { it.isNotBlank() })
+        assertEquals(callIds, resultIds)
+        assertTrue(history.single().parts.filterIsInstance<UIMessagePart.Tool>().all { it.toolCallId.isBlank() })
+    }
+
+    @Test
+    fun `server call id and thought signature survive parse and replay`() {
+        val method = GoogleProvider::class.java.getDeclaredMethod("parseMessagePart", kotlinx.serialization.json.JsonObject::class.java)
+            .apply { isAccessible = true }
+        val wire = kotlinx.serialization.json.Json.parseToJsonElement(
+            """{"functionCall":{"id":"server-hold-17","name":"hold","args":{"text":"hello"}},"thoughtSignature":"signed-thought"}"""
+        ).jsonObject
+        val parsed = method.invoke(provider, wire) as UIMessagePart.Tool
+        assertEquals("server-hold-17", parsed.toolCallId)
+        val parts = invokeBuildContents(listOf(UIMessage.assistant("").copy(
+            parts = listOf(parsed.copy(output = listOf(UIMessagePart.Text("saved")))))
+        )).flatMap { it.jsonObject["parts"]!!.jsonArray }.map { it.jsonObject }
+        assertEquals("signed-thought", parts.first()["thoughtSignature"]!!.jsonPrimitive.content)
+        assertEquals("server-hold-17", parts.first()["functionCall"]!!.jsonObject["id"]!!.jsonPrimitive.content)
+        assertEquals("server-hold-17", parts.last()["functionResponse"]!!.jsonObject["id"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `idless gateway responses receive different locally retained identities`() {
+        val method = GoogleProvider::class.java.getDeclaredMethod("parseMessagePart", kotlinx.serialization.json.JsonObject::class.java)
+            .apply { isAccessible = true }
+        val wire = kotlinx.serialization.json.Json.parseToJsonElement(
+            """{"functionCall":{"name":"hold","args":{}}}"""
+        ).jsonObject
+        val first = method.invoke(provider, wire) as UIMessagePart.Tool
+        val second = method.invoke(provider, wire) as UIMessagePart.Tool
+        assertTrue(first.toolCallId.isNotBlank())
+        assertTrue(first.toolCallId != second.toolCallId)
+    }
 
     private fun createExecutedTool(
         callId: String,

@@ -12,6 +12,7 @@ import android.os.Environment
 import android.widget.Toast
 import androidx.core.net.toUri
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.flow
@@ -24,11 +25,6 @@ import me.rerere.rikkahub.BuildConfig
 import okhttp3.OkHttpClient
 import okhttp3.Request
 
-// 更新检查源：橘瓣自己的 GitHub Releases
-private const val GITHUB_OWNER = "thefloshibisci"
-private const val GITHUB_REPO = "orangechat"
-private const val API_URL = "https://api.github.com/repos/$GITHUB_OWNER/$GITHUB_REPO/releases/latest"
-
 class UpdateChecker(private val client: OkHttpClient) {
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -39,7 +35,7 @@ class UpdateChecker(private val client: OkHttpClient) {
                 data = try {
                     val response = client.newCall(
                         Request.Builder()
-                            .url(API_URL)
+                            .url(ProjectLinks.LATEST_RELEASE_API)
                             .get()
                             .addHeader(
                                 "User-Agent",
@@ -47,36 +43,27 @@ class UpdateChecker(private val client: OkHttpClient) {
                             )
                             .build()
                     ).await()
-                    if (response.isSuccessful) {
-                        val release = json.decodeFromString<GithubRelease>(response.body.string())
-                        // 将 GitHub Release 映射为 App 使用的 UpdateInfo 结构
-                        val version = release.tagName.removePrefix("v").removePrefix("V")
-                        UpdateInfo(
-                            version = version,
-                            publishedAt = release.publishedAt,
-                            changelog = release.body.takeIf { !it.isNullOrBlank() }
-                                ?: "暂无更新说明",
-                            downloads = release.assets.map { asset ->
-                                UpdateDownload(
-                                    name = asset.name,
-                                    url = asset.browserDownloadUrl,
-                                    size = formatSize(asset.size)
-                                )
-                            }
-                        )
-                    } else {
-                        throw Exception("Failed to fetch update info (HTTP ${response.code})")
+                    response.use {
+                        if (!it.isSuccessful) error("Failed to fetch update info (HTTP ${it.code})")
+                        val release = json.decodeFromString<GithubRelease>(it.body.string())
+                        selectProjectUpdate(release, BuildConfig.APPLICATION_ID)
                     }
-                } catch (e: Exception) {
-                    throw Exception("Failed to fetch update info", e)
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
                 }
             )
         )
     }.catch {
+        if (it is CancellationException) throw it
         emit(UiState.Error(it))
     }.flowOn(Dispatchers.IO)
 
     fun downloadUpdate(context: Context, download: UpdateDownload) {
+        if (!isTrustedProjectDownload(download.url, download.name) ||
+            !projectUpdateAssetMatchesChannel(download.name, context.packageName)) {
+            Toast.makeText(context, "此安装包不属于当前项目或安装渠道，请从项目发布页核对", Toast.LENGTH_SHORT).show()
+            return
+        }
         runCatching {
             val request = DownloadManager.Request(download.url.toUri()).apply {
                 // 设置下载时通知栏的标题和描述
@@ -101,15 +88,6 @@ class UpdateChecker(private val client: OkHttpClient) {
         }
     }
 
-    /** 将字节数格式化为可读字符串 */
-    private fun formatSize(bytes: Long): String {
-        val mb = bytes.toDouble() / (1024 * 1024)
-        return if (mb >= 1) {
-            String.format("%.1f MB", mb)
-        } else {
-            String.format("%.0f KB", bytes.toDouble() / 1024)
-        }
-    }
 }
 
 @Serializable
@@ -133,7 +111,9 @@ data class GithubRelease(
     @SerialName("tag_name") val tagName: String,
     @SerialName("published_at") val publishedAt: String,
     val body: String? = null,
-    val assets: List<GithubAsset> = emptyList()
+    val assets: List<GithubAsset> = emptyList(),
+    val draft: Boolean = false,
+    val prerelease: Boolean = false,
 )
 
 @Serializable

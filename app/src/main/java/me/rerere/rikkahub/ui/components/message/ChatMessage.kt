@@ -156,10 +156,15 @@ import kotlin.time.Duration.Companion.milliseconds
 // - 共享聊天背景 Painter（仅图片背景时非空）
 // - 背景容器窗口原点与像素尺寸
 // - 是否允许实时气泡模糊 + 模糊半径 px
+@androidx.compose.runtime.Stable
+internal class LiveBubbleBlurGeometry {
+    var originInWindow by mutableStateOf(Offset.Unspecified)
+    var sizePx by mutableStateOf(Size.Unspecified)
+}
+
 internal data class LiveBubbleBlurContext(
     val imageBitmap: ImageBitmap? = null,
-    val backgroundOriginInWindow: Offset = Offset.Unspecified,
-    val backgroundSizePx: Size = Size.Unspecified,
+    val geometry: LiveBubbleBlurGeometry = LiveBubbleBlurGeometry(),
     // 复现页面最终背景所需的视觉参数（与 AssistantBackground 共享同一套数值）
     val baseColor: Color = Color.Unspecified,
     val imageAlpha: Float = 1f,
@@ -178,16 +183,18 @@ internal val LocalLiveBubbleBlur = staticCompositionLocalOf { LiveBubbleBlurCont
  * 3. 页面垂直渐变遮罩（以完整背景容器坐标为基准，气泡只裁取对应部分）。
  * 以上全部位于同一 graphicsLayer 内，统一接受 RenderEffect 模糊。
  */
-private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawLiveBackgroundFragment(
-    imageBitmap: ImageBitmap?,
-    backgroundOriginInWindow: Offset,
-    backgroundSizePx: Size,
+internal fun androidx.compose.ui.graphics.drawscope.DrawScope.drawLiveBackgroundFragment(
+    context: LiveBubbleBlurContext,
     layerOriginInWindow: Offset,
-    baseColor: Color,
-    imageAlpha: Float,
-    gradientTopAlpha: Float,
-    gradientBottomAlpha: Float,
 ) {
+    // Geometry changes during navigation/scroll only invalidate drawing, never the message composition.
+    val backgroundOriginInWindow = context.geometry.originInWindow
+    val backgroundSizePx = context.geometry.sizePx
+    val imageBitmap = context.imageBitmap
+    val baseColor = context.baseColor
+    val imageAlpha = context.imageAlpha
+    val gradientTopAlpha = context.gradientTopAlpha
+    val gradientBottomAlpha = context.gradientBottomAlpha
     if (layerOriginInWindow == Offset.Unspecified) return
     if (backgroundSizePx.width <= 0f || backgroundSizePx.height <= 0f) return
 
@@ -567,6 +574,10 @@ private fun MessagePartsBlock(
                 }
             }
  
+            is MessagePartBlock.ChartBlock -> key("chart", block.index) {
+                me.rerere.rikkahub.ui.components.charts.ChatChartCard(block.spec)
+            }
+
             is MessagePartBlock.ContentBlock -> key(block.index) {
                 when (val part = block.part) {
                     is UIMessagePart.Text -> {
@@ -961,14 +972,8 @@ private fun BubbleSurface(
                 // 页面背景完整合成作为该 graphicsLayer 节点的直接内容：
                 // 底色 → 半透明图片 → 页面渐变遮罩，统一接受 RenderEffect 模糊
                 drawLiveBackgroundFragment(
-                    imageBitmap = liveContext.imageBitmap,
-                    backgroundOriginInWindow = liveContext.backgroundOriginInWindow,
-                    backgroundSizePx = liveContext.backgroundSizePx,
+                    context = liveContext,
                     layerOriginInWindow = liveLayerOriginInWindow,
-                    baseColor = liveContext.baseColor,
-                    imageAlpha = liveContext.imageAlpha,
-                    gradientTopAlpha = liveContext.gradientTopAlpha,
-                    gradientBottomAlpha = liveContext.gradientBottomAlpha,
                 )
             }
     } else {

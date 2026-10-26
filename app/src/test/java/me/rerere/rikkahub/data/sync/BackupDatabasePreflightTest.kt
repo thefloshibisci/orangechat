@@ -56,12 +56,16 @@ class BackupDatabasePreflightTest {
         val reopened = Room.databaseBuilder(context, AppDatabase::class.java, file.absolutePath).build()
         try {
             val db = reopened.openHelper.writableDatabase
-            assertEquals(34, db.version)
-            db.query("SELECT title,compression_history,compression_summaries FROM ConversationEntity WHERE id='backup'").use {
+            assertEquals(42, db.version)
+            db.query("SELECT COUNT(*) FROM usage_record").use {
+                assertTrue(it.moveToFirst()); assertEquals(0, it.getInt(0))
+            }
+            db.query("SELECT title,compression_history,compression_summaries,conversation_config FROM ConversationEntity WHERE id='backup'").use {
                 assertTrue(it.moveToFirst())
                 assertEquals("original title", it.getString(0))
                 assertEquals("[]", it.getString(1))
                 assertEquals("[]", it.getString(2))
+                assertEquals("", it.getString(3))
             }
         } finally { reopened.close(); file.delete() }
     }

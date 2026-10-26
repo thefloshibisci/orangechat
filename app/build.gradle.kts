@@ -26,8 +26,8 @@ android {
         applicationId = "me.rerere.orangechat"
         minSdk = 26
         targetSdk = 37
-        versionCode = 160
-        versionName = "2.2.4"
+        versionCode = 161
+        versionName = "2.2.5"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -116,6 +116,17 @@ android {
             buildConfigField("String", "VERSION_CODE", "\"${android.defaultConfig.versionCode}\"")
             buildConfigField("String", "GIT_COMMIT", "\"$gitCommit\"")
             buildConfigField("String", "BUILD_TIME", "\"$buildTime\"")
+        }
+        // Local performance comparison: release optimizations with the existing
+        // test app's identity, so the same conversations/settings can be measured.
+        // This is not the signed production release variant.
+        create("performance") {
+            initWith(getByName("release"))
+            matchingFallbacks.add("release")
+            applicationIdSuffix = ".liquidglass"
+            signingConfig = getByName("debug").signingConfig
+            isDebuggable = false
+            isProfileable = true
         }
         create("baseline") {
             initWith(getByName("release"))
@@ -217,7 +228,10 @@ dependencies {
 
     // BiometricPrompt (fingerprint/face verify_fingerprint tool)
     implementation(libs.androidx.biometric)
-    implementation(libs.termux.terminal.view)
+    implementation(libs.termux.terminal.view) {
+        exclude(group = "com.termux.termux-app", module = "terminal-emulator")
+    }
+    implementation(project(":terminal"))
     implementation(libs.guava.listenablefuture)
 
     // Workflow feature: cron parsing + geofence triggers

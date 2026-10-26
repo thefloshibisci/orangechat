@@ -6,6 +6,8 @@
 
 package me.rerere.rikkahub.data.datastore
 
+import me.rerere.rikkahub.data.files.attachmentReferenceGuard
+
 import me.rerere.rikkahub.data.security.SecretCrypto
 
 import android.content.Context
@@ -157,6 +159,7 @@ class SettingsStore(
         // ASR
         val ASR_PROVIDERS = stringPreferencesKey("asr_providers")
         val SELECTED_ASR_PROVIDER = stringPreferencesKey("selected_asr_provider")
+        val VOICE_CALL_KEEP_LISTENING_DURING_REPLY = booleanPreferencesKey("voice_call_keep_listening_during_reply")
 
         // Web Server
         val WEB_SERVER_ENABLED = booleanPreferencesKey("web_server_enabled")
@@ -191,6 +194,7 @@ class SettingsStore(
 
         // 外部记忆库
         val EXTERNAL_MEMORIES = stringPreferencesKey("external_memories")
+        val SEREIN_HOOK = stringPreferencesKey("serein_hook")
 
         // 微信 Bot (iLink 协议)
         val WECHAT_BOT_SETTING = stringPreferencesKey("wechat_bot_setting")
@@ -224,13 +228,15 @@ class SettingsStore(
             SYSTEM_TOOLS_SETTING,
             WECHAT_BOT_SETTING,
             QQ_BOT_SETTING,
-            EXTERNAL_MEMORIES,
+            SEREIN_HOOK,
             MINI_APPS,
         )
     }
 
     private val dataStore = context.settingsStore
     private val updateMutex = Mutex()
+    private val legacyMemoryRetirement = LegacyExternalMemoryRetirement()
+    private val protectedDecodeCache = ProtectedSettingsDecodeCache()
 
     init {
         // Upgrade existing plaintext secrets in the background. The read path below still
@@ -239,6 +245,7 @@ class SettingsStore(
             try {
                 updateMutex.withLock {
                     dataStore.edit { preferences ->
+                        retireExternalMemoryPreferences(preferences)
                         PROTECTED_STRING_KEYS.forEach { key ->
                             val stored = preferences[key]
                             if (!stored.isNullOrEmpty() && !SecretCrypto.isEncrypted(stored)) {
@@ -328,6 +335,7 @@ class SettingsStore(
                     ?: DEFAULT_SYSTEM_TTS_ID,
                 asrProviders = preferences.readPlaintextOrMigrate(ASR_PROVIDERS, emptyList()) { JsonInstant.decodeFromString(it) },
                 selectedASRProviderId = preferences[SELECTED_ASR_PROVIDER]?.let { Uuid.parse(it) },
+                voiceCallKeepListeningDuringReply = preferences[VOICE_CALL_KEEP_LISTENING_DURING_REPLY] ?: true,
                 modeInjections = runCatching { preferences[MODE_INJECTIONS]?.let { JsonInstant.decodeFromString<List<PromptInjection.ModeInjection>>(it) } }.getOrNull() ?: emptyList(),
                 lorebooks = runCatching { preferences[LOREBOOKS]?.let { JsonInstant.decodeFromString<List<Lorebook>>(it) } }.getOrNull() ?: emptyList(),
                 quickMessages = runCatching { preferences[QUICK_MESSAGES]?.let { JsonInstant.decodeFromString<List<QuickMessage>>(it) } }.getOrNull() ?: emptyList(),
@@ -349,12 +357,13 @@ class SettingsStore(
                 wechatBotSetting = preferences.readPlaintextOrMigrate(WECHAT_BOT_SETTING, WechatBotSetting()) { JsonInstant.decodeFromString(it) },
                 qqBotSetting = preferences.readPlaintextOrMigrate(QQ_BOT_SETTING, QqBotSetting()) { JsonInstant.decodeFromString(it) },
                 keepAliveEnabled = preferences[KEEP_ALIVE_ENABLED] == true,
-                externalMemories = preferences.readPlaintextOrMigrate(EXTERNAL_MEMORIES, emptyList()) { JsonInstant.decodeFromString(it) },
+                externalMemories = emptyList(),
+                sereinHook = preferences.readPlaintextOrMigrate(SEREIN_HOOK, me.rerere.rikkahub.data.serein.SereinHookConfig()) { JsonInstant.decodeFromString(it) },
                 miniApps = preferences.readPlaintextOrMigrate(MINI_APPS, emptyList()) { JsonInstant.decodeFromString(it) },
                 forceConfirmToolCalls = preferences[FORCE_CONFIRM_TOOL_CALLS] != false,
                 workflowHeadlessBlockSensitive = preferences[WORKFLOW_HEADLESS_BLOCK_SENSITIVE] != false,
                 autoApproveAllTools = preferences[AUTO_APPROVE_ALL_TOOLS] == true,
-            )
+            ).withoutLegacyExternalMemories()
         }
         .map {
             var providers = it.providers.ifEmpty { DEFAULT_PROVIDERS }.toMutableList()
@@ -468,7 +477,9 @@ class SettingsStore(
                 settingsFlowRaw.distinctUntilChanged().collect { committed ->
                     // A slow disk emission must not visually undo a newer optimistic write.
                     if (pendingWrites.get() == 0) {
-                        settingsFlow.value = committed
+                        attachmentReferenceGuard.beginWrite().use {
+                            settingsFlow.value = committed
+                        }
                     }
                 }
             }.onFailure {
@@ -500,8 +511,10 @@ class SettingsStore(
                     publishAndPersist(restored, settingsFlowRaw.first())
                 },
                 rollback = {
-                    dataStore.updateData { previous }
-                    settingsFlow.value = settingsFlowRaw.first()
+                    attachmentReferenceGuard.beginWrite().use {
+                        dataStore.updateData { previous }
+                        settingsFlow.value = settingsFlowRaw.first()
+                    }
                 },
             ))
         }
@@ -520,27 +533,33 @@ class SettingsStore(
             Log.w(TAG, "Cannot update from dummy settings")
             return
         }
-        update { current -> current.withSettingsEdit(previous, desired) }
+        // Three full settings JSON trees may be merged here. Never do that on the UI thread.
+        withContext(Dispatchers.Default) {
+            update { current -> current.withSettingsEdit(previous, desired) }
+        }
     }
 
-    private suspend fun publishAndPersist(settings: Settings, previous: Settings) {
-        if(settings.init) {
-            Log.w(TAG, "Cannot update dummy settings")
-            return
-        }
-        pendingWrites.incrementAndGet()
-        settingsFlow.value = settings
-        try {
-            withContext(Dispatchers.IO) {
-                persistSettings(settings, previous)
+    private suspend fun publishAndPersist(requested: Settings, previous: Settings) {
+        val settings = requested.withoutLegacyExternalMemories()
+        attachmentReferenceGuard.beginWrite().use {
+            if(settings.init) {
+                Log.w(TAG, "Cannot update dummy settings")
+                return
             }
-        } finally {
-            if (pendingWrites.decrementAndGet() == 0) {
-                withContext(NonCancellable) {
-                    runCatching { settingsFlow.value = settingsFlowRaw.first() }
-                        .onFailure {
-                            Log.w(TAG, "Failed to refresh settings after write", it)
-                        }
+            pendingWrites.incrementAndGet()
+            settingsFlow.value = settings
+            try {
+                withContext(Dispatchers.IO) {
+                    persistSettings(settings, previous)
+                }
+            } finally {
+                if (pendingWrites.decrementAndGet() == 0) {
+                    withContext(NonCancellable) {
+                        runCatching { settingsFlow.value = settingsFlowRaw.first() }
+                            .onFailure {
+                                Log.w(TAG, "Failed to refresh settings after write", it)
+                            }
+                    }
                 }
             }
         }
@@ -659,6 +678,7 @@ class SettingsStore(
             settings.selectedASRProviderId?.let {
                 preferences[SELECTED_ASR_PROVIDER] = it.toString()
             } ?: preferences.remove(SELECTED_ASR_PROVIDER)
+            preferences[VOICE_CALL_KEEP_LISTENING_DURING_REPLY] = settings.voiceCallKeepListeningDuringReply
             preferences[MODE_INJECTIONS] = JsonInstant.encodeToString(settings.modeInjections)
             preferences[LOREBOOKS] = JsonInstant.encodeToString(settings.lorebooks)
             preferences[QUICK_MESSAGES] = JsonInstant.encodeToString(settings.quickMessages)
@@ -701,17 +721,17 @@ class SettingsStore(
                 ) { JsonInstant.encodeToString(settings.qqBotSetting) }
             }
             preferences[KEEP_ALIVE_ENABLED] = settings.keepAliveEnabled
-            if (canWriteProtected(EXTERNAL_MEMORIES, settings.externalMemories, loadedSettings.externalMemories)) {
-                preferences.putSecretIfChanged(
-                    EXTERNAL_MEMORIES,
-                    settings.externalMemories != previous.externalMemories,
-                ) { JsonInstant.encodeToString(settings.externalMemories) }
-            }
+            retireExternalMemoryPreferences(preferences)
             if (canWriteProtected(MINI_APPS, settings.miniApps, loadedSettings.miniApps)) {
                 preferences.putSecretIfChanged(
                     MINI_APPS,
                     settings.miniApps != previous.miniApps,
                 ) { JsonInstant.encodeToString(settings.miniApps) }
+            }
+            if (canWriteProtected(SEREIN_HOOK, settings.sereinHook, loadedSettings.sereinHook)) {
+                preferences.putSecretIfChanged(SEREIN_HOOK, settings.sereinHook != previous.sereinHook) {
+                    JsonInstant.encodeToString(settings.sereinHook)
+                }
             }
             preferences[FORCE_CONFIRM_TOOL_CALLS] = settings.forceConfirmToolCalls
             preferences[WORKFLOW_HEADLESS_BLOCK_SENSITIVE] = settings.workflowHeadlessBlockSensitive
@@ -788,26 +808,33 @@ class SettingsStore(
         }
     }
 
+    private fun retireExternalMemoryPreferences(preferences: MutablePreferences) {
+        legacyMemoryRetirement.retire(
+            preferences,
+            decrypt = { stored, name ->
+                if (SecretCrypto.isEncrypted(stored)) SecretCrypto.decrypt(stored, name) else stored
+            },
+            encrypt = { plain, name -> SecretCrypto.encrypt(plain, name) },
+        )
+    }
+
     private inline fun <reified T> Preferences.readPlaintextOrMigrate(
         key: Preferences.Key<String>,
         default: T,
         crossinline decode: (String) -> T,
     ): T {
         val raw = this[key] ?: run {
+            protectedDecodeCache.forget(key.name)
             unreadableProtectedSettingKeys.remove(key.name)
             return default
         }
-        val plaintext = if (SecretCrypto.isEncrypted(raw)) {
-            runCatching { SecretCrypto.decrypt(raw, key.name) }.getOrNull()
-        } else {
-            raw
+        return runCatching {
+            protectedDecodeCache.read(key.name, raw) {
+                val plaintext = if (SecretCrypto.isEncrypted(raw)) SecretCrypto.decrypt(raw, key.name) else raw
+                checkNotNull(plaintext) { "Protected preference unavailable" }
+                decode(plaintext)
+            }
         }
-        if (plaintext == null) {
-            unreadableProtectedSettingKeys.add(key.name)
-            Log.w(TAG, "Failed to decrypt protected preference '${key.name}', preserving raw value")
-            return default
-        }
-        return runCatching { decode(plaintext) }
             .onSuccess { unreadableProtectedSettingKeys.remove(key.name) }
             .getOrElse {
                 unreadableProtectedSettingKeys.add(key.name)
@@ -870,6 +897,7 @@ data class Settings(
     val selectedTTSProviderId: Uuid = DEFAULT_SYSTEM_TTS_ID,
     val asrProviders: List<ASRProviderSetting> = emptyList(),
     val selectedASRProviderId: Uuid? = null,
+    val voiceCallKeepListeningDuringReply: Boolean = true,
     val modeInjections: List<PromptInjection.ModeInjection> = DEFAULT_MODE_INJECTIONS,
     val lorebooks: List<Lorebook> = emptyList(),
     val quickMessages: List<QuickMessage> = emptyList(),
@@ -888,6 +916,7 @@ data class Settings(
     val qqBotSetting: QqBotSetting = QqBotSetting(),
     val keepAliveEnabled: Boolean = false,
     val externalMemories: List<ExternalMemory> = emptyList(),
+    val sereinHook: me.rerere.rikkahub.data.serein.SereinHookConfig = me.rerere.rikkahub.data.serein.SereinHookConfig(),
     val miniApps: List<MiniApp> = emptyList(),
     val forceConfirmToolCalls: Boolean = true,
     val workflowHeadlessBlockSensitive: Boolean = true,

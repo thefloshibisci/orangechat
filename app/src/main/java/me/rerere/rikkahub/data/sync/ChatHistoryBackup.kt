@@ -1,5 +1,7 @@
 package me.rerere.rikkahub.data.sync
 
+import me.rerere.rikkahub.data.files.attachmentReferenceGuard
+
 import android.content.Context
 import android.net.Uri
 import android.util.AtomicFile
@@ -225,110 +227,112 @@ class ChatHistoryBackup(
 
     /** Called before WorkManager/ChatService startup. Replay after process death is ID-based and idempotent. */
     suspend fun applyPendingBeforeServices(onProgress: (ChatRestoreProgress) -> Unit = {}) = withContext(Dispatchers.IO) {
-        mutex.withLock {
-            if (!hasPendingRestore()) return@withLock
-            val plan = try {
-                JsonInstant.decodeFromString<PendingChatHistory>(pending.openRead().bufferedReader().use { it.readText() })
-            } catch (error: Exception) {
-                status.edit().putString("result", "待恢复任务损坏，聊天记录未修改：${error.message}").commit()
-                pending.delete()
-                check(!hasPendingRestore()) { "无法清除损坏的待恢复任务" }
-                return@withLock
-            }
-            val directory = File(root, plan.id.toString())
-            var completed = false
-            val result = try {
-                onProgress(ChatRestoreProgress("正在读取聊天备份…"))
-                val archive = JsonInstant.decodeFromString<ChatHistoryArchive>(File(directory, "chats.json").readText())
-                coroutineContext.ensureActive()
-                onProgress(ChatRestoreProgress("正在校验 ${archive.conversations.size} 个会话…", ChatRestoreStep.VALIDATING))
-                validateChatHistory(archive.conversations)
-                val selected = archive.conversations.filter { conversation ->
-                    plan.mode != ChatHistoryRestoreMode.INCREMENTAL || !repository.existsConversationById(conversation.id)
+        attachmentReferenceGuard.beginWrite().use {
+            mutex.withLock {
+                if (!hasPendingRestore()) return@withLock
+                val plan = try {
+                    JsonInstant.decodeFromString<PendingChatHistory>(pending.openRead().bufferedReader().use { it.readText() })
+                } catch (error: Exception) {
+                    status.edit().putString("result", "待恢复任务损坏，聊天记录未修改：${error.message}").commit()
+                    pending.delete()
+                    check(!hasPendingRestore()) { "无法清除损坏的待恢复任务" }
+                    return@withLock
                 }
-                val neededAttachments = hashSetOf<String>()
-                selected.forEach { conversation ->
-                    mapChatAttachmentUrls(conversation) { url ->
-                        neededAttachments.add(url)
-                        url
-                    }
-                }
-                coroutineContext.ensureActive()
-                val settings = settingsStore.settingsFlowRaw.first()
-                val assistants = settings.assistants.map { it.id }.toSet()
-                val fallback = plan.assistantId.takeIf { it in assistants }
-                    ?: settings.assistantId.takeIf { it in assistants } ?: settings.assistants.first().id
-                val selectedAttachments = archive.attachments.filterKeys { it in neededAttachments }
-                var copied = 0
-                val uploadDir = File(context.filesDir, "upload")
-                check(uploadDir.mkdirs() || uploadDir.isDirectory)
-                val dedup = ChatAttachmentDedup(uploadDir)
-                val urls = selectedAttachments.mapValues { (_, name) ->
+                val directory = File(root, plan.id.toString())
+                var completed = false
+                val result = try {
+                    onProgress(ChatRestoreProgress("正在读取聊天备份…"))
+                    val archive = JsonInstant.decodeFromString<ChatHistoryArchive>(File(directory, "chats.json").readText())
                     coroutineContext.ensureActive()
-                    onProgress(ChatRestoreProgress("正在恢复附件 $copied/${selectedAttachments.size}…",
-                        ChatRestoreStep.WRITING, copied, selectedAttachments.size))
-                    val source = File(directory, name)
-                    check(source.isFile) { "待恢复的附件缺失" }
-                    val target = File(uploadDir, "chat-${plan.id}-${source.name}")
-                    // Replay after process death keeps using the copy it already made. Otherwise
-                    // reuse a byte-identical file already on this device instead of duplicating it.
-                    val existing = if (target.exists()) null else dedup.findExisting(source)
-                    if (existing != null) {
+                    onProgress(ChatRestoreProgress("正在校验 ${archive.conversations.size} 个会话…", ChatRestoreStep.VALIDATING))
+                    validateChatHistory(archive.conversations)
+                    val selected = archive.conversations.filter { conversation ->
+                        plan.mode != ChatHistoryRestoreMode.INCREMENTAL || !repository.existsConversationById(conversation.id)
+                    }
+                    val neededAttachments = hashSetOf<String>()
+                    selected.forEach { conversation ->
+                        mapChatAttachmentUrls(conversation) { url ->
+                            neededAttachments.add(url)
+                            url
+                        }
+                    }
+                    coroutineContext.ensureActive()
+                    val settings = settingsStore.settingsFlowRaw.first()
+                    val assistants = settings.assistants.map { it.id }.toSet()
+                    val fallback = plan.assistantId.takeIf { it in assistants }
+                        ?: settings.assistantId.takeIf { it in assistants } ?: settings.assistants.first().id
+                    val selectedAttachments = archive.attachments.filterKeys { it in neededAttachments }
+                    var copied = 0
+                    val uploadDir = File(context.filesDir, "upload")
+                    check(uploadDir.mkdirs() || uploadDir.isDirectory)
+                    val dedup = ChatAttachmentDedup(uploadDir)
+                    val urls = selectedAttachments.mapValues { (_, name) ->
+                        coroutineContext.ensureActive()
+                        onProgress(ChatRestoreProgress("正在恢复附件 $copied/${selectedAttachments.size}…",
+                            ChatRestoreStep.WRITING, copied, selectedAttachments.size))
+                        val source = File(directory, name)
+                        check(source.isFile) { "待恢复的附件缺失" }
+                        val target = File(uploadDir, "chat-${plan.id}-${source.name}")
+                        // Replay after process death keeps using the copy it already made. Otherwise
+                        // reuse a byte-identical file already on this device instead of duplicating it.
+                        val existing = if (target.exists()) null else dedup.findExisting(source)
+                        if (existing != null) {
+                            copied++
+                            onProgress(ChatRestoreProgress("已恢复附件 $copied/${selectedAttachments.size}",
+                                ChatRestoreStep.WRITING, copied, selectedAttachments.size))
+                            return@mapValues existing.toUri().toString()
+                        }
+                        if (!target.exists()) {
+                            val temp = File(target.parentFile, ".${target.name}.tmp")
+                            try {
+                                FileOutputStream(temp).use { out ->
+                                    source.inputStream().use { input ->
+                                        val buffer = ByteArray(64 * 1024)
+                                        while (true) {
+                                            coroutineContext.ensureActive()
+                                            val count = input.read(buffer)
+                                            if (count < 0) break
+                                            out.write(buffer, 0, count)
+                                        }
+                                    }
+                                    out.fd.sync()
+                                }
+                                check(temp.renameTo(target)) { "无法保存聊天附件" }
+                                dedup.register(target)
+                            } finally { temp.delete() }
+                        }
                         copied++
                         onProgress(ChatRestoreProgress("已恢复附件 $copied/${selectedAttachments.size}",
                             ChatRestoreStep.WRITING, copied, selectedAttachments.size))
-                        return@mapValues existing.toUri().toString()
+                        target.toUri().toString()
                     }
-                    if (!target.exists()) {
-                        val temp = File(target.parentFile, ".${target.name}.tmp")
-                        try {
-                            FileOutputStream(temp).use { out ->
-                                source.inputStream().use { input ->
-                                    val buffer = ByteArray(64 * 1024)
-                                    while (true) {
-                                        coroutineContext.ensureActive()
-                                        val count = input.read(buffer)
-                                        if (count < 0) break
-                                        out.write(buffer, 0, count)
-                                    }
-                                }
-                                out.fd.sync()
-                            }
-                            check(temp.renameTo(target)) { "无法保存聊天附件" }
-                            dedup.register(target)
-                        } finally { temp.delete() }
+                    val conversations = selected.map { conversation ->
+                        mapChatAttachmentUrls(conversation) { urls[it] ?: it }.copy(
+                            assistantId = conversation.assistantId.takeIf { it in assistants } ?: fallback,
+                            workspaceCwd = null,
+                        )
                     }
-                    copied++
-                    onProgress(ChatRestoreProgress("已恢复附件 $copied/${selectedAttachments.size}",
-                        ChatRestoreStep.WRITING, copied, selectedAttachments.size))
-                    target.toUri().toString()
+                    val restoredCount = repository.restoreChatHistory(conversations, plan.mode, archive.favoriteNodeIds) { done, total ->
+                        onProgress(ChatRestoreProgress("已处理会话 $done/$total（含搜索索引）",
+                            ChatRestoreStep.WRITING, done, total))
+                    }
+                    completed = true
+                    if (plan.mode == ChatHistoryRestoreMode.INCREMENTAL) {
+                        "已新增 $restoredCount 个会话，跳过 ${archive.conversations.size - restoredCount} 个同 ID 会话（本机记录原样保留）"
+                    } else "已恢复 $restoredCount 个会话（新增缺少的会话，覆盖同 ID 会话）"
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (error: Exception) {
+                    // Repository transaction rolls back in full. Retain staged bytes for diagnosis; never retry silently.
+                    "聊天恢复失败，原有记录保留：${error.message}"
                 }
-                val conversations = selected.map { conversation ->
-                    mapChatAttachmentUrls(conversation) { urls[it] ?: it }.copy(
-                        assistantId = conversation.assistantId.takeIf { it in assistants } ?: fallback,
-                        workspaceCwd = null,
-                    )
-                }
-                val restoredCount = repository.restoreChatHistory(conversations, plan.mode, archive.favoriteNodeIds) { done, total ->
-                    onProgress(ChatRestoreProgress("已处理会话 $done/$total（含搜索索引）",
-                        ChatRestoreStep.WRITING, done, total))
-                }
-                completed = true
-                if (plan.mode == ChatHistoryRestoreMode.INCREMENTAL) {
-                    "已新增 $restoredCount 个会话，跳过 ${archive.conversations.size - restoredCount} 个同 ID 会话（本机记录原样保留）"
-                } else "已恢复 $restoredCount 个会话（新增缺少的会话，覆盖同 ID 会话）"
-            } catch (error: CancellationException) {
-                throw error
-            } catch (error: Exception) {
-                // Repository transaction rolls back in full. Retain staged bytes for diagnosis; never retry silently.
-                "聊天恢复失败，原有记录保留：${error.message}"
+                status.edit().putString("result", result).commit()
+                pending.delete()
+                // Fail closed if the pointer cannot be cleared: do not allow sessions to write before replay.
+                check(!hasPendingRestore()) { "无法清除待恢复任务，请重新启动" }
+                if (completed) onProgress(ChatRestoreProgress("正在完成恢复…", ChatRestoreStep.FINISHING))
+                if (completed) directory.deleteRecursively()
             }
-            status.edit().putString("result", result).commit()
-            pending.delete()
-            // Fail closed if the pointer cannot be cleared: do not allow sessions to write before replay.
-            check(!hasPendingRestore()) { "无法清除待恢复任务，请重新启动" }
-            if (completed) onProgress(ChatRestoreProgress("正在完成恢复…", ChatRestoreStep.FINISHING))
-            if (completed) directory.deleteRecursively()
         }
     }
 

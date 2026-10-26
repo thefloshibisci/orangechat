@@ -76,16 +76,18 @@ class FilesManager(
         displayName: String? = null,
         mimeType: String? = null,
     ): ManagedFileEntity = withContext(Dispatchers.IO) {
-        val resolvedName = displayName ?: getFileNameFromUri(uri) ?: "file"
-        val resolvedMime = mimeType ?: getFileMimeType(uri) ?: "application/octet-stream"
-        val target = createTargetFile(folder, resolvedName, resolvedMime)
-        copyAttachmentAtomically(target) { context.contentResolver.openInputStream(uri) }
-        createManagedFileEntity(
-            folder = folder,
-            file = target,
-            displayName = resolvedName,
-            mimeType = resolvedMime,
-        )
+        attachmentReferenceGuard.beginWrite().use {
+            val resolvedName = displayName ?: getFileNameFromUri(uri) ?: "file"
+            val resolvedMime = mimeType ?: getFileMimeType(uri) ?: "application/octet-stream"
+            val target = createTargetFile(folder, resolvedName, resolvedMime)
+            copyAttachmentAtomically(target) { context.contentResolver.openInputStream(uri) }
+            createManagedFileEntity(
+                folder = folder,
+                file = target,
+                displayName = resolvedName,
+                mimeType = resolvedMime,
+            )
+        }
     }
 
     suspend fun saveManagedFromBytes(
@@ -94,14 +96,16 @@ class FilesManager(
         displayName: String,
         mimeType: String = "application/octet-stream",
     ): ManagedFileEntity = withContext(Dispatchers.IO) {
-        val target = createTargetFile(folder, displayName, mimeType)
-        copyAttachmentAtomically(target) { bytes.inputStream() }
-        createManagedFileEntity(
-            folder = folder,
-            file = target,
-            displayName = displayName,
-            mimeType = mimeType,
-        )
+        attachmentReferenceGuard.beginWrite().use {
+            val target = createTargetFile(folder, displayName, mimeType)
+            copyAttachmentAtomically(target) { bytes.inputStream() }
+            createManagedFileEntity(
+                folder = folder,
+                file = target,
+                displayName = displayName,
+                mimeType = mimeType,
+            )
+        }
     }
 
     suspend fun saveManagedText(
@@ -110,14 +114,16 @@ class FilesManager(
         displayName: String = "pasted_text.txt",
         mimeType: String = "text/plain",
     ): ManagedFileEntity = withContext(Dispatchers.IO) {
-        val target = createTargetFile(folder, displayName, mimeType)
-        target.writeText(text)
-        createManagedFileEntity(
-            folder = folder,
-            file = target,
-            displayName = displayName,
-            mimeType = mimeType,
-        )
+        attachmentReferenceGuard.beginWrite().use {
+            val target = createTargetFile(folder, displayName, mimeType)
+            target.writeText(text)
+            createManagedFileEntity(
+                folder = folder,
+                file = target,
+                displayName = displayName,
+                mimeType = mimeType,
+            )
+        }
     }
 
     fun observe(folder: String = FileFolders.UPLOAD): Flow<List<ManagedFileEntity>> =
@@ -134,48 +140,52 @@ class FilesManager(
         File(context.filesDir, entity.relativePath)
 
     fun createChatFilesByContents(uris: List<Uri>, forceCopy: Boolean = false): List<Uri> {
-        val dir = context.filesDir.resolve(FileFolders.UPLOAD).apply { mkdirs() }
-        return uris.mapNotNull { uri ->
-            runCatching {
-                val source = localAttachmentFile(uri.toString())
-                // A managed attachment is already durable. Regeneration/re-sending must not copy it again.
-                if (!forceCopy && source != null && source.canonicalFile.parentFile == dir.canonicalFile) {
-                    require(source.isFile && source.length() > 0) { "附件不存在或为空" }
-                    return@runCatching source.toUri()
-                }
-                val sourceName = getFileNameFromUri(uri) ?: uri.lastPathSegment ?: "file"
-                val sourceMime = getFileMimeType(uri)
-                val file = dir.resolve(buildUuidFileName(sourceName, sourceMime))
-                copyAttachmentAtomically(file) { context.contentResolver.openInputStream(uri) }
-                trackManagedFile(FileFolders.UPLOAD, file, sourceName, sourceMime ?: guessMimeType(file, sourceName))
-                file.toUri()
-            }.onFailure {
-                Log.e(TAG, "createChatFilesByContents: Failed to import attachment", it)
-            }.getOrNull()
+        attachmentReferenceGuard.beginWrite().use {
+            val dir = context.filesDir.resolve(FileFolders.UPLOAD).apply { mkdirs() }
+            return uris.mapNotNull { uri ->
+                runCatching {
+                    val source = localAttachmentFile(uri.toString())
+                    // A managed attachment is already durable. Regeneration/re-sending must not copy it again.
+                    if (!forceCopy && source != null && source.canonicalFile.parentFile == dir.canonicalFile) {
+                        require(source.isFile && source.length() > 0) { "附件不存在或为空" }
+                        return@runCatching source.toUri()
+                    }
+                    val sourceName = getFileNameFromUri(uri) ?: uri.lastPathSegment ?: "file"
+                    val sourceMime = getFileMimeType(uri)
+                    val file = dir.resolve(buildUuidFileName(sourceName, sourceMime))
+                    copyAttachmentAtomically(file) { context.contentResolver.openInputStream(uri) }
+                    trackManagedFile(FileFolders.UPLOAD, file, sourceName, sourceMime ?: guessMimeType(file, sourceName))
+                    file.toUri()
+                }.onFailure {
+                    Log.e(TAG, "createChatFilesByContents: Failed to import attachment", it)
+                }.getOrNull()
+            }
         }
     }
 
     fun createChatFilesByByteArrays(byteArrays: List<ByteArray>): List<Uri> {
-        val newUris = mutableListOf<Uri>()
-        val dir = context.filesDir.resolve(FileFolders.UPLOAD)
-        if (!dir.exists()) {
-            dir.mkdirs()
+        attachmentReferenceGuard.beginWrite().use {
+            val newUris = mutableListOf<Uri>()
+            val dir = context.filesDir.resolve(FileFolders.UPLOAD)
+            if (!dir.exists()) {
+                dir.mkdirs()
+            }
+            byteArrays.forEach { byteArray ->
+                if (byteArray.isEmpty()) return@forEach
+                val fileName = buildUuidFileName(displayName = "image.png", mimeType = "image/png")
+                val file = dir.resolve(fileName)
+                copyAttachmentAtomically(file) { byteArray.inputStream() }
+                val newUri = file.toUri()
+                trackManagedFile(
+                    folder = FileFolders.UPLOAD,
+                    file = file,
+                    displayName = "image.png",
+                    mimeType = "image/png"
+                )
+                newUris.add(newUri)
+            }
+            return newUris
         }
-        byteArrays.forEach { byteArray ->
-            if (byteArray.isEmpty()) return@forEach
-            val fileName = buildUuidFileName(displayName = "image.png", mimeType = "image/png")
-            val file = dir.resolve(fileName)
-            copyAttachmentAtomically(file) { byteArray.inputStream() }
-            val newUri = file.toUri()
-            trackManagedFile(
-                folder = FileFolders.UPLOAD,
-                file = file,
-                displayName = "image.png",
-                mimeType = "image/png"
-            )
-            newUris.add(newUri)
-        }
-        return newUris
     }
 
     @OptIn(ExperimentalEncodingApi::class)
@@ -257,24 +267,26 @@ class FilesManager(
     }
 
     fun createChatTextFile(text: String): UIMessagePart.Document {
-        val dir = context.filesDir.resolve(FileFolders.UPLOAD)
-        if (!dir.exists()) {
-            dir.mkdirs()
+        attachmentReferenceGuard.beginWrite().use {
+            val dir = context.filesDir.resolve(FileFolders.UPLOAD)
+            if (!dir.exists()) {
+                dir.mkdirs()
+            }
+            val fileName = buildUuidFileName(displayName = "pasted_text.txt", mimeType = "text/plain")
+            val file = dir.resolve(fileName)
+            file.writeText(text)
+            trackManagedFile(
+                folder = FileFolders.UPLOAD,
+                file = file,
+                displayName = "pasted_text.txt",
+                mimeType = "text/plain"
+            )
+            return UIMessagePart.Document(
+                url = file.toUri().toString(),
+                fileName = "pasted_text.txt",
+                mime = "text/plain"
+            )
         }
-        val fileName = buildUuidFileName(displayName = "pasted_text.txt", mimeType = "text/plain")
-        val file = dir.resolve(fileName)
-        file.writeText(text)
-        trackManagedFile(
-            folder = FileFolders.UPLOAD,
-            file = file,
-            displayName = "pasted_text.txt",
-            mimeType = "text/plain"
-        )
-        return UIMessagePart.Document(
-            url = file.toUri().toString(),
-            fileName = "pasted_text.txt",
-            mime = "text/plain"
-        )
     }
 
     fun getImagesDir(): File {
@@ -393,6 +405,27 @@ class FilesManager(
                 deletedUrls.add(file.absolutePath)
             }
             repository.deleteById(id) > 0
+        }
+    }
+
+    /** GC never strips message references. Metadata removal follows the guarded physical unlink. */
+    internal suspend fun deleteUnreferenced(
+        entity: ManagedFileEntity,
+        snapshot: Long,
+        expectedSize: Long,
+        expectedModified: Long,
+        survivor: File? = null,
+    ): Boolean = withContext(Dispatchers.IO) {
+        managedFileMutex.withLock {
+            val current = repository.getById(entity.id) ?: return@withLock false
+            if (current.relativePath != entity.relativePath) return@withLock false
+            val file = getFile(current)
+            val deleted = attachmentReferenceGuard.commit(snapshot, file.name) {
+                (survivor == null || survivor.isFile && survivor.length() == expectedSize) &&
+                    file.isFile && file.length() == expectedSize && file.lastModified() == expectedModified && file.delete()
+            }
+            if (deleted) repository.deleteById(entity.id)
+            deleted
         }
     }
 
@@ -526,152 +559,154 @@ class FilesManager(
         zipUri: Uri,
         zipFileName: String,
     ): ZipExtractResult {
-        val documents = mutableListOf<UIMessagePart.Document>()
-        val images = mutableListOf<Uri>()
-        val skippedFiles = mutableListOf<String>()
+        attachmentReferenceGuard.beginWrite().use {
+            val documents = mutableListOf<UIMessagePart.Document>()
+            val images = mutableListOf<Uri>()
+            val skippedFiles = mutableListOf<String>()
 
-        val dir = context.filesDir.resolve(FileFolders.UPLOAD)
-        if (!dir.exists()) dir.mkdirs()
+            val dir = context.filesDir.resolve(FileFolders.UPLOAD)
+            if (!dir.exists()) dir.mkdirs()
 
-        context.contentResolver.openInputStream(zipUri)?.use { inputStream ->
-            ZipInputStream(inputStream).use { zis ->
-                var entry = zis.nextEntry
-                while (entry != null) {
-                    val entryName = entry.name
+            context.contentResolver.openInputStream(zipUri)?.use { inputStream ->
+                ZipInputStream(inputStream).use { zis ->
+                    var entry = zis.nextEntry
+                    while (entry != null) {
+                        val entryName = entry.name
 
-                    // Skip directories, hidden files, and macOS metadata
-                    if (entry.isDirectory ||
-                        entryName.startsWith("__MACOSX") ||
-                        entryName.split("/").any { it.startsWith(".") }
-                    ) {
-                        zis.closeEntry()
-                        entry = zis.nextEntry
-                        continue
-                    }
-
-                    // Get just the filename (without path)
-                    val fileName = entryName.substringAfterLast("/")
-                    if (fileName.isBlank()) {
-                        zis.closeEntry()
-                        entry = zis.nextEntry
-                        continue
-                    }
-
-                    val ext = fileName.substringAfterLast(".", "").lowercase()
-
-                    when {
-                        ext in IMAGE_EXTENSIONS -> {
-                            val savedName = buildUuidFileName(displayName = fileName, mimeType = "image/$ext")
-                            val file = dir.resolve(savedName)
-                            file.outputStream().use { output -> zis.copyTo(output) }
-                            trackManagedFile(
-                                folder = FileFolders.UPLOAD,
-                                file = file,
-                                displayName = fileName,
-                                mimeType = "image/$ext"
-                            )
-                            images.add(file.toUri())
+                        // Skip directories, hidden files, and macOS metadata
+                        if (entry.isDirectory ||
+                            entryName.startsWith("__MACOSX") ||
+                            entryName.split("/").any { it.startsWith(".") }
+                        ) {
+                            zis.closeEntry()
+                            entry = zis.nextEntry
+                            continue
                         }
 
-                        ext in TEXT_EXTENSIONS -> {
-                            val mime = FileUtils.guessMimeTypeFromExtension(ext)
-                            val savedName = buildUuidFileName(displayName = fileName, mimeType = mime)
-                            val file = dir.resolve(savedName)
-                            file.outputStream().use { output -> zis.copyTo(output) }
-                            trackManagedFile(
-                                folder = FileFolders.UPLOAD,
-                                file = file,
-                                displayName = fileName,
-                                mimeType = mime
-                            )
-                            documents.add(
-                                UIMessagePart.Document(
-                                    url = file.toUri().toString(),
-                                    fileName = fileName,
-                                    mime = mime
+                        // Get just the filename (without path)
+                        val fileName = entryName.substringAfterLast("/")
+                        if (fileName.isBlank()) {
+                            zis.closeEntry()
+                            entry = zis.nextEntry
+                            continue
+                        }
+
+                        val ext = fileName.substringAfterLast(".", "").lowercase()
+
+                        when {
+                            ext in IMAGE_EXTENSIONS -> {
+                                val savedName = buildUuidFileName(displayName = fileName, mimeType = "image/$ext")
+                                val file = dir.resolve(savedName)
+                                file.outputStream().use { output -> zis.copyTo(output) }
+                                trackManagedFile(
+                                    folder = FileFolders.UPLOAD,
+                                    file = file,
+                                    displayName = fileName,
+                                    mimeType = "image/$ext"
                                 )
-                            )
-                        }
+                                images.add(file.toUri())
+                            }
 
-                        ext == "pdf" || ext in setOf(
-                            "doc", "docx", "xls", "xlsx", "ppt", "pptx", "epub"
-                        ) -> {
-                            val mime = FileUtils.guessMimeTypeFromExtension(ext)
-                            val savedName = buildUuidFileName(displayName = fileName, mimeType = mime)
-                            val file = dir.resolve(savedName)
-                            file.outputStream().use { output -> zis.copyTo(output) }
-                            trackManagedFile(
-                                folder = FileFolders.UPLOAD,
-                                file = file,
-                                displayName = fileName,
-                                mimeType = mime
-                            )
-                            documents.add(
-                                UIMessagePart.Document(
-                                    url = file.toUri().toString(),
-                                    fileName = fileName,
-                                    mime = mime
+                            ext in TEXT_EXTENSIONS -> {
+                                val mime = FileUtils.guessMimeTypeFromExtension(ext)
+                                val savedName = buildUuidFileName(displayName = fileName, mimeType = mime)
+                                val file = dir.resolve(savedName)
+                                file.outputStream().use { output -> zis.copyTo(output) }
+                                trackManagedFile(
+                                    folder = FileFolders.UPLOAD,
+                                    file = file,
+                                    displayName = fileName,
+                                    mimeType = mime
                                 )
-                            )
-                        }
-
-                        ext == "zip" -> {
-                            skippedFiles.add(fileName)
-                        }
-
-                        else -> {
-                            if (entry.size in 1..100_000) {
-                                val bytes = zis.readBytes()
-                                val text = runCatching { String(bytes, Charsets.UTF_8) }.getOrNull()
-                                if (text != null && text.isValidUtf8Text()) {
-                                    val mime = "text/plain"
-                                    val savedName = buildUuidFileName(displayName = fileName, mimeType = mime)
-                                    val file = dir.resolve(savedName)
-                                    file.writeBytes(bytes)
-                                    trackManagedFile(
-                                        folder = FileFolders.UPLOAD,
-                                        file = file,
-                                        displayName = fileName,
-                                        mimeType = mime
+                                documents.add(
+                                    UIMessagePart.Document(
+                                        url = file.toUri().toString(),
+                                        fileName = fileName,
+                                        mime = mime
                                     )
-                                    documents.add(
-                                        UIMessagePart.Document(
-                                            url = file.toUri().toString(),
-                                            fileName = fileName,
-                                            mime = mime
+                                )
+                            }
+
+                            ext == "pdf" || ext in setOf(
+                                "doc", "docx", "xls", "xlsx", "ppt", "pptx", "epub"
+                            ) -> {
+                                val mime = FileUtils.guessMimeTypeFromExtension(ext)
+                                val savedName = buildUuidFileName(displayName = fileName, mimeType = mime)
+                                val file = dir.resolve(savedName)
+                                file.outputStream().use { output -> zis.copyTo(output) }
+                                trackManagedFile(
+                                    folder = FileFolders.UPLOAD,
+                                    file = file,
+                                    displayName = fileName,
+                                    mimeType = mime
+                                )
+                                documents.add(
+                                    UIMessagePart.Document(
+                                        url = file.toUri().toString(),
+                                        fileName = fileName,
+                                        mime = mime
+                                    )
+                                )
+                            }
+
+                            ext == "zip" -> {
+                                skippedFiles.add(fileName)
+                            }
+
+                            else -> {
+                                if (entry.size in 1..100_000) {
+                                    val bytes = zis.readBytes()
+                                    val text = runCatching { String(bytes, Charsets.UTF_8) }.getOrNull()
+                                    if (text != null && text.isValidUtf8Text()) {
+                                        val mime = "text/plain"
+                                        val savedName = buildUuidFileName(displayName = fileName, mimeType = mime)
+                                        val file = dir.resolve(savedName)
+                                        file.writeBytes(bytes)
+                                        trackManagedFile(
+                                            folder = FileFolders.UPLOAD,
+                                            file = file,
+                                            displayName = fileName,
+                                            mimeType = mime
                                         )
-                                    )
+                                        documents.add(
+                                            UIMessagePart.Document(
+                                                url = file.toUri().toString(),
+                                                fileName = fileName,
+                                                mime = mime
+                                            )
+                                        )
+                                    } else {
+                                        skippedFiles.add(fileName)
+                                    }
                                 } else {
                                     skippedFiles.add(fileName)
                                 }
-                            } else {
-                                skippedFiles.add(fileName)
                             }
                         }
-                    }
 
-                    zis.closeEntry()
-                    entry = zis.nextEntry
+                        zis.closeEntry()
+                        entry = zis.nextEntry
+                    }
                 }
             }
-        }
 
-        if (skippedFiles.isNotEmpty()) {
-            val summaryText = buildString {
-                appendLine("Files in '$zipFileName' that could not be extracted as text:")
-                skippedFiles.forEach { appendLine("- $it") }
-            }
-            val summaryDoc = createChatTextFile(summaryText)
-            documents.add(
-                UIMessagePart.Document(
-                    url = summaryDoc.url,
-                    fileName = "${zipFileName}_skipped_files.txt",
-                    mime = "text/plain"
+            if (skippedFiles.isNotEmpty()) {
+                val summaryText = buildString {
+                    appendLine("Files in '$zipFileName' that could not be extracted as text:")
+                    skippedFiles.forEach { appendLine("- $it") }
+                }
+                val summaryDoc = createChatTextFile(summaryText)
+                documents.add(
+                    UIMessagePart.Document(
+                        url = summaryDoc.url,
+                        fileName = "${zipFileName}_skipped_files.txt",
+                        mime = "text/plain"
+                    )
                 )
-            )
-        }
+            }
 
-        return ZipExtractResult(documents = documents, images = images)
+            return ZipExtractResult(documents = documents, images = images)
+        }
     }
 
     private fun String.isValidUtf8Text(): Boolean {

@@ -149,6 +149,7 @@ class RikkaHubApp : Application() {
 
         // sync upload files to DB
         syncManagedFiles()
+        me.rerere.rikkahub.data.serein.SereinUploadScheduler.start(this)
         get<AppScope>().launch {
             get<SettingsStore>().settingsFlowRaw
                 .map { it.autoBackupConfig.scheduleConfig() }

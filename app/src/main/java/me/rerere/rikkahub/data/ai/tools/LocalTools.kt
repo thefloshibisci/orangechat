@@ -46,6 +46,10 @@ import java.util.Locale
 @Serializable
 sealed class LocalToolOption {
     @Serializable
+    @SerialName("chart_display")
+    data object ChartDisplay : LocalToolOption()
+
+    @Serializable
     @SerialName("javascript_engine")
     data object JavascriptEngine : LocalToolOption()
  
@@ -630,6 +634,9 @@ class LocalTools(
         invocationContext: ToolInvocationContext = ToolInvocationContext.EMPTY,
     ): MutableList<Tool> {
         val tools = mutableListOf<Tool>()
+        if (options.contains(LocalToolOption.ChartDisplay)) {
+            tools.add(me.rerere.rikkahub.data.ai.tools.local.buildChartDisplayTool())
+        }
         if (options.contains(LocalToolOption.JavascriptEngine)) {
             tools.add(javascriptTool)
         }

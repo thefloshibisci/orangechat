@@ -26,6 +26,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import me.rerere.ai.provider.BuiltInTools
 import me.rerere.ai.provider.Model
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
@@ -42,6 +43,10 @@ import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.Avatar
 import me.rerere.rikkahub.data.model.Conversation
+import me.rerere.rikkahub.data.model.ConversationConfig
+import me.rerere.rikkahub.data.model.getChatModelOf
+import me.rerere.rikkahub.data.model.withConversation
+import me.rerere.rikkahub.data.model.withConversationConfig
 import me.rerere.rikkahub.data.model.MessageNode
 import me.rerere.rikkahub.data.model.NodeFavoriteTarget
 import me.rerere.rikkahub.data.repository.ConversationRepository
@@ -138,6 +143,14 @@ class ChatVM(
         chatService
             .getProcessingStatusFlow(_conversationId)
 
+    val messageQueue = chatService.getMessageQueueFlow(_conversationId)
+    fun removeQueuedMessage(id: Uuid) = chatService.removeQueuedMessage(_conversationId, id)
+    fun beginQueuedMessageEdit(id: Uuid) = chatService.beginQueuedMessageEdit(_conversationId, id)
+    fun finishQueuedMessageEdit(id: Uuid, parts: List<UIMessagePart>?) =
+        chatService.finishQueuedMessageEdit(_conversationId, id, parts)
+    fun pauseMessageQueue() = chatService.pauseMessageQueue(_conversationId)
+    fun resumeMessageQueue() = chatService.resumeMessageQueue(_conversationId)
+
     val conversationJobs = chatService
         .getConversationJobs()
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyMap())
@@ -169,7 +182,9 @@ class ChatVM(
 
     // 用户设置
     val settings: StateFlow<Settings> =
-        settingsStore.settingsFlow.stateIn(viewModelScope, SharingStarted.Eagerly, Settings.dummy())
+        combine(settingsStore.settingsFlow, conversation) { global, chat ->
+            global.withConversationConfig(chat)
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, Settings.dummy())
 
     // 网络搜索
     val enableWebSearch = settings.map {
@@ -178,7 +193,7 @@ class ChatVM(
 
     // 当前模型
     val currentChatModel = combine(settings, conversation) { settings, conversation ->
-        settings.getChatModelForAssistant(conversation.assistantId)
+        settings.getChatModelOf(conversation)
     }.stateIn(viewModelScope, SharingStarted.Lazily, null)
 
     // 错误状态
@@ -195,24 +210,45 @@ class ChatVM(
     val mcpManager = chatService.mcpManager
 
     // 更新设置
-    fun updateSettings(newSettings: Settings) {
-        val previous = settings.value
+    fun updateSettings(newSettings: Settings) = updateSettings(settings.value, newSettings)
+
+    fun updateSettings(previous: Settings, desired: Settings) {
         viewModelScope.launch {
-            var replaced: Pair<Settings, Settings>? = null
-            settingsStore.update { current ->
-                current.withSettingsEdit(previous, newSettings).also { updated ->
-                    replaced = current to updated
+            val edit = conversationSettingsEdit(previous, desired, conversation.value)
+            if (edit.enableWebSearch != null || edit.searchServiceSelected != null || edit.builtInSearch != null) {
+                chatService.updateConversationConfig(_conversationId) { current ->
+                    current.copy(
+                        enableWebSearch = edit.enableWebSearch ?: current.enableWebSearch,
+                        searchServiceSelected = edit.searchServiceSelected ?: current.searchServiceSelected,
+                        builtInSearch = edit.builtInSearch ?: current.builtInSearch,
+                    )
                 }
             }
-            // Delete replaced assets only after the settings write succeeds.
+            var replaced: Pair<Settings, Settings>? = null
+            settingsStore.update { current ->
+                current.withSettingsEdit(previous, edit.globalDesired).also { replaced = current to it }
+            }
             replaced?.let { (old, new) -> checkUserAvatarDelete(old, new) }
         }
     }
 
     fun updateAssistant(previous: Assistant, desired: Assistant) {
+        if (previous.id != desired.id) return
         viewModelScope.launch {
-            settingsStore.update { it.withAssistantEdit(previous, desired) }
+            if (ConversationConfig().withAssistant(previous) != ConversationConfig().withAssistant(desired)) {
+                chatService.updateConversationConfig(_conversationId) { it.withAssistantEdit(previous, desired) }
+            }
+            settingsStore.update { current ->
+                val stored = current.getAssistantById(desired.id) ?: return@update current
+                // Remove conversation request fields from both sides; only persona edits reach the role.
+                val requestFields = ConversationConfig().withAssistant(stored)
+                current.withAssistantEdit(previous.withConversation(requestFields), desired.withConversation(requestFields))
+            }
         }
+    }
+
+    fun resetConversationConfig() {
+        viewModelScope.launch { chatService.resetConversationConfig(_conversationId) }
     }
 
     suspend fun selectAssistant(assistantId: Uuid, createNew: Boolean): Uuid = selectAssistantConversation(
@@ -234,18 +270,10 @@ class ChatVM(
 
     // 设置聊天模型
     fun setChatModel(assistant: Assistant, model: Model) {
+        if (model.id == currentChatModel.value?.id) return
         viewModelScope.launch {
-            settingsStore.update { settings ->
-                settings.copy(
-                    assistants = settings.assistants.map {
-                        if (it.id == assistant.id) {
-                            it.copy(
-                                chatModelId = model.id
-                            )
-                        } else {
-                            it
-                        }
-                    })
+            chatService.updateConversationConfig(_conversationId) {
+                it.copy(chatModelId = model.id, builtInSearch = BuiltInTools.Search in model.tools)
             }
         }
     }
@@ -260,17 +288,23 @@ class ChatVM(
      * @param content 消息内容
      * @param answer 是否触发消息生成，如果为false，则仅添加消息到消息列表中
      */
-    fun handleMessageSend(content: List<UIMessagePart>,answer: Boolean = true) {
-        if (content.isEmptyInputMessage()) return
+    fun handleMessageSend(content: List<UIMessagePart>,answer: Boolean = true): Boolean {
+        if (content.isEmptyInputMessage()) return false
 
-        chatService.sendMessage(_conversationId, content, answer)
+        return chatService.sendMessage(_conversationId, content, answer) != null
     }
 
     fun handleMessageEdit(parts: List<UIMessagePart>, messageId: Uuid) {
         if (parts.isEmptyInputMessage()) return
 
         viewModelScope.launch {
-            chatService.editMessage(_conversationId, messageId, parts)
+            try {
+                chatService.editMessage(_conversationId, messageId, parts)
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                chatService.addError(error, _conversationId, title = context.getString(R.string.error_title_operation))
+            }
         }
     }
 
@@ -436,4 +470,38 @@ class ChatVM(
         }
     }
 
+}
+
+/** Split a visible settings edit without persisting any conversation overlays to global settings. */
+internal data class ConversationSettingsEdit(
+    val globalDesired: Settings,
+    val enableWebSearch: Boolean?,
+    val searchServiceSelected: Int?,
+    val builtInSearch: Boolean?,
+)
+
+internal fun conversationSettingsEdit(previous: Settings, desired: Settings, conversation: Conversation): ConversationSettingsEdit {
+    val modelId = previous.getChatModelForAssistant(conversation.assistantId)?.id
+    var search: Boolean? = null
+    val providers = desired.providers.map { provider ->
+        provider.copyProvider(models = provider.models.map modelEdit@{ model ->
+            if (model.id != modelId) return@modelEdit model
+            val before = previous.providers.flatMap { it.models }.find { it.id == model.id } ?: return@modelEdit model
+            val oldSearch = BuiltInTools.Search in before.tools
+            val newSearch = BuiltInTools.Search in model.tools
+            if (oldSearch != newSearch) search = newSearch
+            // Retain edits to every other tool/model/provider while removing this one session delta.
+            model.copy(tools = if (oldSearch) model.tools + BuiltInTools.Search else model.tools - BuiltInTools.Search)
+        })
+    }
+    return ConversationSettingsEdit(
+        globalDesired = desired.copy(
+            enableWebSearch = previous.enableWebSearch,
+            searchServiceSelected = previous.searchServiceSelected,
+            providers = providers,
+        ),
+        enableWebSearch = desired.enableWebSearch.takeIf { it != previous.enableWebSearch },
+        searchServiceSelected = desired.searchServiceSelected.takeIf { it != previous.searchServiceSelected },
+        builtInSearch = search,
+    )
 }

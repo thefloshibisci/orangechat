@@ -38,6 +38,8 @@ data class Assistant(
     val assistantInteractionAction: String = "拍了拍",
     val assistantInteractionSuffix: String = "",
     val enableMemory: Boolean = false,
+    val saveLocalRawMessages: Boolean = false,
+    val enableLocalSceneTools: Boolean = false,
     val useGlobalMemory: Boolean = false, // 使用全局共享记忆而非助手隔离记忆
     val enableRecentChatsReference: Boolean = false,
     val messageTemplate: String = "{{ message }}",

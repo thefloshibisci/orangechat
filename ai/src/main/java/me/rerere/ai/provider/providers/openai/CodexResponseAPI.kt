@@ -240,7 +240,7 @@ class CodexResponseAPI(private val client: OkHttpClient) {
                             put("type", "function_call")
                             put("call_id", tool.toolCallId)
                             put("name", tool.toolName)
-                            put("arguments", tool.input)
+                            put("arguments", tool.input.ifBlank { "{}" })
                         })
                         val textOutput = tool.output.filterIsInstance<UIMessagePart.Text>().joinToString("\n") { it.text }
                         val imageOutput = tool.output.filterIsInstance<UIMessagePart.Image>()

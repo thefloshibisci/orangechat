@@ -114,6 +114,25 @@ class VoiceAudioPayloadTest {
         assertFalse((method.invoke(api, result, model) as JsonArray).toString().contains("input_audio"))
     }
 
+    @Test fun sharedProactiveMediaPolicyCapsBothKindsWithoutMutatingHistory() = runBlocking {
+        val model = Model(modelId = "gemini-3.8-flash-high", inputModalities = listOf(me.rerere.ai.provider.Modality.TEXT, me.rerere.ai.provider.Modality.IMAGE))
+        val settings = Settings.dummy().copy(providers = listOf(ProviderSetting.Google(models = listOf(model))))
+        val history = (1..3).map { index -> UIMessage.user("").copy(parts = listOf(
+            UIMessagePart.Image("file:///upload/$index.png"),
+            UIMessagePart.VoiceMessage("file:///upload/$index.wav", 1000, "transcript-$index"),
+        )) }
+        val ctx = TransformerContext(RuntimeEnvironment.getApplication(), model,
+            Assistant(maxContextImages = 1, maxContextVoices = 1), settings)
+        val result = me.rerere.rikkahub.data.ai.transformers.historyMediaTransformers.fold(history) { messages, transformer ->
+            transformer.transform(ctx, messages)
+        }
+        assertEquals(1, result.flatMap { it.parts }.count { it is UIMessagePart.Image })
+        assertEquals(1, result.flatMap { it.parts }.count { it is UIMessagePart.Audio })
+        assertTrue(result.first().toText().contains("transcript-1"))
+        assertEquals(3, history.flatMap { it.parts }.count { it is UIMessagePart.Image })
+        assertEquals(3, history.flatMap { it.parts }.count { it is UIMessagePart.VoiceMessage })
+    }
+
     @Test fun unsupportedOpenAiFormatsFallbackButNativeGoogleKeepsOriginalAudio() = runBlocking {
         val model = Model(modelId = "gemini-3.8-flash-high")
         val original = UIMessage.user("").copy(parts = listOf(

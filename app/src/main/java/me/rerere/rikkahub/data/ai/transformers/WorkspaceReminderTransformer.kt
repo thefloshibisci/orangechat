@@ -46,11 +46,20 @@ class WorkspaceReminderTransformer(
 }
 
 private fun buildWorkspacePrompt(workspace: WorkspaceEntity, cwd: String? = null): String = buildString {
+    if (workspace.isSsh()) {
+        appendLine("<workspace>")
+        appendLine("You have access to the remote SSH workspace \"${workspace.name}\".")
+        appendLine("Its working directory is `${workspace.workspaceDir()}`. Use absolute paths on that remote host.")
+        appendLine("workspace_read_file, workspace_write_file, workspace_edit_file and workspace_shell run remotely.")
+        appendLine("This is a real remote host, not a local sandbox. Local /skills and /upload are not mounted there.")
+        if (!cwd.isNullOrBlank()) appendLine("Current working directory: `$cwd`.")
+        append("</workspace>")
+        return@buildString
+    }
     appendLine("<workspace>")
     appendLine("You have access to a persistent Linux workspace named \"${workspace.name}\", running in a sandboxed proot rootfs environment.")
     appendLine("- The workspace files area is mounted at `/workspace`. Use it as your working directory; files written there persist across turns of this conversation.")
     appendLine("- All paths passed to workspace tools must be absolute and inside the Rootfs (for example `/workspace/notes.md`).")
-    appendLine("- To deliver a file, create it under /workspace and provide a Markdown link: [Download file](sandbox:/workspace/file.zip). URL-encode spaces and special characters in the link target. Never embed archives or other binary files as base64 in chat; the app streams the linked file to the user.")
     appendLine("- Available tools:")
     appendLine("  - `workspace_read_file`: read file contents.")
     appendLine("  - `workspace_write_file` / `workspace_edit_file`: create files, or make precise edits to existing files.")

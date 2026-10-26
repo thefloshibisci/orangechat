@@ -73,8 +73,10 @@ class SkillDetailVM(
         viewModelScope.launch(Dispatchers.IO) {
             if (relativePath == "SKILL.md") {
                 val name = SkillFrontmatterParser.parse(content)["name"]
-                if (name != skillName) {
-                    withContext(Dispatchers.Main) { onResult("不允许修改技能名称（name 字段必须为 \"$skillName\"）") }
+                val currentName = skillManager.readSkillContent(skillName)
+                    ?.let { SkillFrontmatterParser.parse(it)["name"] }
+                if (currentName == null || name != currentName) {
+                    withContext(Dispatchers.Main) { onResult("不允许修改技能名称（name 字段必须为 \"${currentName.orEmpty()}\"）") }
                     return@launch
                 }
             }

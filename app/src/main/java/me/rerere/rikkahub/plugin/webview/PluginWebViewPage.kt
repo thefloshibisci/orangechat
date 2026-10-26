@@ -91,6 +91,9 @@ import me.rerere.rikkahub.plugin.repository.PluginRepository
 import org.json.JSONArray
 import org.json.JSONObject
 import org.koin.compose.koinInject
+import me.rerere.rikkahub.data.ai.UsageRecorder
+import me.rerere.rikkahub.data.ai.UsageSource
+import me.rerere.rikkahub.data.ai.UsageTag
 import java.io.File
 import java.io.ByteArrayOutputStream
 import kotlin.uuid.Uuid
@@ -112,6 +115,7 @@ fun PluginWebViewPage(
     val pluginRepository = koinInject<PluginRepository>()
     val conversationRepository = koinInject<ConversationRepository>()
     val settingsStore = koinInject<SettingsStore>()
+    val usageRecorder = koinInject<UsageRecorder>()
     val chatService = koinInject<ChatService>()
     var webView by remember { mutableStateOf<WebView?>(null) }
     var customVideoView by remember { mutableStateOf<View?>(null) }
@@ -475,7 +479,9 @@ fun PluginWebViewPage(
                             loadSettings = { settingsStore.settingsFlow.first() },
                             generateText = { providerSetting, messages, params ->
                                 val manager: ProviderManager = org.koin.java.KoinJavaComponent.get(ProviderManager::class.java)
-                                manager.getProviderByType(providerSetting)
+                                usageRecorder.wrap(
+                                    manager.getProviderByType(providerSetting), UsageTag(UsageSource.PLUGIN),
+                                )
                                     .generateText(providerSetting, messages, params)
                                     .choices.firstOrNull()?.message?.parts
                                     ?.filterIsInstance<UIMessagePart.Text>()?.firstOrNull()?.text.orEmpty()

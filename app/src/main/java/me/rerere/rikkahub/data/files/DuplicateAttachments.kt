@@ -7,7 +7,7 @@ import java.io.File
 import java.security.MessageDigest
 
 /** duplicate file name -> the byte-identical file every reference should point to instead. */
-internal data class DuplicateAttachmentPlan(val canonicalByDuplicate: Map<String, File>) {
+internal data class DuplicateAttachmentPlan(val canonicalByDuplicate: Map<String, File>, val directory: File) {
     val isEmpty get() = canonicalByDuplicate.isEmpty()
 }
 
@@ -28,7 +28,7 @@ internal fun planDuplicateAttachments(directory: File): DuplicateAttachmentPlan 
             group.filter { it != canonical }.forEach { result[it.name] = canonical }
         }
     }
-    return DuplicateAttachmentPlan(result)
+    return DuplicateAttachmentPlan(result, directory.canonicalFile)
 }
 
 /**
@@ -41,8 +41,9 @@ internal fun remapDuplicateAttachments(
     plan: DuplicateAttachmentPlan,
 ): List<UIMessage> {
     fun target(url: String): String? {
-        val name = localAttachmentFile(url)?.name ?: return null
-        return plan.canonicalByDuplicate[name]?.toUri()?.toString()
+        val source = localAttachmentFile(url)?.canonicalFile ?: return null
+        if (source.parentFile != plan.directory) return null
+        return plan.canonicalByDuplicate[source.name]?.toUri()?.toString()
     }
     fun remap(parts: List<UIMessagePart>): List<UIMessagePart> {
         var changed = false

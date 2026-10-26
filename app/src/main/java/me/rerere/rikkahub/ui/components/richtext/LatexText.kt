@@ -24,7 +24,7 @@ import ru.noties.jlatexmath.JLatexMathDrawable
 
 fun assumeLatexSize(latex: String, fontSize: Float): Rect {
     return runCatching {
-        JLatexMathDrawable.builder(latex)
+        JLatexMathDrawable.builder(processLatex(latex))
             .textSize(fontSize)
             .padding(0)
             .build()
@@ -106,8 +106,11 @@ private val displayDollarRegex = Regex("""^\$\$(.*?)\$\$""", RegexOption.DOT_MAT
 private val inlineParenRegex = Regex("""^\\\((.*?)\\\)""", RegexOption.DOT_MATCHES_ALL)
 private val displayBracketRegex = Regex("""^\\\[(.*?)\\\]""", RegexOption.DOT_MATCHES_ALL)
 
-private fun processLatex(latex: String): String {
-    val trimmed = latex.trim()
+private val lineBreakSpacingRegex =
+    Regex("""\\\\\s*\[\s*-?(?:\d+\.?\d*|\.\d+)\s*(?:pt|em|ex|mm|cm|in|bp|pc|dd|cc|sp|mu)\s*]""")
+
+internal fun processLatex(latex: String): String {
+    val trimmed = latex.trim().replace(lineBreakSpacingRegex) { """\\""" }
     return when {
         displayDollarRegex.matches(trimmed) ->
             displayDollarRegex.find(trimmed)?.groupValues?.get(1)?.trim() ?: trimmed

@@ -52,6 +52,9 @@ import me.rerere.rikkahub.ui.components.ai.ModelSelector
 import me.rerere.rikkahub.ui.theme.extendColors
 import me.rerere.rikkahub.utils.UiState
 import org.koin.compose.koinInject
+import me.rerere.rikkahub.data.ai.UsageRecorder
+import me.rerere.rikkahub.data.ai.UsageSource
+import me.rerere.rikkahub.data.ai.UsageTag
 
 @Composable
 fun ProviderConnectionTester(
@@ -59,6 +62,7 @@ fun ProviderConnectionTester(
 ) {
     var showTestDialog by remember { mutableStateOf(false) }
     val providerManager = koinInject<ProviderManager>()
+    val usageRecorder = koinInject<UsageRecorder>()
     val scope = rememberCoroutineScope()
 
     IconButton(onClick = { showTestDialog = true }) {
@@ -125,7 +129,9 @@ fun ProviderConnectionTester(
                 TextButton(
                     onClick = {
                         if (model == null) return@TextButton
-                        val provider = providerManager.getProviderByType(internalProvider)
+                        val provider = usageRecorder.wrap(
+                            providerManager.getProviderByType(internalProvider), UsageTag(UsageSource.CONNECTION_TEST),
+                        )
                         resetStates()
                         scope.launch {
                             launch {

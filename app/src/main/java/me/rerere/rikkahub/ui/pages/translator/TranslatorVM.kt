@@ -8,48 +8,47 @@ package me.rerere.rikkahub.ui.pages.translator
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import kotlinx.coroutines.Job
+import androidx.paging.Pager
+import androidx.paging.PagingConfig
+import androidx.paging.cachedIn
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import me.rerere.rikkahub.data.ai.GenerationHandler
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.SettingsStore
+import me.rerere.rikkahub.data.db.entity.TranslationHistoryEntity
+import me.rerere.rikkahub.data.repository.TranslationHistoryRepository
 import java.util.Locale
-
-private const val TAG = "TranslatorVM"
 
 class TranslatorVM(
     private val settingsStore: SettingsStore,
     private val generationHandler: GenerationHandler,
+    private val historyRepository: TranslationHistoryRepository,
 ) : ViewModel() {
     val settings: StateFlow<Settings> = settingsStore.settingsFlow
-        .stateIn(viewModelScope, SharingStarted.Lazily, Settings.dummy())
 
-    // 翻译状态
-    private val _translating = MutableStateFlow(false)
-    val translating: StateFlow<Boolean> = _translating
-
-    // 输入文本
-    private val _inputText = MutableStateFlow("")
-    val inputText: StateFlow<String> = _inputText
-
-    // 翻译结果
-    private val _translatedText = MutableStateFlow("")
-    val translatedText: StateFlow<String> = _translatedText
-
-    // 翻译目标语言
-    private val _targetLanguage = MutableStateFlow(Locale.SIMPLIFIED_CHINESE)
-    val targetLanguage: StateFlow<Locale> = _targetLanguage
-
-    // 错误流
     val errorFlow = MutableSharedFlow<Throwable>()
-
-    // 当前任务
-    private var currentJob: Job? = null
+    private val session = TranslationSession(
+        scope = viewModelScope,
+        loadSettings = {
+            translationRequestSettings(settingsStore.settingsFlow.value) { settingsStore.settingsFlowRaw.first() }
+        },
+        generate = { requestSettings, source, language ->
+            generationHandler.translateText(requestSettings, source, language)
+        },
+        save = historyRepository::add,
+        onError = { errorFlow.emit(it) },
+    )
+    val translating = session.translating
+    val inputText = session.inputText
+    val translatedText = session.translatedText
+    val targetLanguage = session.targetLanguage
+    val history = Pager(PagingConfig(pageSize = 20, enablePlaceholders = false)) {
+        historyRepository.pagingAll()
+    }.flow.cachedIn(viewModelScope)
 
     fun updateSettings(settings: Settings) {
         val previous = this.settings.value
@@ -59,45 +58,36 @@ class TranslatorVM(
     }
 
     fun updateInputText(text: String) {
-        _inputText.value = text
+        session.updateInputText(text)
     }
 
     fun updateTargetLanguage(language: Locale) {
-        _targetLanguage.value = language
+        session.updateTargetLanguage(language)
     }
 
-    fun translate() {
-        val inputText = _inputText.value
-        if (inputText.isBlank()) return
+    fun translate() = session.translate()
 
-        // 取消当前任务
-        currentJob?.cancel()
+    fun cancelTranslation() = session.cancelTranslation()
 
-        // 设置翻译中状态
-        _translating.value = true
-        _translatedText.value = ""
+    fun restoreHistory(entry: TranslationHistoryEntity) = session.restoreHistory(entry)
 
-        currentJob = viewModelScope.launch {
-            runCatching {
-                generationHandler.translateText(
-                    settings = settings.value,
-                    sourceText = inputText,
-                    targetLanguage = targetLanguage.value
-                ) { translatedText ->
-                    // Update translation in real-time
-                    _translatedText.value = translatedText
-                }.collect { /* Final translation already handled in onStreamUpdate */ }
-            }.onFailure {
-                it.printStackTrace()
-                errorFlow.emit(it)
+    fun deleteHistory(entry: TranslationHistoryEntity) = editHistory { historyRepository.deleteById(entry.id) }
+
+    fun clearHistory() = editHistory { historyRepository.deleteAll() }
+
+    private fun editHistory(action: suspend () -> Unit) {
+        viewModelScope.launch {
+            try {
+                action()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                errorFlow.emit(error)
             }
-
-            _translating.value = false
         }
     }
-
-    fun cancelTranslation() {
-        currentJob?.cancel()
-        _translating.value = false
-    }
 }
+
+/** The editor can already show a newer optimistic snapshot while its disk write is still pending. */
+internal suspend fun translationRequestSettings(current: Settings, loadPersisted: suspend () -> Settings): Settings =
+    if (current.init) loadPersisted() else current

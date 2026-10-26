@@ -2,7 +2,6 @@
 package me.rerere.rikkahub.data.codex
 
 import android.content.Context
-import android.content.Intent
 import android.net.Uri
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
@@ -10,6 +9,7 @@ import io.ktor.server.application.call
 import io.ktor.server.cio.CIO
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.response.respondText
+import io.ktor.server.response.header
 import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
 import kotlinx.coroutines.*
@@ -66,7 +66,7 @@ class CodexOAuthManager(
     fun openDevicePage() = openBrowser(DEVICE_PAGE)
 
     private fun openBrowser(url: String) {
-        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        context.openCodexAuthBrowser(url)
     }
 
     private suspend fun postJson(url: String, body: JsonObject): Pair<Int, String> = client.newCall(
@@ -103,10 +103,11 @@ class CodexOAuthManager(
         val challenge = Base64.getUrlEncoder().withoutPadding().encodeToString(
             MessageDigest.getInstance("SHA-256").digest(verifier.toByteArray()))
         val callback = CompletableDeferred<String>()
-        val redirect = "http://localhost:1455/auth/callback"
+        val redirect = BROWSER_REDIRECT_URI
         val server = embeddedServer(CIO, host = "127.0.0.1", port = 1455) {
             routing {
                 get("/auth/callback") {
+                    call.response.header("Cache-Control", "no-store")
                     val query = call.request.queryParameters
                     if (query["state"] != state) {
                         call.respondText("Invalid OAuth state", status = HttpStatusCode.BadRequest)
@@ -114,7 +115,7 @@ class CodexOAuthManager(
                         call.respondText("Sign-in failed. Return to OrangeChat.")
                         callback.completeExceptionally(IllegalStateException("OAuth authorization declined"))
                     } else {
-                        call.respondText("<html><meta name=viewport content='width=device-width'><p>授权已收到，请返回橘瓣查看登录结果。</p></html>", ContentType.Text.Html)
+                        call.respondText("<html lang='zh-CN'><meta charset='utf-8'><meta name=viewport content='width=device-width'><title>西瓜瓣</title><p>授权已收到，请关闭此页并返回西瓜瓣查看登录结果。</p></html>", ContentType.Text.Html)
                         callback.complete(query["code"]!!)
                     }
                 }
@@ -133,7 +134,7 @@ class CodexOAuthManager(
                 .appendQueryParameter("id_token_add_organizations", "true")
                 .appendQueryParameter("codex_cli_simplified_flow", "true")
                 .appendQueryParameter("originator", "codex_cli_rs").build()
-            openBrowser(uri.toString())
+            withContext(Dispatchers.Main) { openBrowser(uri.toString()) }
             return exchangeCode(callback.await(), verifier, redirect)
         } finally {
             server.stop(0, 500)
@@ -156,6 +157,8 @@ class CodexOAuthManager(
         .encodeToString(ByteArray(size).also { SecureRandom().nextBytes(it) })
 
     companion object {
+        // Match RikkaHub's registered IPv4 callback; the listener also binds IPv4.
+        internal const val BROWSER_REDIRECT_URI = "http://127.0.0.1:1455/auth/callback"
         const val CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
         const val TOKEN_URL = "https://auth.openai.com/oauth/token"
         const val AUTHORIZE_URL = "https://auth.openai.com/oauth/authorize"

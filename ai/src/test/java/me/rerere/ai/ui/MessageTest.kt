@@ -7,6 +7,8 @@
 package me.rerere.ai.ui
 
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import me.rerere.ai.core.MessageRole
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -14,6 +16,35 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class MessageTest {
+
+    @Test
+    fun `streamed signed parts retain their boundaries and all signatures`() {
+        val signatureA = buildJsonObject { put("thoughtSignature", "signature-a") }
+        val signatureB = buildJsonObject { put("thoughtSignature", "signature-b") }
+        val incoming = listOf(
+            UIMessagePart.Text("plain"),
+            UIMessagePart.Text("", signatureA),
+            UIMessagePart.Text("signed", signatureB),
+            UIMessagePart.Text("after"),
+            UIMessagePart.Reasoning("thought", metadata = signatureA),
+            UIMessagePart.Reasoning("other", metadata = signatureB),
+        )
+        val merged = incoming.fold(UIMessage(role = MessageRole.ASSISTANT, parts = emptyList())) { message, part ->
+            message + MessageChunk(
+                id = "stream",
+                model = "gemini-3-flash",
+                choices = listOf(UIMessageChoice(
+                    index = 0,
+                    delta = UIMessage(role = MessageRole.ASSISTANT, parts = listOf(part)),
+                    message = null,
+                    finishReason = null,
+                )),
+            )
+        }
+        assertEquals(6, merged.parts.size)
+        assertEquals(incoming.map { it.metadata }, merged.parts.map { it.metadata })
+        assertEquals("", (merged.parts[1] as UIMessagePart.Text).text)
+    }
 
     @Test
     fun `tool-only turns remain visible before and after execution without becoming user input`() {

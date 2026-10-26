@@ -16,6 +16,7 @@ import kotlinx.coroutines.withContext
 import me.rerere.rikkahub.data.files.SkillFrontmatterParser
 import me.rerere.rikkahub.data.files.SkillManager
 import me.rerere.rikkahub.data.files.SkillMetadata
+import me.rerere.rikkahub.data.files.InvalidSkillDir
 import java.util.LinkedHashMap
 import org.json.JSONArray
 import java.net.HttpURLConnection
@@ -26,6 +27,8 @@ class SkillsVM(
 ) : ViewModel() {
     private val _skills = MutableStateFlow<List<SkillMetadata>>(emptyList())
     val skills = _skills.asStateFlow()
+    private val _invalidSkillDirs = MutableStateFlow<List<InvalidSkillDir>>(emptyList())
+    val invalidSkillDirs = _invalidSkillDirs.asStateFlow()
 
     init {
         loadSkills()
@@ -34,6 +37,7 @@ class SkillsVM(
     private fun loadSkills() {
         viewModelScope.launch(Dispatchers.IO) {
             _skills.value = skillManager.listSkills()
+            _invalidSkillDirs.value = skillManager.listInvalidSkillDirs()
         }
     }
 
@@ -41,16 +45,26 @@ class SkillsVM(
         viewModelScope.launch(Dispatchers.IO) {
             val result = skillManager.saveSkill(name, content)
             _skills.value = skillManager.listSkills()
+            _invalidSkillDirs.value = skillManager.listInvalidSkillDirs()
             withContext(Dispatchers.Main) {
                 onResult(result != null)
             }
         }
     }
 
-    fun deleteSkill(name: String) {
+    fun deleteSkill(skill: SkillMetadata) {
         viewModelScope.launch(Dispatchers.IO) {
-            skillManager.deleteSkill(name)
+            skillManager.deleteSkill(skill)
             _skills.value = skillManager.listSkills()
+            _invalidSkillDirs.value = skillManager.listInvalidSkillDirs()
+        }
+    }
+
+    fun deleteInvalidSkillDir(dirName: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            skillManager.deleteInvalidSkillDir(dirName)
+            _skills.value = skillManager.listSkills()
+            _invalidSkillDirs.value = skillManager.listInvalidSkillDirs()
         }
     }
 
@@ -106,6 +120,7 @@ class SkillsVM(
                 }
 
                 _skills.value = skillManager.listSkills()
+                _invalidSkillDirs.value = skillManager.listInvalidSkillDirs()
                 withContext(Dispatchers.Main) { onResult(true, name) }
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) { onResult(false, e.message ?: "未知错误") }

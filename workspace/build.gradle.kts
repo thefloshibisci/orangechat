@@ -37,6 +37,8 @@ dependencies {
     implementation(libs.material)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.xz)
+    implementation("com.github.mwiede:jsch:0.2.21")
+    implementation("org.bouncycastle:bcprov-jdk18on:1.81")
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(libs.androidx.junit)

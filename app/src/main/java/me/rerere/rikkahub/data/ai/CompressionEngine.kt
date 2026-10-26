@@ -47,17 +47,23 @@ internal suspend fun collectCompressionSummary(
 }
 
 /** Resolves a stable model/provider once per operation; session revision checks stay with ChatService. */
-internal class CompressionEngine(private val providers: ProviderManager) {
+internal class CompressionEngine(
+    private val providers: ProviderManager,
+    private val usageRecorder: UsageRecorder,
+) {
     fun request(
         settings: Settings,
         assistantId: Uuid,
         targetTokens: Int,
         additionalPrompt: String,
+        conversationId: Uuid? = null,
     ): suspend (String) -> String {
         require(targetTokens > 0)
         val model = settings.compressionModelFor(assistantId) ?: error("没有可用的压缩模型")
         val provider = model.findProvider(settings.providers) ?: error("压缩模型的提供商不存在")
-        val handler = providers.getProviderByType(provider)
+        val handler = usageRecorder.wrap(
+            providers.getProviderByType(provider), UsageTag(UsageSource.COMPRESSION, assistantId, conversationId),
+        )
         val language = Locale.getDefault().displayName
         return { content ->
             val prompt = buildCompressionPrompt(settings.compressPrompt, content, targetTokens, additionalPrompt, language)

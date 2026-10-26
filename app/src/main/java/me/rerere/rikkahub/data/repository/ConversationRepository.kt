@@ -6,6 +6,8 @@
 
 package me.rerere.rikkahub.data.repository
 
+import me.rerere.rikkahub.data.files.attachmentReferenceGuard
+
 import android.database.sqlite.SQLiteBlobTooBigException
 import android.util.Log
 import androidx.paging.Pager
@@ -38,7 +40,14 @@ import me.rerere.rikkahub.data.files.DuplicateAttachmentPlan
 import me.rerere.rikkahub.data.files.remapDuplicateAttachments
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.model.Conversation
+import me.rerere.rikkahub.data.model.ConversationConfig
 import me.rerere.rikkahub.data.model.MessageNode
+import me.rerere.rikkahub.data.serein.RawArchive
+import me.rerere.rikkahub.data.serein.RawArchiveRevision
+import me.rerere.rikkahub.data.serein.RawArchiveHead
+import me.rerere.rikkahub.data.serein.rawArchiveSearchPattern
+import me.rerere.rikkahub.data.serein.rawArchiveText
+import me.rerere.rikkahub.data.serein.capture
 import me.rerere.rikkahub.utils.JsonInstant
 import me.rerere.rikkahub.data.sync.ChatHistoryRestoreMode
 import me.rerere.rikkahub.data.sync.validateChatHistory
@@ -59,6 +68,75 @@ class ConversationRepository(
     // Tests that exercise storage alone may omit settings; cleanup then conservatively keeps files.
     private val settingsStore: SettingsStore? = null,
 ) {
+    private val rawArchive by lazy { RawArchive(database.rawArchiveDao()) }
+    private data class UndoRawArchive(val revisions: List<RawArchiveRevision>, val heads: List<RawArchiveHead>)
+    private val undoRawArchives = java.util.concurrent.ConcurrentHashMap<Uuid, UndoRawArchive>()
+
+    private fun archivesRawMessages(assistantId: Uuid): Boolean =
+        settingsStore?.settingsFlow?.value?.assistants?.any { it.id == assistantId && it.saveLocalRawMessages } == true
+
+    /** Runs inside the chat writer transaction, touching only the supplied changed nodes. */
+    private suspend fun archiveRawChanges(
+        conversation: Conversation,
+        upserts: List<Pair<Int, MessageNode>>,
+        removedIds: Collection<String> = emptyList(),
+        origin: String = "live",
+    ) {
+        settingsStore?.settingsFlow?.value?.sereinHook?.let { config ->
+            if (config.uploadsFor(conversation.assistantId.toString())) {
+                database.sereinUploadDao().capture(config, conversation.assistantId.toString(),
+                    conversation.id.toString(), upserts, origin)
+            }
+        }
+        if (!archivesRawMessages(conversation.assistantId)) {
+            // Do not leave an outdated branch/text visible when editing with archiving switched off.
+            (upserts.map { it.second.id.toString() } + removedIds).distinct().chunked(200).forEach {
+                database.rawArchiveDao().removeHeads(conversation.assistantId.toString(), conversation.id.toString(), it)
+            }
+            return
+        }
+        rawArchive.sync(conversation.assistantId.toString(), conversation.id.toString(), upserts, removedIds, origin)
+    }
+
+    suspend fun searchRawOriginals(assistantId: Uuid, query: String = "", limit: Int = 50): List<RawArchiveRevision> =
+        withContext(Dispatchers.IO) {
+            database.rawArchiveDao().search(assistantId.toString(), rawArchiveSearchPattern(query), limit.coerceIn(1, 100))
+        }
+
+    suspend fun rawOriginalHistory(assistantId: Uuid, conversationId: String, messageId: String): List<RawArchiveRevision> =
+        withContext(Dispatchers.IO) {
+            database.rawArchiveDao().history(assistantId.toString(), conversationId, messageId, 100)
+        }
+
+    /** Explicit user action. One conversation per transaction; reads the latest stored chat, never a stale UI copy. */
+    suspend fun backfillRawOriginals(assistantId: Uuid, onProgress: suspend (Int, Int) -> Unit = { _, _ -> }): Int = withContext(Dispatchers.IO) {
+        check(archivesRawMessages(assistantId)) { "请先开启保存聊天原话" }
+        val ids = getConversationsOfAssistant(assistantId).first().map { it.id }
+        var count = 0
+        onProgress(0, ids.size)
+        for (id in ids) {
+            database.withTransaction {
+                check(archivesRawMessages(assistantId)) { "原话存档已关闭，导入已停止" }
+                val current = getConversationById(id)?.takeIf { it.assistantId == assistantId } ?: return@withTransaction
+                val nodes = current.messageNodes.map { it.id.toString() }.toSet()
+                val removed = database.rawArchiveDao().nodeIds(assistantId.toString(), id.toString()).filterNot { it in nodes }
+                archiveRawChanges(current, current.messageNodes.mapIndexed { index, node -> index to node }, removed, "backfill")
+                count++
+            }
+            onProgress(count, ids.size)
+        }
+        count
+    }
+
+    internal suspend fun interruptPendingRawOriginals(conversationId: Uuid, messageIds: Set<String>) = withContext(Dispatchers.IO) {
+        database.withTransaction {
+            val entity = conversationDAO.getConversationById(conversationId.toString()) ?: return@withTransaction
+            if (archivesRawMessages(Uuid.parse(entity.assistantId))) {
+                messageIds.toList().chunked(200).forEach { database.rawArchiveDao().interruptPending(entity.assistantId, entity.id, it) }
+            }
+        }
+    }
+
     private val undoAttachmentNames = java.util.concurrent.ConcurrentHashMap<Uuid, Set<String>>()
 
     companion object {
@@ -281,7 +359,8 @@ class ConversationRepository(
         mode: ChatHistoryRestoreMode,
         favoriteNodeIds: Set<Uuid> = emptySet(),
         onProgress: (Int, Int) -> Unit = { _, _ -> },
-    ) = database.withTransaction {
+    ) = attachmentReferenceGuard.beginWrite().use {
+        database.withTransaction {
         validateChatHistory(conversations)
         var restoredCount = 0
         onProgress(0, conversations.size)
@@ -303,6 +382,7 @@ class ConversationRepository(
             if (existingEntity == null) conversationDAO.insert(entity) else conversationDAO.update(entity)
             messageNodeDAO.deleteByConversation(restored.id.toString())
             saveMessageNodes(restored.id.toString(), restored.messageNodes)
+            archiveRawChanges(restored, restored.messageNodes.mapIndexed { index, node -> index to node }, origin = "backfill")
             messageFtsManager.replaceConversationIndex(restored)
             val restoredIds = restored.messageNodes.mapTo(hashSetOf()) { it.id.toString() }
             oldNodeIds.filter { it !in restoredIds }.forEach {
@@ -321,6 +401,7 @@ class ConversationRepository(
             onProgress(restoredCount, conversations.size)
         }
         restoredCount
+        }
     }
 
     // Auxiliary generation never rewrites message nodes or recreates a deleted conversation.
@@ -332,22 +413,55 @@ class ConversationRepository(
         return conversationDAO.updateSuggestions(id.toString(), JsonInstant.encodeToString(suggestions)) > 0
     }
 
+    /** Request controls are independent of message checkpoints, including an in-flight response. */
+    suspend fun updateConfig(id: Uuid, config: ConversationConfig?): Boolean {
+        return conversationDAO.updateConfig(id.toString(), config?.let { JsonInstant.encodeToString(it) }.orEmpty()) > 0
+    }
+
     suspend fun insertConversation(conversation: Conversation): Conversation = withContext(Dispatchers.IO) {
-        conversation.requireMessageNodesLoaded()
-        try {
-            val saved = database.withTransaction {
-                val conversation = withoutDeletedAttachments(conversation)
-                conversationDAO.insert(
-                    conversationToConversationEntity(conversation)
-                )
-                saveMessageNodes(conversation.id.toString(), conversation.messageNodes)
-                conversation
+        attachmentReferenceGuard.beginWrite().use {
+            conversation.requireMessageNodesLoaded()
+            try {
+                val saved = database.withTransaction {
+                    val conversation = withoutDeletedAttachments(conversation)
+                    conversationDAO.insert(
+                        conversationToConversationEntity(conversation)
+                    )
+                    saveMessageNodes(conversation.id.toString(), conversation.messageNodes)
+                    val restoredArchive = undoRawArchives[conversation.id]?.takeIf { archive ->
+                        archive.revisions.all { it.assistantId == conversation.assistantId.toString() }
+                    }
+                    restoredArchive?.let { archive ->
+                        database.rawArchiveDao().insertRevisions(archive.revisions)
+                    }
+                    archiveRawChanges(conversation, conversation.messageNodes.mapIndexed { index, node -> index to node })
+                    if (!archivesRawMessages(conversation.assistantId) && restoredArchive != null) {
+                        // Undo restores existing originals even with recording off. Only reconnect
+                        // unchanged sources; a caller may have edited/removed a node before restoring.
+                        val revisions = restoredArchive.revisions.associateBy { it.id }
+                        val nodes = conversation.messageNodes.withIndex().associateBy { it.value.id.toString() }
+                        val heads = restoredArchive.heads.mapNotNull { head ->
+                            val node = nodes[head.nodeId] ?: return@mapNotNull null
+                            val variant = node.value.messages.indexOfFirst { it.id.toString() == head.messageId }
+                            if (variant < 0) return@mapNotNull null
+                            val message = node.value.messages[variant]
+                            val revision = revisions[head.revisionId] ?: return@mapNotNull null
+                            if (message.rawArchiveText() != revision.text ||
+                                message.role.name.lowercase() != revision.role ||
+                                message.createdAt.toString() != revision.createdAt) return@mapNotNull null
+                            head.copy(nodeIndex = node.index, variantIndex = variant, selected = variant == node.value.selectIndex)
+                        }
+                        database.rawArchiveDao().insertHeads(heads)
+                    }
+                    conversation
+                }
+                undoRawArchives.remove(conversation.id)
+                messageFtsManager.indexConversation(saved)
+                saved
+            } catch (e: Exception) {
+                Log.e(TAG, "insertConversation failed, conversationId=${conversation.id}", e)
+                throw e
             }
-            messageFtsManager.indexConversation(saved)
-            saved
-        } catch (e: Exception) {
-            Log.e(TAG, "insertConversation failed, conversationId=${conversation.id}", e)
-            throw e
         }
     }
 
@@ -366,113 +480,128 @@ class ConversationRepository(
      * FTS 索引也同步降级为只处理这批发生变化的 node，而不是整个对话重建。
      */
     suspend fun updateConversation(conversation: Conversation, previous: Conversation? = null): Conversation = withContext(Dispatchers.IO) {
-        conversation.requireMessageNodesLoaded()
-        previous?.requireMessageNodesLoaded()
-        require(previous == null || previous.id == conversation.id)
-        val discardedFiles = mutableSetOf<String>()
-        try {
-            val saved = database.withTransaction {
-                val conversation = withoutDeletedAttachments(conversation)
-                conversationDAO.update(
-                    conversationToConversationEntity(conversation)
-                )
-
-                if (previous != null) {
-                    // A session supplies its last committed snapshot: serialize only edited
-                    // nodes and express deletions explicitly, without reading old message bodies.
-                    val changes = conversationNodeChanges(previous, conversation)
-                    val oldById = previous.messageNodes.associateBy { it.id.toString() }
-                    val retained = attachmentUrls(changes.upserts.flatMap { it.second.messages })
-                    (changes.changedIds.mapNotNull { oldById[it] }).forEach { old ->
-                        discardedFiles += attachmentUrls(old.messages) - retained
+        attachmentReferenceGuard.beginWrite().use {
+            conversation.requireMessageNodesLoaded()
+            previous?.requireMessageNodesLoaded()
+            require(previous == null || previous.id == conversation.id)
+            val discardedFiles = mutableSetOf<String>()
+            try {
+                val saved = database.withTransaction {
+                    val storedConfig = checkNotNull(conversationDAO.getConfig(conversation.id.toString())) {
+                        "Conversation no longer exists"
                     }
-                    val entities = changes.upserts.map { (index, node) ->
-                        MessageNodeEntity(node.id.toString(), conversation.id.toString(), index,
-                            JsonInstant.encodeToString(node.messages), node.selectIndex)
-                    }
-                    changes.deletions.toList().chunked(200).forEach { messageNodeDAO.deleteByIds(it) }
-                    if (entities.isNotEmpty()) messageNodeDAO.insertAll(entities)
-                    messageFtsManager.reindexNodes(
-                        conversation.id.toString(), conversation.title, conversation.updateAt,
-                        changes.changedIds, changes.upserts.map { it.second },
+                    val conversation = withoutDeletedAttachments(conversation).copy(config = decodeConfig(storedConfig))
+                    conversationDAO.update(
+                        // Retain unknown future config fields and their original bytes, too.
+                        conversationToConversationEntity(conversation).copy(config = storedConfig)
                     )
-                    return@withTransaction conversation
-                }
 
-                // Full snapshots from import/edit paths retain the conservative DB comparison.
-                val existingIds = messageNodeDAO.getNodeIdsOfConversation(conversation.id.toString()).toSet()
-
-                val newEntities = conversation.messageNodes.mapIndexed { index, node ->
-                    MessageNodeEntity(
-                        id = node.id.toString(),
-                        conversationId = conversation.id.toString(),
-                        nodeIndex = index,
-                        messages = JsonInstant.encodeToString(node.messages),
-                        selectIndex = node.selectIndex
-                    )
-                }
-                val newById = newEntities.associateBy { it.id }
-
-                // 只对本轮涉及、且之前已存在的 id 去查内容做比较，缩小命中超大行的范围
-                val idsNeedCompare = newEntities.map { it.id }.filter { it in existingIds }
-                val existingById = if (idsNeedCompare.isEmpty()) {
-                    emptyMap()
-                } else {
-                    try {
-                        idsNeedCompare.chunked(200).flatMap { messageNodeDAO.getNodesByIds(it) }.associateBy { it.id }
-                    } catch (e: SQLiteBlobTooBigException) {
-                        Log.w(
-                            TAG,
-                            "updateConversation: blob too big while comparing existing nodes, " +
-                                "conversationId=${conversation.id}, will treat all as changed and overwrite",
-                            e
-                        )
-                        // 读不出旧内容就没法比较，保守地当作全部有变化，直接覆盖写入（REPLACE，安全）
-                        emptyMap()
-                    }
-                }
-
-                // 只处理真正发生变化的 node：内容/顺序(nodeIndex)/selectIndex 有任何不同才写库；
-                // 读不到旧内容的（existingById 里没有对应 id）也会被判定为"变化"，直接覆盖写入
-                val toUpsert = newEntities.filter { newEntity ->
-                    existingById[newEntity.id] != newEntity
-                }
-                val toDeleteIds = existingIds - newById.keys
-
-                // This cold path may need old rows to collect attachments. Use the complete
-                // chunk-capable reader; never skip an oversized row and infer it was empty.
-                if (toDeleteIds.isNotEmpty() || toUpsert.isNotEmpty()) {
-                    val changed = toUpsert.mapTo(mutableSetOf()) { it.id } + toDeleteIds
-                    messageNodeDAO.loadCompleteNodes(conversation.id.toString())
-                        .filter { it.id in changed }.forEach { old ->
-                            discardedFiles += attachmentUrls(JsonInstant.decodeFromString<List<UIMessage>>(old.messages))
+                    if (previous != null) {
+                        // A session supplies its last committed snapshot: serialize only edited
+                        // nodes and express deletions explicitly, without reading old message bodies.
+                        val changes = conversationNodeChanges(previous, conversation)
+                        val oldById = previous.messageNodes.associateBy { it.id.toString() }
+                        val retained = attachmentUrls(changes.upserts.flatMap { it.second.messages })
+                        (changes.changedIds.mapNotNull { oldById[it] }).forEach { old ->
+                            discardedFiles += attachmentUrls(old.messages) - retained
                         }
-                }
+                        val entities = changes.upserts.map { (index, node) ->
+                            MessageNodeEntity(node.id.toString(), conversation.id.toString(), index,
+                                JsonInstant.encodeToString(node.messages), node.selectIndex)
+                        }
+                        changes.deletions.toList().chunked(200).forEach { messageNodeDAO.deleteByIds(it) }
+                        if (entities.isNotEmpty()) messageNodeDAO.insertAll(entities)
+                        archiveRawChanges(conversation,
+                            if (previous.assistantId == conversation.assistantId) changes.upserts
+                            else conversation.messageNodes.mapIndexed { index, node -> index to node },
+                            changes.deletions)
+                        messageFtsManager.reindexNodes(
+                            conversation.id.toString(), conversation.title, conversation.updateAt,
+                            changes.changedIds, changes.upserts.map { it.second },
+                        )
+                        return@withTransaction conversation
+                    }
 
-                if (toDeleteIds.isNotEmpty()) {
-                    toDeleteIds.toList().chunked(200).forEach { messageNodeDAO.deleteByIds(it) }
-                }
-                if (toUpsert.isNotEmpty()) {
-                    messageNodeDAO.insertAll(toUpsert)
-                }
+                    // Full snapshots from import/edit paths retain the conservative DB comparison.
+                    val existingIds = messageNodeDAO.getNodeIdsOfConversation(conversation.id.toString()).toSet()
 
-                val changedNodeIds = toUpsert.map { it.id }.toSet() + toDeleteIds
-                if (changedNodeIds.isNotEmpty()) {
-                    messageFtsManager.reindexNodes(
-                        conversationId = conversation.id.toString(),
-                        conversationTitle = conversation.title,
-                        updateAt = conversation.updateAt,
-                        changedNodeIds = changedNodeIds,
-                        currentNodes = conversation.messageNodes,
-                    )
+                    val newEntities = conversation.messageNodes.mapIndexed { index, node ->
+                        MessageNodeEntity(
+                            id = node.id.toString(),
+                            conversationId = conversation.id.toString(),
+                            nodeIndex = index,
+                            messages = JsonInstant.encodeToString(node.messages),
+                            selectIndex = node.selectIndex
+                        )
+                    }
+                    val newById = newEntities.associateBy { it.id }
+
+                    // 只对本轮涉及、且之前已存在的 id 去查内容做比较，缩小命中超大行的范围
+                    val idsNeedCompare = newEntities.map { it.id }.filter { it in existingIds }
+                    val existingById = if (idsNeedCompare.isEmpty()) {
+                        emptyMap()
+                    } else {
+                        try {
+                            idsNeedCompare.chunked(200).flatMap { messageNodeDAO.getNodesByIds(it) }.associateBy { it.id }
+                        } catch (e: SQLiteBlobTooBigException) {
+                            Log.w(
+                                TAG,
+                                "updateConversation: blob too big while comparing existing nodes, " +
+                                    "conversationId=${conversation.id}, will treat all as changed and overwrite",
+                                e
+                            )
+                            // 读不出旧内容就没法比较，保守地当作全部有变化，直接覆盖写入（REPLACE，安全）
+                            emptyMap()
+                        }
+                    }
+
+                    // 只处理真正发生变化的 node：内容/顺序(nodeIndex)/selectIndex 有任何不同才写库；
+                    // 读不到旧内容的（existingById 里没有对应 id）也会被判定为"变化"，直接覆盖写入
+                    val toUpsert = newEntities.filter { newEntity ->
+                        existingById[newEntity.id] != newEntity
+                    }
+                    val toDeleteIds = existingIds - newById.keys
+
+                    // This cold path may need old rows to collect attachments. Use the complete
+                    // chunk-capable reader; never skip an oversized row and infer it was empty.
+                    if (toDeleteIds.isNotEmpty() || toUpsert.isNotEmpty()) {
+                        val changed = toUpsert.mapTo(mutableSetOf()) { it.id } + toDeleteIds
+                        messageNodeDAO.loadCompleteNodes(conversation.id.toString())
+                            .filter { it.id in changed }.forEach { old ->
+                                discardedFiles += attachmentUrls(JsonInstant.decodeFromString<List<UIMessage>>(old.messages))
+                            }
+                    }
+
+                    if (toDeleteIds.isNotEmpty()) {
+                        toDeleteIds.toList().chunked(200).forEach { messageNodeDAO.deleteByIds(it) }
+                    }
+                    if (toUpsert.isNotEmpty()) {
+                        messageNodeDAO.insertAll(toUpsert)
+                    }
+
+                    val archiveChangedIds = toUpsert.mapTo(hashSetOf()) { it.id }
+                    archiveRawChanges(conversation, conversation.messageNodes.mapIndexedNotNull { index, node ->
+                        (index to node).takeIf { node.id.toString() in archiveChangedIds }
+                    }, toDeleteIds)
+
+                    val changedNodeIds = toUpsert.map { it.id }.toSet() + toDeleteIds
+                    if (changedNodeIds.isNotEmpty()) {
+                        messageFtsManager.reindexNodes(
+                            conversationId = conversation.id.toString(),
+                            conversationTitle = conversation.title,
+                            updateAt = conversation.updateAt,
+                            changedNodeIds = changedNodeIds,
+                            currentNodes = conversation.messageNodes,
+                        )
+                    }
+                    conversation
                 }
-                conversation
+                deleteUnreferencedChatFiles(discardedFiles)
+                saved
+            } catch (e: Exception) {
+                Log.e(TAG, "updateConversation failed, conversationId=${conversation.id}", e)
+                throw e
             }
-            deleteUnreferencedChatFiles(discardedFiles)
-            saved
-        } catch (e: Exception) {
-            Log.e(TAG, "updateConversation failed, conversationId=${conversation.id}", e)
-            throw e
         }
     }
 
@@ -482,45 +611,51 @@ class ConversationRepository(
         previous: Conversation,
         delta: ConversationNodeDelta,
     ): Conversation = withContext(Dispatchers.IO) {
-        require(delta.appliesTo(previous, conversation)) { "Node delta does not match the committed history" }
-        val changes = delta.changes
-        require(changes.upserts.none { (_, node) -> node.messages.any { it.hasBase64Part() } })
-        val discardedFiles = mutableSetOf<String>()
-        try {
-            val saved = database.withTransaction {
-                // A late checkpoint must never create nodes after the parent conversation was deleted.
-                check(conversationDAO.existsById(conversation.id.toString())) { "Conversation no longer exists" }
-                var cleanedNodes: MutableList<MessageNode>? = null
-                val upserts = changes.upserts.map { (index, node) ->
-                    if (index < previous.messageNodes.size) {
-                        discardedFiles += attachmentUrls(previous.messageNodes[index].messages) - attachmentUrls(node.messages)
+        attachmentReferenceGuard.beginWrite().use {
+            require(delta.appliesTo(previous, conversation)) { "Node delta does not match the committed history" }
+            val changes = delta.changes
+            require(changes.upserts.none { (_, node) -> node.messages.any { it.hasBase64Part() } })
+            val discardedFiles = mutableSetOf<String>()
+            try {
+                val saved = database.withTransaction {
+                    // A late checkpoint must never create nodes after the parent conversation was deleted.
+                    val storedConfig = checkNotNull(conversationDAO.getConfig(conversation.id.toString())) {
+                        "Conversation no longer exists"
                     }
-                    val messages = filesManager.withoutDeletedAttachments(node.messages)
-                    val cleaned = if (messages === node.messages) node else node.copy(messages = messages)
-                    if (cleaned !== node) {
-                        if (cleanedNodes == null) cleanedNodes = conversation.messageNodes.toMutableList()
-                        cleanedNodes!![index] = cleaned
+                    var cleanedNodes: MutableList<MessageNode>? = null
+                    val upserts = changes.upserts.map { (index, node) ->
+                        if (index < previous.messageNodes.size) {
+                            discardedFiles += attachmentUrls(previous.messageNodes[index].messages) - attachmentUrls(node.messages)
+                        }
+                        val messages = filesManager.withoutDeletedAttachments(node.messages)
+                        val cleaned = if (messages === node.messages) node else node.copy(messages = messages)
+                        if (cleaned !== node) {
+                            if (cleanedNodes == null) cleanedNodes = conversation.messageNodes.toMutableList()
+                            cleanedNodes!![index] = cleaned
+                        }
+                        index to cleaned
                     }
-                    index to cleaned
+                    val conversation = (cleanedNodes?.let { conversation.copy(messageNodes = it) } ?: conversation)
+                        .copy(config = decodeConfig(storedConfig))
+                    val entities = upserts.map { (index, node) ->
+                        MessageNodeEntity(node.id.toString(), conversation.id.toString(), index,
+                            JsonInstant.encodeToString(node.messages), node.selectIndex)
+                    }
+                    conversationDAO.update(conversationMetadataToEntity(conversation).copy(config = storedConfig))
+                    if (entities.isNotEmpty()) messageNodeDAO.insertAll(entities)
+                    archiveRawChanges(conversation, upserts, changes.deletions)
+                    messageFtsManager.reindexNodes(
+                        conversation.id.toString(), conversation.title, conversation.updateAt,
+                        changes.changedIds, upserts.map { it.second }, failOnError = true,
+                    )
+                    conversation
                 }
-                val conversation = cleanedNodes?.let { conversation.copy(messageNodes = it) } ?: conversation
-                val entities = upserts.map { (index, node) ->
-                    MessageNodeEntity(node.id.toString(), conversation.id.toString(), index,
-                        JsonInstant.encodeToString(node.messages), node.selectIndex)
-                }
-                conversationDAO.update(conversationMetadataToEntity(conversation))
-                if (entities.isNotEmpty()) messageNodeDAO.insertAll(entities)
-                messageFtsManager.reindexNodes(
-                    conversation.id.toString(), conversation.title, conversation.updateAt,
-                    changes.changedIds, upserts.map { it.second }, failOnError = true,
-                )
-                conversation
+                deleteUnreferencedChatFiles(discardedFiles)
+                saved
+            } catch (e: Exception) {
+                Log.e(TAG, "updateConversationWithDelta failed, conversationId=${conversation.id}", e)
+                throw e
             }
-            deleteUnreferencedChatFiles(discardedFiles)
-            saved
-        } catch (e: Exception) {
-            Log.e(TAG, "updateConversationWithDelta failed, conversationId=${conversation.id}", e)
-            throw e
         }
     }
 
@@ -528,33 +663,42 @@ class ConversationRepository(
         conversation: Conversation,
         retainAttachments: Boolean = false,
     ): Conversation = withContext(Dispatchers.IO) {
-        try {
-            // Read after generation has stopped; the list projection/old UI snapshot may be stale.
-            val fullConversation = getConversationById(conversation.id) ?: conversation
-            messageFtsManager.deleteConversation(conversation.id.toString())
-            database.withTransaction {
-                if (retainAttachments) {
-                    undoAttachmentNames[conversation.id] = fullConversation.files.mapNotNull {
-                        localAttachmentFile(it.toString())?.name
-                    }.toSet()
+        attachmentReferenceGuard.beginWrite().use {
+            try {
+                // Read after generation has stopped; the list projection/old UI snapshot may be stale.
+                val fullConversation = getConversationById(conversation.id) ?: conversation
+                messageFtsManager.deleteConversation(conversation.id.toString())
+                database.withTransaction {
+                    if (retainAttachments) {
+                        val dao = database.rawArchiveDao()
+                        undoRawArchives[conversation.id] = UndoRawArchive(
+                            dao.allRevisions(fullConversation.assistantId.toString(), fullConversation.id.toString()),
+                            dao.allHeads(fullConversation.assistantId.toString(), fullConversation.id.toString()),
+                        )
+                        undoAttachmentNames[conversation.id] = fullConversation.files.mapNotNull {
+                            localAttachmentFile(it.toString())?.name
+                        }.toSet()
+                    }
+                    // message_node 会通过 CASCADE 自动删除
+                    conversationDAO.delete(
+                        conversationToConversationEntity(conversation)
+                    )
                 }
-                // message_node 会通过 CASCADE 自动删除
-                conversationDAO.delete(
-                    conversationToConversationEntity(conversation)
-                )
+                if (!retainAttachments) releaseDeletedConversationAttachments(fullConversation)
+                fullConversation
+            } catch (e: Exception) {
+                undoAttachmentNames.remove(conversation.id)
+                undoRawArchives.remove(conversation.id)
+                Log.e(TAG, "deleteConversation failed, conversationId=${conversation.id}", e)
+                throw e
             }
-            if (!retainAttachments) releaseDeletedConversationAttachments(fullConversation)
-            fullConversation
-        } catch (e: Exception) {
-            undoAttachmentNames.remove(conversation.id)
-            Log.e(TAG, "deleteConversation failed, conversationId=${conversation.id}", e)
-            throw e
         }
     }
 
     /** Undo keeps bytes until its action completes; recheck references after restore before collection. */
     suspend fun releaseDeletedConversationAttachments(conversation: Conversation) = withContext(Dispatchers.IO) {
         undoAttachmentNames.remove(conversation.id)
+        undoRawArchives.remove(conversation.id)
         filesManager.deleteExtraInfoSnapshots(conversation.id)
         deleteUnreferencedChatFiles(conversation.files.mapTo(mutableSetOf()) { it.toString() })
     }
@@ -706,12 +850,15 @@ class ConversationRepository(
         for (url in urls) {
             val file = localAttachmentFile(url) ?: continue
             if (!filesManager.isManagedChatFile(url)) continue
+            if (file.name in attachmentReferenceGuard.protectedNames()) continue
             database.withTransaction {
                 val settings = store.settingsFlow.value
                 if (undoAttachmentNames.values.none { file.name in it } &&
                     !settings.init && !JsonInstant.encodeToString(settings).contains(file.name) &&
                     !messageNodeDAO.referencesFile(file.name)) {
-                    filesManager.deleteChatFiles(listOf(file.toUri()))
+                    attachmentReferenceGuard.ifUnpinned(file.name) {
+                        filesManager.deleteChatFiles(listOf(file.toUri()))
+                    }
                 }
             }
         }
@@ -766,6 +913,7 @@ class ConversationRepository(
             sendCompressedSummary = conversation.sendCompressedSummary,
             legacyCompressedSummary = conversation.compressedSummary,
             compressionHistory = JsonInstant.encodeToString(conversation.compressionHistory),
+            config = conversation.config?.let { JsonInstant.encodeToString(it) }.orEmpty(),
         )
     }
 
@@ -795,8 +943,12 @@ class ConversationRepository(
             compressionRevision = conversationEntity.compressionRevision,
             sendCompressedSummary = conversationEntity.sendCompressedSummary,
             compressionHistory = JsonInstant.decodeFromString(conversationEntity.compressionHistory),
+            config = decodeConfig(conversationEntity.config),
         )
     }
+
+    private fun decodeConfig(config: String): ConversationConfig? =
+        config.takeIf { it.isNotBlank() }?.let { JsonInstant.decodeFromString<ConversationConfig>(it) }
 
     fun getPinnedConversations(): Flow<List<Conversation>> {
         return conversationDAO

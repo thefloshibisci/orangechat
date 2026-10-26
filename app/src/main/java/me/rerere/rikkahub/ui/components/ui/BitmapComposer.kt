@@ -25,7 +25,6 @@ import androidx.core.view.drawToBitmap
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlin.coroutines.resume
 import kotlin.math.roundToInt
 
 private val MAX_HEIGHT = 10000.dp
@@ -121,28 +120,32 @@ class BitmapComposer(private val mainScope: CoroutineScope) {
 
                 // Wait for async components to complete rendering before capturing bitmap
                 Handler(Looper.getMainLooper()).postDelayed({
-                    // Re-measure after async components have loaded to get proper height
-                    composeViewContainer.measure(
-                        View.MeasureSpec.makeMeasureSpec(
-                            contentWidthInPixels,
-                            widthMeasureSpecs
-                        ),
-                        View.MeasureSpec.makeMeasureSpec(
-                            contentHeightInPixels,
-                            heightMeasureSpecs
+                    try {
+                        // Re-measure after async components have loaded to get proper height
+                        composeViewContainer.measure(
+                            View.MeasureSpec.makeMeasureSpec(
+                                contentWidthInPixels,
+                                widthMeasureSpecs
+                            ),
+                            View.MeasureSpec.makeMeasureSpec(
+                                contentHeightInPixels,
+                                heightMeasureSpecs
+                            )
                         )
-                    )
 
-                    // Re-layout with the actual measured dimensions
-                    val actualWidth = composeViewContainer.measuredWidth
-                    val actualHeight = composeViewContainer.measuredHeight
-                    composeViewContainer.layout(0, 0, actualWidth, actualHeight)
+                        // Re-layout with the actual measured dimensions
+                        val actualWidth = composeViewContainer.measuredWidth
+                        val actualHeight = composeViewContainer.measuredHeight
+                        composeViewContainer.layout(0, 0, actualWidth, actualHeight)
 
-                    val bitmap = composeView.drawToBitmap() // layout finished, draw to bitmap
-                    continuation.resume(bitmap) // notify the caller with the bitmap
+                        val bitmap = composeView.drawToBitmap() // layout finished, draw to bitmap
+                        continuation.resume(bitmap, onCancellation = { _, capturedBitmap, _ ->
+                            capturedBitmap.recycle()
+                        })
 
-                    // Step 6: Clean up - remove the container
-                    decorView.removeView(composeViewContainer)
+                    } finally {
+                        decorView.removeView(composeViewContainer)
+                    }
                 }, 100) // delay to allow ComposeView to finish rendering
             }
         }

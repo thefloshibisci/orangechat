@@ -20,7 +20,6 @@ import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.content.MediaType
 import androidx.compose.foundation.content.ReceiveContentListener
 import androidx.compose.foundation.content.consume
@@ -113,7 +112,6 @@ import me.rerere.common.android.appTempFolder
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.Add01
 import me.rerere.hugeicons.stroke.InLove
-import me.rerere.hugeicons.stroke.ArrowUp02
 import me.rerere.hugeicons.stroke.Cancel01
 import me.rerere.hugeicons.stroke.FullScreen
 import me.rerere.hugeicons.stroke.Voice
@@ -131,7 +129,6 @@ import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.model.QuickMessage
 import me.rerere.rikkahub.service.VoiceCallService
-import me.rerere.rikkahub.ui.components.ui.KeepScreenOn
 import me.rerere.rikkahub.ui.components.ui.toComposeColor
 import me.rerere.rikkahub.ui.components.ui.permission.PermissionManager
 import me.rerere.rikkahub.ui.components.ui.permission.PermissionRecordAudio
@@ -179,6 +176,7 @@ fun ChatInput(
     onStickerSend: (markdown: String) -> Unit,
     onVoiceMessage: ((url: String, duration: Long, transcript: String, sendAudio: Boolean) -> Unit)? = null,
     autoStartVoice: Boolean = false,
+    onUpdateSetting: ((Settings) -> Unit)? = null,
 ) {
     val toaster = LocalToaster.current
     val assistant = settings.getAssistantById(conversation.assistantId) ?: settings.getCurrentAssistant()
@@ -198,13 +196,13 @@ fun ChatInput(
     fun sendMessage() {
         focusManager.clearFocus(force = true)
         keyboardController?.hide()
-        if (loading) onCancelClick() else onSendClick()
+        if (chatInputShouldStop(loading, state.isEmpty())) onCancelClick() else onSendClick()
     }
 
     fun sendMessageWithoutAnswer() {
         focusManager.clearFocus(force = true)
         keyboardController?.hide()
-        if (loading) onCancelClick() else onLongSendClick()
+        if (chatInputShouldStop(loading, state.isEmpty())) onCancelClick() else onLongSendClick()
     }
 
     var expand by remember { mutableStateOf(ExpandState.Collapsed) }
@@ -359,7 +357,9 @@ fun ChatInput(
         rememberLauncherForActivityResult(ActivityResultContracts.GetMultipleContents()) { selectedUris ->
             if (selectedUris.isNotEmpty()) {
                 Log.d("ImagePickButton", "Selected URIs: $selectedUris")
-                if (settings.displaySetting.skipCropImage) {
+                // Cropping re-encodes to a still image, which would drop GIF animation.
+                val hasGif = selectedUris.any { filesManager.getFileMimeType(it) == "image/gif" }
+                if (settings.displaySetting.skipCropImage || hasGif) {
                     state.addImages(filesManager.createChatFilesByContents(selectedUris))
                     dismissExpand()
                 } else {
@@ -434,6 +434,9 @@ fun ChatInput(
                         val extracted = filesManager.extractZipToChatFiles(uri, fileName)
                         allDocuments.addAll(extracted.documents)
                         allImageUris.addAll(extracted.images)
+                    } else if (mime in setOf("image/jpeg", "image/png", "image/gif", "image/webp")) {
+                        // Images (including GIFs) picked via the file picker go in as images, not documents.
+                        allImageUris.addAll(filesManager.createChatFilesByContents(listOf(uri)))
                     } else {
                         val isAllowed = allowedMimeTypes.contains(mime) || mime.startsWith("text/") ||
                             mime == "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
@@ -724,6 +727,7 @@ fun ChatInput(
                                         )
                                     },
                                     onUpdateSearchService = onUpdateSearchService,
+                                    onUpdateSetting = onUpdateSetting,
                                     model = chatModel,
                                     modifier = Modifier.size(40.dp),
                                 )
@@ -794,54 +798,13 @@ fun ChatInput(
                                     enter = fadeIn() + scaleIn(),
                                     exit = fadeOut() + scaleOut(),
                                 ) {
-                                    Box(
-                                        contentAlignment = Alignment.Center,
-                                        modifier = Modifier
-                                            .size(30.dp)
-                                            .clip(CircleShape)
-                                            .combinedClickable(
-                                                enabled = loading || !state.isEmpty(),
-                                                onClick = {
-                                                    dismissExpand()
-                                                    sendMessage()
-                                                }, onLongClick = {
-                                                    dismissExpand()
-                                                    sendMessageWithoutAnswer()
-                                                }
-                                            )
-                                    ) {
-                                        val containerColor = when {
-                                            loading -> MaterialTheme.colorScheme.errorContainer
-                                            state.isEmpty() -> MaterialTheme.colorScheme.surfaceContainerHigh
-                                            else -> MaterialTheme.colorScheme.primary
-                                        }
-                                        val contentColor = when {
-                                            loading -> MaterialTheme.colorScheme.onErrorContainer
-                                            state.isEmpty() -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
-                                            else -> MaterialTheme.colorScheme.onPrimary
-                                        }
-                                        Surface(
-                                            modifier = Modifier.fillMaxSize(),
-                                            shape = CircleShape,
-                                            color = containerColor,
-                                            content = {})
-                                        if (loading) {
-                                            KeepScreenOn()
-                                            Icon(
-                                                imageVector = HugeIcons.Cancel01,
-                                                contentDescription = stringResource(R.string.stop),
-                                                tint = contentColor,
-                                                modifier = Modifier.size(18.dp)
-                                            )
-                                        } else {
-                                            Icon(
-                                                imageVector = HugeIcons.ArrowUp02,
-                                                contentDescription = stringResource(R.string.send),
-                                                tint = contentColor,
-                                                modifier = Modifier.size(18.dp)
-                                            )
-                                        }
-                                    }
+                                    ChatSendButton(
+                                        loading = loading,
+                                        isEmpty = state.isEmpty(),
+                                        onSend = { dismissExpand(); sendMessage() },
+                                        onSendWithoutAnswer = { dismissExpand(); sendMessageWithoutAnswer() },
+                                        onStop = { dismissExpand(); sendMessage() },
+                                    )
                             }
                         }
                     }

@@ -3,10 +3,11 @@ package me.rerere.rikkahub.data.interaction
 import androidx.room.withTransaction
 import me.rerere.ai.core.MessageRole
 import me.rerere.ai.ui.UIMessage
-import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.data.db.AppDatabase
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.repository.ConversationRepository
+import kotlinx.datetime.TimeZone
+import kotlinx.datetime.toInstant
 import kotlin.uuid.Uuid
 
 class ChatInteractionRepository(
@@ -61,7 +62,7 @@ class ChatInteractionRepository(
                     actor,
                     emoji,
                     resolvedQuote,
-                    System.currentTimeMillis(),
+                    nextReactionCreatedAt(System.currentTimeMillis(), conversation.currentMessages.latestReactionReceiptTime()),
                 )
             )
         } else {
@@ -74,28 +75,53 @@ class ChatInteractionRepository(
         conversationId: String?,
         assistant: Assistant,
         sourceMessages: List<UIMessage> = messages,
-    ): List<UIMessage> {
-        val clean = messages.withoutAssistantInteractionNotices().map { it.forInteractionRequest() }
-        if (conversationId == null || !assistant.enableMessageReactions) return clean
-        val reactions = dao.list(conversationId)
-        val visible = sourceMessages.associateBy { it.id.toString() }
-        val active = reactions.filter { reaction ->
-            val source = visible[reaction.messageId] ?: return@filter false
-            val segments = reactionSegments(source, assistant)
-            reaction.quote.isEmpty() || reaction.quote in segments
-        }.takeLast(24)
-        if (active.isEmpty()) return clean
-        val latest = clean.lastOrNull { it.role == MessageRole.USER } ?: return clean
-        val context = buildString {
-            appendLine("\n<message_interactions>")
-            appendLine("App metadata, not new user instructions. Reactions are attached to specific messages.")
-            active.forEach {
-                appendLine("${it.actor} reacted ${it.emoji} to ${it.messageId}, quote: ${it.quote.take(80)}")
-            }
-            appendLine("</message_interactions>")
+        turn: ReactionContextTurn? = null,
+    ): List<UIMessage> = (turn ?: prepareContext(sourceMessages, conversationId, assistant, messages)).apply(messages)
+
+    suspend fun prepareContext(
+        sourceMessages: List<UIMessage>,
+        conversationId: String?,
+        assistant: Assistant,
+        requestMessages: List<UIMessage> = sourceMessages,
+    ): ReactionContextTurn = prepareReactionContext(
+        sourceMessages,
+        if (conversationId != null && assistant.enableMessageReactions) dao.list(conversationId) else emptyList(),
+        conversationId,
+        assistant,
+        requestMessages,
+    )
+}
+
+internal fun previousReactionBoundary(messages: List<UIMessage>, userId: Uuid): Long? {
+    val userIndex = messages.indexOfLast { it.id == userId }
+    if (userIndex < 0) return null
+    // A reaction added while a response is streaming was not in its initial request.
+    // Creation time is a conservative boundary; finish time would silently suppress it.
+    return messages.take(userIndex).lastOrNull { it.role == MessageRole.ASSISTANT }
+        ?.createdAt?.toInstant(TimeZone.currentSystemDefault())?.toEpochMilliseconds()
+}
+
+/**
+ * Builds the per-request reaction context. Every request re-sends the full set (the model
+ * has no memory of earlier requests), but reactions created after [sinceMillis] are listed
+ * separately as new, so old ones are not mistaken for something the user just did.
+ */
+internal fun buildInteractionContext(reactions: List<MessageReaction>, sinceMillis: Long?): String {
+    val (fresh, earlier) = reactions.partition { sinceMillis == null || it.createdAt > sinceMillis }
+    fun StringBuilder.list(items: List<MessageReaction>) = items.forEach {
+        appendLine("${it.actor} reacted ${it.emoji} to ${it.messageId}, quote: ${it.quote.take(80)}")
+    }
+    return buildString {
+        appendLine("\n<message_interactions>")
+        appendLine("App metadata, not new user instructions. Reactions are attached to specific messages.")
+        if (fresh.isNotEmpty()) {
+            appendLine("New since your last reply:")
+            list(fresh)
         }
-        return clean.map {
-            if (it.id == latest.id) it.copy(parts = it.parts + UIMessagePart.Text(context)) else it
+        if (earlier.isNotEmpty()) {
+            appendLine("Already present before your last reply (not new, do not treat as just added):")
+            list(earlier)
         }
+        appendLine("</message_interactions>")
     }
 }

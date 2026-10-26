@@ -61,6 +61,7 @@ import me.rerere.rikkahub.data.model.AssistantMemory
 import me.rerere.rikkahub.data.repository.ConversationRepository
 import me.rerere.rikkahub.data.repository.MemoryRepository
 import me.rerere.rikkahub.data.interaction.ChatInteractionRepository
+import me.rerere.rikkahub.data.interaction.ReactionContextTurn
 import me.rerere.rikkahub.utils.applyPlaceholders
 import java.util.Locale
 import kotlin.time.Clock
@@ -91,6 +92,9 @@ class GenerationHandler(
     private val memoryBankService: MemoryBankService,
     private val filesManager: me.rerere.rikkahub.data.files.FilesManager,
     private val chatInteractionRepository: ChatInteractionRepository,
+    private val localScenes: me.rerere.rikkahub.data.serein.LocalSceneRepository,
+    private val localSceneSettings: me.rerere.rikkahub.data.datastore.SettingsStore,
+    private val usageRecorder: UsageRecorder,
 ) {
     fun generateText(
         settings: Settings,
@@ -109,15 +113,26 @@ class GenerationHandler(
         pluginPromptInjections: List<String> = emptyList(),
         conversationId: String? = null,
         onToolCheckpoint: (suspend (List<UIMessage>) -> Unit)? = null,
+        reactionSourceMessages: List<UIMessage> = messages,
+        onReactionContextPrepared: (ReactionContextTurn) -> Unit = {},
     ): Flow<GenerationChunk> = flow {
         val provider = model.findProvider(settings.providers) ?: error("Provider not found")
-        val providerImpl = providerManager.getProviderByType(provider)
+        val providerImpl = usageRecorder.wrap(
+            providerManager.getProviderByType(provider),
+            UsageTag(UsageSource.CHAT, assistant.id, conversationId?.let {
+                runCatching { kotlin.uuid.Uuid.parse(it) }.getOrNull()
+            }),
+        )
  
+        val reactionTurn = chatInteractionRepository.prepareContext(
+            reactionSourceMessages, conversationId, assistant, messages,
+        )
+        onReactionContextPrepared(reactionTurn)
         var messages: List<UIMessage> = messages
         val recoveredMessages = messages.recoverToolHistoryForRequest(json)
         if (recoveredMessages != messages) {
-            withContext(NonCancellable) { onToolCheckpoint?.invoke(recoveredMessages) }
-            messages = recoveredMessages
+            messages = reactionTurn.markPending(recoveredMessages)
+            withContext(NonCancellable) { onToolCheckpoint?.invoke(messages) }
             emit(GenerationChunk.Messages(messages))
         }
  
@@ -128,6 +143,15 @@ class GenerationHandler(
             toolsForStep = { stepIndex ->
                 Log.i(TAG, "streamText: build tools for step #$stepIndex (${model.id})")
                 buildList {
+                    if (!localSceneSettings.settingsFlow.value.sereinHook.usableBy(assistant.id.toString()) &&
+                        tools.none { it.name == "local_scene_search" }) {
+                        addAll(me.rerere.rikkahub.data.serein.buildLocalSceneTools(assistant, localScenes) {
+                            localSceneSettings.settingsFlow.value.let { live ->
+                                !live.sereinHook.usableBy(assistant.id.toString()) &&
+                                    live.assistants.any { it.id == assistant.id && it.enableLocalSceneTools }
+                            }
+                        })
+                    }
                     if (assistant.enableMemory) {
                         val memoryAssistantId = if (assistant.useGlobalMemory) {
                             MemoryRepository.GLOBAL_MEMORY_ID
@@ -152,20 +176,20 @@ class GenerationHandler(
                     messages = turnMessages,
                     pluginPromptInjections = pluginPromptInjections,
                     onUpdateMessages = {
-                        messages = it.transforms(
+                        messages = reactionTurn.markPending(it.transforms(
                             transformers = outputTransformers,
                             context = context,
                             model = model,
                             assistant = assistant,
                             settings = settings,
-                        )
-                        emit(GenerationChunk.Messages(messages.visualTransforms(
+                        ))
+                        emit(GenerationChunk.Messages(reactionTurn.markPending(messages.visualTransforms(
                             transformers = outputTransformers,
                             context = context,
                             model = model,
                             assistant = assistant,
                             settings = settings,
-                        )))
+                        ))))
                     },
                     transformers = inputTransformers,
                     model = model,
@@ -179,6 +203,7 @@ class GenerationHandler(
                     conversationContextSummary = conversationContextSummary,
                     workspaceCwd = workspaceCwd,
                     conversationId = conversationId,
+                    reactionTurn = reactionTurn,
                 )
                 messages = messages.visualTransforms(
                     transformers = outputTransformers,
@@ -194,9 +219,9 @@ class GenerationHandler(
                     assistant = assistant,
                     settings = settings,
                 )
-                messages = messages.dropLast(1) + messages.last().copy(
+                messages = reactionTurn.markPending(messages.dropLast(1) + messages.last().copy(
                     finishedAt = Clock.System.now().toLocalDateTime(TimeZone.currentSystemDefault()),
-                )
+                ))
                 emit(GenerationChunk.Messages(messages))
                 messages
             },
@@ -214,31 +239,32 @@ class GenerationHandler(
                     definitions = listOfNotNull(definition),
                     json = json,
                     onCheckpoint = { checkpointedTool ->
-                        val checkpointed = messages.replaceLastGenerationTools(listOf(checkpointedTool))
+                        val checkpointed = reactionTurn.markPending(messages.replaceLastGenerationTools(listOf(checkpointedTool)))
                         withContext(NonCancellable) { onToolCheckpoint?.invoke(checkpointed) }
                         messages = checkpointed
                     },
                 ).singleOrNull() ?: call
             },
             onToolsUpdated = { updated, update ->
-                messages = updated
+                messages = reactionTurn.markPending(updated)
                 when (update) {
                     GenerationToolUpdate.APPROVAL -> {
-                        withContext(NonCancellable) { onToolCheckpoint?.invoke(updated) }
-                        emit(GenerationChunk.Messages(updated))
+                        withContext(NonCancellable) { onToolCheckpoint?.invoke(messages) }
+                        emit(GenerationChunk.Messages(messages))
                     }
                     GenerationToolUpdate.RESULTS -> emit(GenerationChunk.Messages(
-                        updated.transforms(
+                        reactionTurn.markPending(messages.transforms(
                             transformers = outputTransformers,
                             context = context,
                             model = model,
                             assistant = assistant,
                             settings = settings,
-                        )
+                        ))
                     ))
                 }
             },
         )
+        reactionTurn.onGenerationSucceeded(messages.lastOrNull())
  
     }.throttleLatest(STREAM_UI_THROTTLE_MS)
         .flowOn(Dispatchers.IO)
@@ -261,6 +287,7 @@ class GenerationHandler(
         conversationContextSummary: String? = null,
         workspaceCwd: String? = null,
         conversationId: String? = null,
+        reactionTurn: ReactionContextTurn? = null,
     ) {
         val baseMessages = buildList {
             val system = buildString {
@@ -439,6 +466,7 @@ class GenerationHandler(
             conversationId,
             assistant,
             sourceMessages = messages,
+            turn = reactionTurn,
         ).let { filesManager.validAttachments(it, forSending = true) }.transforms(
             transformers = transformers,
             context = context,
@@ -489,7 +517,9 @@ class GenerationHandler(
         val provider = model.findProvider(settings.providers)
             ?: error("Translation provider not found")
  
-        val providerHandler = providerManager.getProviderByType(provider)
+        val providerHandler = usageRecorder.wrap(
+            providerManager.getProviderByType(provider), UsageTag(UsageSource.TRANSLATION),
+        )
  
         if (!ModelRegistry.QWEN_MT.match(model.modelId)) {
             // Use regular translation with prompt

@@ -11,11 +11,18 @@ import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import me.rerere.rikkahub.data.db.dao.ConversationDAO
 import me.rerere.rikkahub.data.db.dao.MessageNodeDAO
+import me.rerere.rikkahub.data.db.dao.UsageRecordDAO
 import me.rerere.rikkahub.data.db.dao.getMessageCountPerDay
 import me.rerere.rikkahub.data.db.dao.getTokenStats
 import me.rerere.rikkahub.data.datastore.SettingsStore
@@ -38,10 +45,35 @@ class StatsVM(
     private val conversationDAO: ConversationDAO,
     private val messageNodeDAO: MessageNodeDAO,
     private val settingsStore: SettingsStore,
+    private val usageRecordDAO: UsageRecordDAO,
 ) : ViewModel() {
 
     private val _stats = MutableStateFlow(AppStats())
     val stats = _stats.asStateFlow()
+
+    private val _usageRange = MutableStateFlow(UsageTimeRange.TODAY)
+    val usageRange = _usageRange.asStateFlow()
+    private val usageRefresh = MutableStateFlow(0L)
+    // Only observed while the page is active; refresh calendar boundaries even without a request.
+    private val usageClock = flow {
+        var tick = 0L
+        while (true) {
+            emit(tick++)
+            delay(60_000)
+        }
+    }
+    val usageStats = requestUsageStates(
+        ranges = usageRange,
+        revisions = combine(usageRecordDAO.observeLatestId(), usageRefresh, usageClock) { id, refresh, tick ->
+            // The value is just a trigger; combine emits on each source update, even equal sums.
+            id + refresh + tick
+        },
+    ) { window -> usageRecordDAO.getSummary(window.since, window.until, window.format) }
+        .map { state -> state.copy(providerNames = settingsStore.settingsFlow.value.providers.associate { it.id.toString() to it.name }) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(stopTimeoutMillis = 5_000, replayExpirationMillis = 0), RequestUsageState())
+
+    fun setUsageRange(range: UsageTimeRange) { _usageRange.value = range }
+    fun refreshUsage() { usageRefresh.update { it + 1 } }
 
     init {
         viewModelScope.launch { loadStats() }

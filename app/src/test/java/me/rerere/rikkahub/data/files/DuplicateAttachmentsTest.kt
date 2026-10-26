@@ -14,9 +14,19 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
-@Config(application = android.app.Application::class, manifest = Config.NONE, sdk = [28])
+@Config(application = android.app.Application::class, manifest = Config.NONE, sdk = [28],
+    shadows = [me.rerere.rikkahub.testing.HostFileUriShadow::class])
 class DuplicateAttachmentsTest {
     @get:Rule val temporary = TemporaryFolder()
+
+    @Test fun sameBasenameOutsideUploadIsNeverRewritten() {
+        val upload = temporary.newFolder("upload")
+        upload.resolve("a.png").writeText("same")
+        upload.resolve("chat-p-0.png").writeText("same")
+        val external = temporary.newFolder("elsewhere").resolve("chat-p-0.png").apply { writeText("different") }
+        val messages = listOf(UIMessage.user("").copy(parts = listOf(UIMessagePart.Image(external.toUri().toString()))))
+        assertSame(messages, remapDuplicateAttachments(messages, planDuplicateAttachments(upload)))
+    }
 
     @Test fun originalSurvivesAndChatCopiesPointAtIt() {
         val upload = temporary.newFolder("upload")

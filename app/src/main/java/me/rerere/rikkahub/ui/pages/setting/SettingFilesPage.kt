@@ -20,6 +20,7 @@ import androidx.compose.foundation.selection.selectable
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.RadioButton
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.res.painterResource
 import androidx.compose.foundation.layout.aspectRatio
@@ -114,7 +115,10 @@ fun SettingFilesPage(
     }
 
     if (showCleanupSheet) {
-        ModalBottomSheet(onDismissRequest = { showCleanupSheet = false }) {
+        ModalBottomSheet(
+            onDismissRequest = { showCleanupSheet = false },
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        ) {
             CleanupSheetContent(
                 selectedMode = cleanupMode,
                 onModeSelected = { cleanupMode = it },
@@ -262,11 +266,15 @@ fun SettingFilesPage(
                         // Dismiss before performing the potentially expensive attachment
                         // and message-reference cleanup. Keep busy until it finishes.
                         pendingDelete = null
+                        val onlyUnreferenced = pendingUnreferenced
                         busy = true
                         scope.launch {
                             try {
-                                val deleted = chatService.deleteManagedAttachments(target)
-                                toaster.show(if (deleted == target.size) deletedToast else "已删除 $deleted/${target.size} 个附件，失败项请重试")
+                                val deleted = if (onlyUnreferenced) chatService.deleteUnreferencedAttachments(target)
+                                    else chatService.deleteManagedAttachments(target)
+                                toaster.show(if (deleted == target.size) deletedToast else if (onlyUnreferenced)
+                                    "已清理 $deleted 个附件；其余文件正在使用、状态已变化或未能删除，已保留"
+                                    else "已删除 $deleted/${target.size} 个附件，失败项请重试")
                                 selectedIds = emptySet()
                             } catch (e: CancellationException) {
                                 throw e
@@ -342,7 +350,10 @@ fun SettingFilesPage(
                     }) { Text(if (selectedIds.size == files.size) "取消全选" else "全选") }
                     TextButton(
                         enabled = !busy && selectedIds.isNotEmpty(),
-                        onClick = { pendingDelete = selectedIds.toSet() },
+                        onClick = {
+                            pendingUnreferenced = false
+                            pendingDelete = selectedIds.toSet()
+                        },
                     ) {
                         Text("删除（${selectedIds.size}）")
                     }
@@ -375,7 +386,12 @@ fun SettingFilesPage(
                         FileItem(
                             file = file,
                             fileOnDisk = filesManager.getFile(file),
-                            onDelete = { if (!busy) pendingDelete = setOf(file.id) },
+                            onDelete = {
+                                if (!busy) {
+                                    pendingUnreferenced = false
+                                    pendingDelete = setOf(file.id)
+                                }
+                            },
                             selecting = selecting,
                             selected = file.id in selectedIds,
                             enabled = !busy,

@@ -4,6 +4,7 @@ import me.rerere.ai.core.Tool
 import me.rerere.ai.provider.Model
 import me.rerere.ai.provider.ProviderSetting
 import me.rerere.ai.provider.TextGenerationParams
+import me.rerere.ai.provider.providers.openCodeApiRoot
 import me.rerere.rikkahub.data.model.Assistant
 
 /**
@@ -18,7 +19,10 @@ internal fun buildAssistantGenerationParams(
     conversationId: String?,
 ): TextGenerationParams = TextGenerationParams(
     model = model,
-    conversationId = conversationId.takeIf { provider is ProviderSetting.Codex },
+    conversationId = conversationId.takeIf {
+        provider is ProviderSetting.Codex ||
+            (provider is ProviderSetting.OpenAI && openCodeApiRoot(provider.baseUrl) != null)
+    },
     temperature = assistant.temperature,
     topP = assistant.topP,
     maxTokens = assistant.maxTokens,

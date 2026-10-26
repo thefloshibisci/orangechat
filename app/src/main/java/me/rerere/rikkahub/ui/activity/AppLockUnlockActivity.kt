@@ -10,6 +10,7 @@ import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.graphics.drawable.Drawable
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.addCallback
 import androidx.activity.compose.setContent
@@ -17,6 +18,8 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -34,8 +37,10 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -71,26 +76,35 @@ class AppLockUnlockActivity : ComponentActivity() {
             finish()
             return
         }
+        var targetToken by mutableStateOf(AppLockStore.unlockToken(this, targetPackage))
         onBackPressedDispatcher.addCallback(this) {
             // Leaving the lock screen must not grant an unlock.
-            AppLockGuard.goHome()
-            finish()
+            if (AppLockGuard.goHome()) finish()
         }
         setContent {
             me.rerere.rikkahub.ui.theme.RikkahubTheme {
-                AppLockUnlockScreen(
-                    targetPackage = targetPackage,
-                    onUnlocked = {
-                        AppLockGuard.grantGraceUnlock(targetPackage)
-                        val launchIntent = packageManager.getLaunchIntentForPackage(targetPackage)
-                        if (launchIntent != null) {
-                            launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                            startActivity(launchIntent)
-                        }
-                        finish()
-                    },
-                    onCancel = { AppLockGuard.goHome(); finish() }
-                )
+                key(targetToken) {
+                    val displayedToken = targetToken
+                    AppLockUnlockScreen(
+                        targetPackage = targetPackage,
+                        onUnlocked = {
+                            if (!AppLockGuard.grantGraceUnlock(targetPackage, displayedToken)) {
+                                targetToken = AppLockStore.unlockToken(this, targetPackage)
+                                Toast.makeText(this, "锁定设置已更新，请重新解锁", Toast.LENGTH_SHORT).show()
+                                return@AppLockUnlockScreen
+                            }
+                            AppLockGuard.refresh()
+                            val launchIntent = packageManager.getLaunchIntentForPackage(targetPackage)
+                            if (launchIntent != null) {
+                                launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                startActivity(launchIntent)
+                            }
+                            finish()
+                        },
+                        onCancel = { if (AppLockGuard.goHome()) finish() },
+                        onReturnToApp = { if (AppLockGuard.returnToApp()) finish() },
+                    )
+                }
             }
         }
     }
@@ -113,57 +127,79 @@ private fun loadAppIcon(context: android.content.Context, packageName: String): 
     }
 
 @Composable
-private fun AppLockUnlockScreen(
+internal fun AppLockUnlockScreen(
     targetPackage: String,
     onUnlocked: () -> Unit,
     onCancel: () -> Unit,
+    onReturnToApp: () -> Unit,
 ) {
     val context = LocalContext.current
     val appLabel = remember(targetPackage) { loadAppLabel(context, targetPackage) }
     val appIcon = remember(targetPackage) { loadAppIcon(context, targetPackage) }
     val requirePin = remember(targetPackage) { AppLockStore.getRequirePin(context, targetPackage) }
+    val hasPin = remember(targetPackage) { AppLockStore.hasPin(context) }
     val lockMessage = remember(targetPackage) { AppLockStore.getLockMessage(context, targetPackage) }
 
     Surface(
         modifier = Modifier.fillMaxSize(),
         color = MaterialTheme.colorScheme.background
     ) {
-        if (!requirePin) {
-            // B模式: 极简 UI, 只有图标(带锁徽章) + 留言, 无任何可点击的解锁操作
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(24.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center,
-            ) {
-                AppIconWithBadge(appIcon = appIcon, contentDescription = appLabel)
-                Spacer(Modifier.height(20.dp))
-                if (!lockMessage.isNullOrBlank()) {
-                    Surface(
-                        shape = RoundedCornerShape(16.dp),
-                        color = MaterialTheme.colorScheme.secondaryContainer,
-                        modifier = Modifier.padding(horizontal = 8.dp),
+        Column(Modifier.fillMaxSize()) {
+            Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                if (!requirePin || !hasPin) {
+                    // An unset PIN cannot be entered. Explain the recovery path immediately.
+                    Column(
+                        modifier = Modifier
+                            .verticalScroll(rememberScrollState())
+                            .padding(24.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center,
                     ) {
+                        AppIconWithBadge(appIcon = appIcon, contentDescription = appLabel)
+                        Spacer(Modifier.height(12.dp))
+                        Text(text = appLabel, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                        Text(text = "已被西瓜瓣锁定", style = MaterialTheme.typography.bodyMedium)
+                        Spacer(Modifier.height(12.dp))
                         Text(
-                            text = lockMessage,
+                            text = if (requirePin) "还没有设置解锁密码，请返回西瓜瓣，让助手设置密码或解除此应用的锁定。"
+                                else "此应用需要助手解除锁定。你可以返回西瓜瓣找助手，或返回桌面使用其他应用。",
                             style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSecondaryContainer,
-                            modifier = Modifier.padding(horizontal = 20.dp, vertical = 14.dp),
                             textAlign = TextAlign.Center,
                         )
+                        Spacer(Modifier.height(20.dp))
+                        if (!lockMessage.isNullOrBlank()) {
+                            Surface(
+                                shape = RoundedCornerShape(16.dp),
+                                color = MaterialTheme.colorScheme.secondaryContainer,
+                                modifier = Modifier.padding(horizontal = 8.dp),
+                            ) {
+                                Text(
+                                    text = lockMessage,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 14.dp),
+                                    textAlign = TextAlign.Center,
+                                )
+                            }
+                        }
                     }
+                } else {
+                    // PIN mode shares the same persistent exit actions as assistant-only mode.
+                    PinUnlockContent(
+                        appLabel = appLabel,
+                        appIcon = appIcon,
+                        lockMessage = lockMessage,
+                        onUnlocked = onUnlocked,
+                    )
                 }
             }
-        } else {
-            // A模式: 完整 UI (图标+徽章 + 名称 + 留言 + PIN圆点 + 数字键盘 + 取消)
-            PinUnlockContent(
-                appLabel = appLabel,
-                appIcon = appIcon,
-                lockMessage = lockMessage,
-                onUnlocked = onUnlocked,
-                onCancel = onCancel,
-            )
+            Column(
+                modifier = Modifier.align(Alignment.CenterHorizontally).padding(horizontal = 24.dp, vertical = 12.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                TextButton(onClick = onCancel) { Text("返回桌面") }
+                TextButton(onClick = onReturnToApp) { Text("返回西瓜瓣，找助手解锁") }
+            }
         }
     }
 }
@@ -214,7 +250,6 @@ private fun PinUnlockContent(
     appIcon: Drawable?,
     lockMessage: String?,
     onUnlocked: () -> Unit,
-    onCancel: () -> Unit,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -246,7 +281,7 @@ private fun PinUnlockContent(
 
     Column(
         modifier = Modifier
-            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
             .padding(24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
@@ -255,6 +290,7 @@ private fun PinUnlockContent(
         AppIconWithBadge(appIcon = appIcon, contentDescription = appLabel)
         Spacer(Modifier.height(8.dp))
         Text(text = appLabel, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+        Text(text = "已被西瓜瓣锁定，输入密码后继续", style = MaterialTheme.typography.bodyMedium)
 
         Spacer(Modifier.height(20.dp))
 
@@ -346,7 +382,6 @@ private fun PinUnlockContent(
                     }
                 }
             }
-            IconButton(onClick = onCancel) { Text(text = "\u2715", fontSize = 20.sp) }
         }
     }
 }

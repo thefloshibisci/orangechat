@@ -1,4 +1,4 @@
-﻿/*
+/*
  * 橘瓣 OrangeChat
  * 衍生自 RikkaHub (https://github.com/rikkahub/rikkahub)，原作者 RE
  * 本项目基于 GNU AGPL v3 开源，详见根目录 LICENSE 文件
@@ -7,13 +7,21 @@
 package me.rerere.ai.provider.providers.openai
 
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
+import me.rerere.ai.core.InputSchema
 import me.rerere.ai.core.MessageRole
+import me.rerere.ai.core.Tool
 import me.rerere.ai.provider.Model
+import me.rerere.ai.provider.ModelAbility
 import me.rerere.ai.provider.Modality
+import me.rerere.ai.provider.ProviderSetting
+import me.rerere.ai.provider.TextGenerationParams
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.ai.util.KeyRoulette
@@ -29,6 +37,20 @@ import org.junit.Test
  * specifically focusing on multi-round reasoning/tool scenarios.
  */
 class ChatCompletionsAPIMessageTest {
+
+    @Test
+    fun `switching away from Gemini does not leak Google extra content`() {
+        val tool = UIMessagePart.Tool("id", "test", "{}", listOf(UIMessagePart.Text("ok")),
+            metadata = buildJsonObject { put("thoughtSignature", "signature") })
+        val history = listOf(UIMessage(role = MessageRole.ASSISTANT, parts = listOf(tool)))
+        for (model in listOf("gpt-4o", "claude-sonnet")) {
+            val result = invokeBuildMessages(history, Model(modelId = model))
+            val call = result[0].jsonObject["tool_calls"]!!.jsonArray[0].jsonObject
+            assertTrue("extra_content" !in call)
+        }
+        val gemini = invokeBuildMessages(history, Model(modelId = "gemini-2.5-flash"))
+        assertTrue("extra_content" in gemini[0].jsonObject["tool_calls"]!!.jsonArray[0].jsonObject)
+    }
 
     private lateinit var api: ChatCompletionsAPI
 
@@ -49,6 +71,187 @@ class ChatCompletionsAPIMessageTest {
         )
         method.isAccessible = true
         return method.invoke(api, messages, model) as JsonArray
+    }
+
+    private fun invokeParseMessage(message: JsonObject): UIMessage {
+        val method = ChatCompletionsAPI::class.java.getDeclaredMethod(
+            "parseMessage",
+            JsonObject::class.java
+        )
+        method.isAccessible = true
+        return method.invoke(api, message) as UIMessage
+    }
+
+    private fun invokeBuildRequest(
+        params: TextGenerationParams,
+        providerSetting: ProviderSetting.OpenAI = ProviderSetting.OpenAI(),
+    ): JsonObject {
+        val method = ChatCompletionsAPI::class.java.getDeclaredMethod(
+            "buildChatCompletionRequest",
+            List::class.java,
+            TextGenerationParams::class.java,
+            ProviderSetting.OpenAI::class.java,
+            Boolean::class.javaPrimitiveType!!,
+        )
+        method.isAccessible = true
+        return method.invoke(api, listOf(UIMessage.user("test")), params, providerSetting, false) as JsonObject
+    }
+
+    @Test
+    fun `Gemini OpenAI compatibility should normalize MCP tool schema`() {
+        val tool = Tool(
+            name = "propose_memory",
+            description = "Propose a memory",
+            parameters = {
+                InputSchema.Obj(
+                    properties = buildJsonObject {
+                        put("draft", buildJsonObject { put("\$ref", "#/\$defs/Draft") })
+                    },
+                    required = listOf("draft"),
+                    defs = buildJsonObject {
+                        put("Draft", buildJsonObject {
+                            put("type", "object")
+                            put("properties", buildJsonObject {
+                                put("identifier", buildJsonObject {
+                                    put("title", "Identifier")
+                                    put("anyOf", kotlinx.serialization.json.buildJsonArray {
+                                        add(buildJsonObject { put("type", "string") })
+                                        add(buildJsonObject { put("type", "null") })
+                                    })
+                                })
+                            })
+                        })
+                    },
+                )
+            },
+            execute = { emptyList() },
+        )
+        val body = invokeBuildRequest(
+            TextGenerationParams(
+                model = Model(modelId = "gemini-3-flash", abilities = listOf(ModelAbility.TOOL)),
+                tools = listOf(tool),
+            )
+        )
+
+        val parameters = body["tools"]!!.jsonArray.single().jsonObject["function"]!!
+            .jsonObject["parameters"]!!.jsonObject
+        val draft = parameters["properties"]!!.jsonObject["draft"]!!.jsonObject
+        val identifier = draft["properties"]!!.jsonObject["identifier"]!!.jsonObject
+        assertEquals("object", draft["type"]!!.jsonPrimitive.content)
+        assertEquals("string", identifier["type"]!!.jsonPrimitive.content)
+        assertTrue("title must be removed", "title" !in identifier)
+        assertTrue("references must be inlined", "\$ref" !in draft && "\$defs" !in parameters)
+    }
+
+    @Test
+    fun `OpenAI compatibility response parser should preserve Gemini thought signature`() {
+        val parsed = invokeParseMessage(buildJsonObject {
+            put("role", "assistant")
+            put("content", "")
+            put("tool_calls", kotlinx.serialization.json.buildJsonArray {
+                add(buildJsonObject {
+                    put("id", "call_1")
+                    put("type", "function")
+                    put("function", buildJsonObject {
+                        put("name", "message_reaction")
+                        put("arguments", "{}")
+                    })
+                    put("extra_content", buildJsonObject {
+                        put("google", buildJsonObject {
+                            put("thought_signature", "real-signature")
+                        })
+                    })
+                })
+            })
+        })
+
+        assertEquals(
+            "real-signature",
+            parsed.getTools().single().metadata?.get("thoughtSignature")?.jsonPrimitive?.content
+        )
+    }
+
+    @Test
+    fun `Gemini OpenAI request exposes reaction choices to the model`() {
+        val choices = JsonArray(listOf(JsonPrimitive("(ᵕ—ᴗ—)"), JsonPrimitive("(≧▽≦)")))
+        val tool = Tool(
+            name = "message_reaction",
+            description = "React to a message",
+            parameters = {
+                InputSchema.Obj(
+                    properties = buildJsonObject {
+                        put("emoji", buildJsonObject {
+                            put("type", "string")
+                            put("enum", choices)
+                        })
+                    },
+                    required = listOf("emoji"),
+                )
+            },
+            execute = { emptyList() },
+        )
+        val body = invokeBuildRequest(
+            TextGenerationParams(
+                model = Model(modelId = "gemini-3-flash", abilities = listOf(ModelAbility.TOOL)),
+                tools = listOf(tool),
+            )
+        )
+        val parameters = body["tools"]!!.jsonArray.single().jsonObject["function"]!!
+            .jsonObject["parameters"]!!.jsonObject
+        assertEquals(choices, parameters["properties"]!!.jsonObject["emoji"]!!.jsonObject["enum"])
+    }
+
+    @Test
+    fun `Gemini OpenAI compatibility should add bypass for missing tool signature`() {
+        val result = invokeBuildMessages(
+            messages = listOf(
+                UIMessage.user("React"),
+                UIMessage(
+                    role = MessageRole.ASSISTANT,
+                    parts = listOf(
+                        createExecutedTool("call_1", "message_reaction", "{}", "ok"),
+                        createExecutedTool("call_2", "other_tool", "{}", "done")
+                    )
+                )
+            ),
+            model = Model(modelId = "google/gemini-3.1-pro-preview")
+        )
+        val calls = result
+            .first { it.jsonObject.containsKey("tool_calls") }
+            .jsonObject["tool_calls"]!!.jsonArray
+
+        assertEquals(
+            "skip_thought_signature_validator",
+            calls[0].jsonObject["extra_content"]!!.jsonObject["google"]!!
+                .jsonObject["thought_signature"]!!.jsonPrimitive.content
+        )
+        assertTrue(
+            "Only the first call in a parallel group should receive the fallback",
+            !calls[1].jsonObject.containsKey("extra_content")
+        )
+    }
+
+    @Test
+    fun `Gemini OpenAI compatibility should preserve real tool signature`() {
+        val signedTool = createExecutedTool("call_1", "message_reaction", "{}", "ok").copy(
+            metadata = buildJsonObject { put("thoughtSignature", "real-signature") }
+        )
+        val result = invokeBuildMessages(
+            messages = listOf(
+                UIMessage.user("React"),
+                UIMessage(role = MessageRole.ASSISTANT, parts = listOf(signedTool))
+            ),
+            model = Model(modelId = "gemini-3-flash")
+        )
+        val call = result
+            .first { it.jsonObject.containsKey("tool_calls") }
+            .jsonObject["tool_calls"]!!.jsonArray.single().jsonObject
+
+        assertEquals(
+            "real-signature",
+            call["extra_content"]!!.jsonObject["google"]!!
+                .jsonObject["thought_signature"]!!.jsonPrimitive.content
+        )
     }
 
     @Test
@@ -127,7 +330,7 @@ class ChatCompletionsAPIMessageTest {
             result.map { it.jsonObject["role"]!!.jsonPrimitive.content })
         assertEquals("image", result[1].jsonObject["tool_call_id"]!!.jsonPrimitive.content)
         assertEquals("time", result[2].jsonObject["tool_call_id"]!!.jsonPrimitive.content)
-        assertEquals("", result[1].jsonObject["content"]!!.jsonPrimitive.content)
+        assertEquals("[Tool returned an image; see the following attachment.]", result[1].jsonObject["content"]!!.jsonPrimitive.content)
         assertEquals("text", result[3].jsonObject["content"]!!.jsonArray[1].jsonObject["type"]!!.jsonPrimitive.content)
     }
 

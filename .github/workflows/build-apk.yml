@@ -1,5 +1,8 @@
 name: Build Personal APK
 
+permissions:
+  contents: read
+
 on:
   workflow_dispatch:
   push:
@@ -63,14 +66,12 @@ jobs:
           elif [ -f app/debug.keystore ]; then
             echo "Using committed app/debug.keystore"
           else
-            echo "No signing config found; generating a local debug keystore." >&2
-            keytool -genkeypair -keystore app/debug.keystore -storepass android -keypass android \
-              -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 \
-              -dname "CN=Android Debug,O=Android,C=US"
+            echo "No existing signing configuration found; refusing to generate a replacement key." >&2
+            exit 1
           fi
 
       - name: Test search provider construction and serialization
-        run: ./gradlew :search:testDebugUnitTest :workspace:testDebugUnitTest
+        run: ./gradlew :search:testDebugUnitTest :workspace:testDebugUnitTest :terminal:testDebugUnitTest
 
       - name: Test app and AI regressions
         run: ./gradlew :app:testDebugUnitTest :ai:testDebugUnitTest :app:compileDebugAndroidTestKotlin
@@ -99,3 +100,16 @@ jobs:
           name: OrangeChat-release-mapping
           path: app/build/outputs/mapping/release/mapping.txt
           if-no-files-found: error
+
+      - name: Upload regression test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: OrangeChat-test-results
+          path: |
+            app/build/test-results/
+            ai/build/test-results/
+            search/build/test-results/
+            workspace/build/test-results/
+            terminal/build/test-results/
+          retention-days: 14

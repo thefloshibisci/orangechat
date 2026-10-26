@@ -70,6 +70,7 @@ fun SearchPickerButton(
     onToggleSearch: (Boolean) -> Unit,
     onUpdateSearchService: (Int) -> Unit,
     model: Model?,
+    onUpdateSetting: ((Settings) -> Unit)? = null,
 ) {
     var showSearchPicker by remember { mutableStateOf(false) }
     val currentService = settings.searchServices.getOrNull(settings.searchServiceSelected)
@@ -142,6 +143,7 @@ fun SearchPickerButton(
                         .fillMaxWidth()
                         .weight(1f),
                     model = model,
+                    onUpdateSetting = onUpdateSetting,
                     onDismiss = {
                         showSearchPicker = false
                     }
@@ -159,13 +161,14 @@ private fun SearchPicker(
     modifier: Modifier = Modifier,
     onToggleSearch: (Boolean) -> Unit,
     onUpdateSearchService: (Int) -> Unit,
+    onUpdateSetting: ((Settings) -> Unit)?,
     onDismiss: () -> Unit
 ) {
     val navBackStack = LocalNavController.current
 
     // 模型内置搜索
     if (model != null && (ModelRegistry.GEMINI_SERIES.match(model.modelId) || model.modelId.contains("gpt-"))) {
-        BuiltInSearchSetting(model = model)
+        BuiltInSearchSetting(model = model, settings = settings, onUpdateSetting = onUpdateSetting)
     }
 
     // 如果没有开启内置搜索，显示搜索服务选择
@@ -295,7 +298,7 @@ private fun AppSearchSettings(
 }
 
 @Composable
-private fun BuiltInSearchSetting(model: Model) {
+private fun BuiltInSearchSetting(model: Model, settings: Settings, onUpdateSetting: ((Settings) -> Unit)?) {
     val settingsStore = koinInject<SettingsStore>()
     val scope = rememberCoroutineScope()
     Card {
@@ -325,7 +328,15 @@ private fun BuiltInSearchSetting(model: Model) {
             Switch(
                 checked = model.tools.contains(BuiltInTools.Search),
                 onCheckedChange = { checked ->
-                    scope.launch {
+                    if (onUpdateSetting != null) {
+                        onUpdateSetting(settings.copy(providers = settings.providers.map { provider ->
+                            val visibleModel = provider.models.find { it.id == model.id }
+                            if (visibleModel == null) provider else provider.editModel(visibleModel.copy(
+                                tools = if (checked) visibleModel.tools + BuiltInTools.Search
+                                else visibleModel.tools - BuiltInTools.Search,
+                            ))
+                        }))
+                    } else scope.launch {
                         settingsStore.update { current ->
                             current.copy(providers = current.providers.map { provider ->
                                 val latestModel = provider.models.find { it.id == model.id }

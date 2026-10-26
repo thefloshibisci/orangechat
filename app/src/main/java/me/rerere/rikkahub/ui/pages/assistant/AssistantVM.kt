@@ -31,6 +31,7 @@ class AssistantVM(
     private val conversationRepo: ConversationRepository,
     private val filesManager: FilesManager,
     private val chatService: ChatService,
+    private val localScenes: me.rerere.rikkahub.data.serein.LocalSceneRepository,
 ) : ViewModel() {
     val settings: StateFlow<Settings> = settingsStore.settingsFlow
         .stateIn(viewModelScope, SharingStarted.Eagerly, Settings.dummy())
@@ -61,10 +62,13 @@ class AssistantVM(
             var removed: Assistant? = null
             settingsStore.update { current ->
                 removed = current.assistants.find { it.id == assistant.id }
-                current.copy(assistants = current.assistants.filter { it.id != assistant.id })
+                current.copy(assistants = current.assistants.filter { it.id != assistant.id },
+                    sereinHook = if (current.sereinHook.assistantId == assistant.id.toString())
+                        me.rerere.rikkahub.data.serein.SereinHookConfig() else current.sereinHook)
             }
             removed?.let { cleanupAssistantFiles(it) }
             memoryRepository.deleteMemoriesOfAssistant(assistant.id.toString())
+            localScenes.deleteAssistantMemories(assistant.id.toString())
             chatService.deleteConversationsOfAssistant(assistant.id)
         }
     }

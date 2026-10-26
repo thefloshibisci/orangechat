@@ -94,6 +94,7 @@ import me.rerere.rikkahub.ui.theme.ColorMode
 import me.rerere.rikkahub.ui.theme.CustomColors
 import me.rerere.rikkahub.utils.joinQQGroup
 import me.rerere.rikkahub.utils.openUrl
+import me.rerere.rikkahub.utils.ProjectLinks
 import me.rerere.rikkahub.utils.plus
 import org.koin.androidx.compose.koinViewModel
 import org.koin.compose.koinInject
@@ -423,7 +424,7 @@ fun SettingPage(vm: SettingVM = koinViewModel()) {
                         headlineContent = { Text(stringResource(R.string.setting_page_about)) },
                     )
                     item(
-                        onClick = { context.openUrl("https://github.com/sue1231513/orangechat") },
+                        onClick = { navController.navigate(Screen.WebView(url = ProjectLinks.DOCUMENTATION)) },
                         leadingContent = { Icon(HugeIcons.Book01, null) },
                         supportingContent = { Text(stringResource(R.string.setting_page_documentation_desc)) },
                         headlineContent = { Text(stringResource(R.string.setting_page_documentation)) },

@@ -10,11 +10,13 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import me.rerere.rikkahub.data.ai.tools.WorkspaceToolDefaultApprovals
@@ -38,6 +40,7 @@ data class WorkspaceDetailState(
     val currentPath: String = "",
     val files: List<WorkspaceFileEntry> = emptyList(),
     val filesLoading: Boolean = false,
+    val filesError: String? = null,
     val installing: Boolean = false,
     val installProgress: RootfsInstallProgress? = null,
     val errorMessage: String? = null,
@@ -48,6 +51,8 @@ data class WorkspaceDetailState(
         }.getOrDefault(WorkspaceShellStatus.DISABLED)
 
     val rootfsReady: Boolean get() = shellStatus == WorkspaceShellStatus.READY
+    val remote: Boolean get() = workspace?.isSsh() == true
+    val terminalReady: Boolean get() = remote || rootfsReady
 }
 
 /** 终端会话条目，用于在 UI 列出已打开的终端 */
@@ -78,16 +83,36 @@ class WorkspaceDetailVM(
     val terminalState: StateFlow<WorkspaceTerminalState> = _terminalState.asStateFlow()
 
     private var installJob: Job? = null
+    private val refreshes = MutableStateFlow(0L)
 
     init {
         viewModelScope.launch {
             workspaceFlow.collect { workspace ->
-                _state.value = _state.value.copy(workspace = workspace)
-                if (workspace != null) {
-                    refreshFiles()
-                }
+                val old = _state.value
+                val connectionChanged = old.workspace?.sshConfig != workspace?.sshConfig
+                _state.value = old.copy(
+                    workspace = workspace,
+                    area = if (workspace?.isSsh() == true) WorkspaceStorageArea.FILES else old.area,
+                    currentPath = if (connectionChanged) "" else old.currentPath,
+                    files = if (connectionChanged || workspace == null) emptyList() else old.files,
+                )
             }
         }
+        viewModelScope.launch {
+            workspaceDirectoryStates(
+                _state.map { it.location() }.distinctUntilChanged(), refreshes,
+            ) { location -> repository.listFiles(location.workspaceId, location.area, location.path) }
+                .collect { loaded ->
+                    if (_state.value.location() == loaded.location) {
+                        _state.value = _state.value.copy(files = loaded.entries, filesLoading = loaded.loading,
+                            filesError = loaded.error, errorMessage = loaded.error ?: _state.value.errorMessage)
+                    }
+                }
+        }
+    }
+
+    private fun WorkspaceDetailState.location(): WorkspaceBrowseLocation? = workspace?.let {
+        WorkspaceBrowseLocation(it.id, area, currentPath, it.sshConfig)
     }
 
     fun rename(name: String) {
@@ -98,14 +123,12 @@ class WorkspaceDetailVM(
     }
 
     fun switchArea(area: WorkspaceStorageArea) {
-        if (_state.value.area == area) return
-        _state.value = _state.value.copy(area = area, currentPath = "")
-        refreshFiles()
+        if (_state.value.area == area || (_state.value.remote && area != WorkspaceStorageArea.FILES)) return
+        _state.value = _state.value.copy(area = area, currentPath = "", files = emptyList())
     }
 
     fun navigateTo(path: String) {
-        _state.value = _state.value.copy(currentPath = path)
-        refreshFiles()
+        _state.value = _state.value.copy(currentPath = path, files = emptyList())
     }
 
     fun navigateUp() {
@@ -115,38 +138,18 @@ class WorkspaceDetailVM(
         navigateTo(parent)
     }
 
-    fun refreshFiles() {
-        val workspace = _state.value.workspace ?: return
-        viewModelScope.launch {
-            _state.value = _state.value.copy(filesLoading = true)
-            val result = runCatching {
-                repository.listFiles(workspace.id, _state.value.area, _state.value.currentPath)
-            }
-            _state.value = result.fold(
-                onSuccess = { entries ->
-                    _state.value.copy(
-                        files = entries.sortedWith(
-                            compareByDescending<WorkspaceFileEntry> { it.isDirectory }
-                                .thenBy { it.name.lowercase() }
-                        ),
-                        filesLoading = false,
-                    )
-                },
-                onFailure = {
-                    Log.e(TAG, "refreshFiles failed", it)
-                    _state.value.copy(filesLoading = false, errorMessage = it.message)
-                }
-            )
-        }
-    }
+    fun refreshFiles() { refreshes.value += 1 }
 
     fun deleteFile(entry: WorkspaceFileEntry) {
-        val workspace = _state.value.workspace ?: return
+        val snapshot = _state.value
+        val workspace = snapshot.workspace ?: return
         viewModelScope.launch {
-            runCatching {
-                repository.deleteFile(workspace.id, _state.value.area, entry.path, recursive = entry.isDirectory)
-            }.onSuccess { refreshFiles() }
-                .onFailure { setError(it.message) }
+            try {
+                repository.deleteFile(workspace.id, snapshot.area, entry.path, recursive = entry.isDirectory)
+                refreshFiles()
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (error: Exception) { setError(error.message) }
+
         }
     }
 
@@ -159,7 +162,8 @@ class WorkspaceDetailVM(
      * 提前返回，需在此处关闭流以避免泄漏。
      */
     fun importFile(fileName: String, inputStream: InputStream) {
-        val workspace = _state.value.workspace ?: run {
+        val snapshot = _state.value
+        val workspace = snapshot.workspace ?: run {
             inputStream.close()
             return
         }
@@ -167,8 +171,8 @@ class WorkspaceDetailVM(
             runCatching {
                 repository.importFile(
                     id = workspace.id,
-                    area = _state.value.area,
-                    destinationPath = _state.value.currentPath,
+                    area = snapshot.area,
+                    destinationPath = snapshot.currentPath,
                     fileName = fileName,
                     inputStream = inputStream,
                 )
@@ -184,7 +188,8 @@ class WorkspaceDetailVM(
      * VM 层不需要重复关闭。
      */
     fun exportFile(entry: WorkspaceFileEntry, outputStream: OutputStream) {
-        val workspace = _state.value.workspace ?: run {
+        val snapshot = _state.value
+        val workspace = snapshot.workspace ?: run {
             outputStream.close()
             return
         }
@@ -192,7 +197,7 @@ class WorkspaceDetailVM(
             runCatching {
                 repository.exportFile(
                     id = workspace.id,
-                    area = _state.value.area,
+                    area = snapshot.area,
                     path = entry.path,
                     outputStream = outputStream,
                 )
@@ -203,14 +208,33 @@ class WorkspaceDetailVM(
     suspend fun readFile(
         entry: WorkspaceFileEntry,
         area: WorkspaceStorageArea = _state.value.area,
+        expectedSshConfig: String? = _state.value.workspace?.sshConfig,
     ): WorkspaceTextPreview {
         val workspace = _state.value.workspace ?: error("Workspace not found")
+        check(!workspace.isSsh() || workspace.sshConfig == expectedSshConfig) {
+            "SSH 连接配置已变化，请关闭后重新打开文件。"
+        }
         return repository.readTextPreview(
             id = workspace.id,
             area = area,
             path = entry.path,
             maxBytes = PREVIEW_MAX_BYTES,
         )
+    }
+
+    suspend fun saveFile(
+        entry: WorkspaceFileEntry,
+        area: WorkspaceStorageArea,
+        originalText: String,
+        text: String,
+        expectedSshConfig: String?,
+    ) {
+        val workspace = _state.value.workspace ?: error("Workspace not found")
+        check(workspace.isSsh()) { "仅远程 SSH 文件支持在此编辑" }
+        check(workspace.sshConfig == expectedSshConfig) { "SSH 连接配置已变化，修改仍保留在编辑框中。" }
+        repository.writeTextIfUnchanged(workspace.id, area, entry.path, originalText, text,
+            expectedSshConfig = expectedSshConfig)
+        refreshFiles()
     }
 
     /**
@@ -222,14 +246,15 @@ class WorkspaceDetailVM(
      * VM 层无需重复关闭；临时文件的 outputStream 由 repository 内部关闭。
      */
     fun shareFile(entry: WorkspaceFileEntry, cacheDir: File, onReady: (File) -> Unit) {
-        val workspace = _state.value.workspace ?: return
+        val snapshot = _state.value
+        val workspace = snapshot.workspace ?: return
         viewModelScope.launch {
             runCatching {
                 val tempFile = File(cacheDir, "workspace_share_${System.currentTimeMillis()}_${entry.name}")
                 tempFile.outputStream().use { out ->
                     repository.exportFile(
                         id = workspace.id,
-                        area = _state.value.area,
+                        area = snapshot.area,
                         path = entry.path,
                         outputStream = out,
                     )

@@ -72,6 +72,8 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.ArrowLeft01
@@ -118,11 +120,16 @@ fun WorkspaceDetailPage(id: String) {
 
     var deleteTarget by remember { mutableStateOf<WorkspaceFileEntry?>(null) }
     var showInstallDialog by remember { mutableStateOf(false) }
+    var showSshDialog by remember { mutableStateOf(false) }
     // Reuse the granted download folder across file cards, chat links and workspace pages.
     val exportFile = rememberWorkspaceFileExporter(id.toString())
     var previewTarget by remember { mutableStateOf<WorkspaceFileEntry?>(null) }
     var previewResult by remember { mutableStateOf<WorkspaceTextPreview?>(null) }
     var previewLoading by remember { mutableStateOf(false) }
+    var previewError by remember { mutableStateOf<String?>(null) }
+    var previewRevision by remember { mutableStateOf(0L) }
+    var previewArea by remember { mutableStateOf(WorkspaceStorageArea.FILES) }
+    var previewConnectionRevision by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(state.errorMessage) {
         state.errorMessage?.let {
@@ -131,16 +138,18 @@ fun WorkspaceDetailPage(id: String) {
         }
     }
 
-    LaunchedEffect(previewTarget, state.area) {
+    LaunchedEffect(previewTarget, previewArea, previewConnectionRevision, previewRevision) {
         val target = previewTarget ?: return@LaunchedEffect
         previewLoading = true
-        previewResult = try {
-            vm.readFile(target, state.area)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Throwable) {
-            WorkspaceTextPreview("读取失败：${e.message ?: "未知错误"}")
-        }
+        previewResult = null
+        previewError = null
+        try {
+            val loaded = vm.readFile(target, previewArea, expectedSshConfig = previewConnectionRevision)
+            currentCoroutineContext().ensureActive()
+            previewResult = loaded
+        } catch (cancelled: CancellationException) { throw cancelled }
+        catch (failure: Exception) { previewError = failure.message ?: "读取文件失败，请重试。" }
+        currentCoroutineContext().ensureActive()
         previewLoading = false
     }
 
@@ -172,7 +181,7 @@ fun WorkspaceDetailPage(id: String) {
                     IconButton(onClick = { vm.refreshFiles() }) {
                         Icon(HugeIcons.Refresh, contentDescription = null)
                     }
-                    if (state.rootfsReady) {
+                    if (state.terminalReady) {
                         IconButton(
                             onClick = { navController.navigate(Screen.WorkspaceTerminal(id)) }
                         ) {
@@ -221,6 +230,7 @@ fun WorkspaceDetailPage(id: String) {
                     state = state,
                     approvals = vm.toolApprovals(state.workspace),
                     onInstallRootfs = { showInstallDialog = true },
+                    onEditSsh = { showSshDialog = true },
                     onCancelInstall = { vm.cancelInstall() },
                     onToolApprovalChange = { name, needsApproval -> vm.setToolApproval(name, needsApproval) },
                 )
@@ -230,7 +240,12 @@ fun WorkspaceDetailPage(id: String) {
                     onSwitchArea = { vm.switchArea(it) },
                     onNavigateUp = { vm.navigateUp() },
                     onOpen = { vm.navigateTo(it.path) },
-                    onPreview = { previewTarget = it },
+                    onPreview = {
+                        previewArea = state.area
+                        previewConnectionRevision = state.workspace?.sshConfig
+                        previewTarget = it
+                    },
+                    onRetry = vm::refreshFiles,
                     onDelete = { deleteTarget = it },
                     onExport = { entry ->
                         exportFile(state.area, entry.path)
@@ -278,45 +293,23 @@ fun WorkspaceDetailPage(id: String) {
         },
     )
 
+    if (showSshDialog) WorkspaceSshDialog(
+        existing = state.workspace,
+        onDismiss = { showSshDialog = false },
+        onSaved = { showSshDialog = false },
+    )
     previewTarget?.let { target ->
-        AlertDialog(
-            onDismissRequest = { previewTarget = null; previewResult = null },
-            title = { Text(target.name) },
-            text = {
-                if (previewLoading) {
-                    CircularProgressIndicator()
-                } else {
-                    val result = previewResult ?: WorkspaceTextPreview("")
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        if (result.isBinary) {
-                            Text(stringResource(R.string.workspace_detail_preview_binary))
-                        } else {
-                            SelectionContainer {
-                                Text(
-                                    text = result.text,
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .heightIn(max = 400.dp)
-                                        .verticalScroll(rememberScrollState()),
-                                    fontFamily = FontFamily.Monospace,
-                                )
-                            }
-                            if (result.truncated) {
-                                Text(
-                                    stringResource(R.string.workspace_detail_preview_truncated),
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    style = MaterialTheme.typography.bodySmall,
-                                )
-                            }
-                        }
-                    }
-                }
+        WorkspaceTextFileDialog(
+            name = target.name,
+            preview = previewResult,
+            loading = previewLoading,
+            error = previewError,
+            editable = state.remote,
+            onRetry = { previewRevision++ },
+            onSave = { original, text ->
+                vm.saveFile(target, previewArea, original, text, expectedSshConfig = previewConnectionRevision)
             },
-            confirmButton = {
-                TextButton(onClick = { previewTarget = null; previewResult = null }) {
-                    Text(stringResource(R.string.cancel))
-                }
-            },
+            onDismiss = { previewTarget = null; previewResult = null },
         )
     }
 }
@@ -329,6 +322,7 @@ private fun WorkspaceBasicPage(
     state: WorkspaceDetailState,
     approvals: Map<String, Boolean>,
     onInstallRootfs: () -> Unit,
+    onEditSsh: () -> Unit,
     onCancelInstall: () -> Unit,
     onToolApprovalChange: (String, Boolean) -> Unit,
 ) {
@@ -339,7 +333,19 @@ private fun WorkspaceBasicPage(
     ) {
         item { WorkspaceDownloadFolderSetting() }
         item {
-            RootfsCard(
+            if (state.remote) {
+                Card(colors = CustomColors.cardColorsOnSurfaceContainer) {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("远程 SSH 工作区", style = MaterialTheme.typography.titleMedium)
+                        state.workspace?.sshSettings()?.let { connection ->
+                            Text("${connection.username}@${connection.host}:${connection.port}")
+                            Text(connection.remoteDir, fontFamily = FontFamily.Monospace)
+                        }
+                        Text("文件和终端命令在服务器上执行，无需安装本地 Linux 环境。")
+                        TextButton(onClick = onEditSsh) { Text("编辑 SSH 连接") }
+                    }
+                }
+            } else RootfsCard(
                 status = state.shellStatus,
                 installing = state.installing,
                 progressStageText = installProgressText(state),
@@ -367,6 +373,7 @@ private fun WorkspaceFilesPage(
     onNavigateUp: () -> Unit,
     onOpen: (WorkspaceFileEntry) -> Unit,
     onPreview: (WorkspaceFileEntry) -> Unit,
+    onRetry: () -> Unit,
     onDelete: (WorkspaceFileEntry) -> Unit,
     onExport: (WorkspaceFileEntry) -> Unit,
     onShare: (WorkspaceFileEntry) -> Unit,
@@ -379,7 +386,7 @@ private fun WorkspaceFilesPage(
         item {
             WorkspaceDownloadFolderSetting()
         }
-        item {
+        if (!state.remote) item {
             AreaSelector(
                 area = state.area,
                 onSwitch = onSwitchArea,
@@ -389,6 +396,7 @@ private fun WorkspaceFilesPage(
         item {
             PathBar(
                 path = state.currentPath,
+                root = if (state.remote) state.workspace?.sshSettings()?.remoteDir ?: "/" else "/",
                 canGoUp = state.currentPath.isNotBlank(),
                 onGoUp = onNavigateUp,
             )
@@ -403,6 +411,13 @@ private fun WorkspaceFilesPage(
                     contentAlignment = Alignment.Center,
                 ) {
                     CircularProgressIndicator()
+                }
+            }
+        } else if (state.filesError != null) {
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(state.filesError, color = MaterialTheme.colorScheme.error)
+                    TextButton(onClick = onRetry) { Text("重新读取目录") }
                 }
             }
         } else if (state.files.isEmpty()) {
@@ -580,6 +595,7 @@ private fun AreaSelector(
 @Composable
 private fun PathBar(
     path: String,
+    root: String = "/",
     canGoUp: Boolean,
     onGoUp: () -> Unit,
 ) {
@@ -594,7 +610,7 @@ private fun PathBar(
             }
         }
         Text(
-            text = "/" + path,
+            text = root.trimEnd('/') + "/" + path.trimStart('/'),
             style = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

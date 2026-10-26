@@ -19,6 +19,20 @@ internal fun normalizeForeignBackup(
     val version = java.io.RandomAccessFile(file, "r").use { it.seek(60); it.readInt() }
     // A WAL may contain a newer header. The helper checks the effective version and identity again.
     if (version != 38) return
+    // Historical native OrangeChat databases also used v38. A version alone cannot identify a fork.
+    // Probe only this staged file and leave current/unknown schemas to Room validation.
+    val probe = factory.create(SupportSQLiteOpenHelper.Configuration.builder(context)
+        .name(file.absolutePath).callback(object : SupportSQLiteOpenHelper.Callback(38) {
+            override fun onCreate(db: SupportSQLiteDatabase) = error("Missing backup database")
+            override fun onUpgrade(db: SupportSQLiteDatabase, oldVersion: Int, newVersion: Int) =
+                error("Unexpected backup version: $oldVersion")
+        }).build())
+    val foreign = try {
+        probe.writableDatabase.query("SELECT identity_hash FROM room_master_table WHERE id=42").use {
+            it.moveToFirst() && it.getString(0) == "11d8129bf72f997e35de727852c7d17d"
+        }
+    } finally { probe.close() }
+    if (!foreign) return
     val templateFile = File.createTempFile("backup-schema-", ".db", context.cacheDir)
     val template = Room.databaseBuilder(context, AppDatabase::class.java, templateFile.absolutePath)
         .setJournalMode(RoomDatabase.JournalMode.TRUNCATE).openHelperFactory(factory).build()

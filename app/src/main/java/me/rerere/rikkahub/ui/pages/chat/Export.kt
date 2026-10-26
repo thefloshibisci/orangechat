@@ -586,6 +586,10 @@ private fun ExportedChatMessage(
                         }
                     }
 
+                    is MessagePartBlock.ChartBlock -> {
+                        me.rerere.rikkahub.ui.components.charts.ChartCard(block.spec)
+                    }
+
                     is MessagePartBlock.ContentBlock -> {
                         when (val part = block.part) {
                             is UIMessagePart.Text -> {

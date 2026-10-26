@@ -518,8 +518,8 @@ class ChatHistoryRestoreIntegrationTest {
             queries.clear()
             assertEquals(1, repository.restoreChatHistory(listOf(incoming), ChatHistoryRestoreMode.OVERWRITE_MATCHING))
             val restoreQueries = queries.toList()
-            assertEquals(1, restoreQueries.count { it.startsWith("DELETE FROM message_fts WHERE conversation_id") })
-            assertEquals(0, restoreQueries.count { it.startsWith("DELETE FROM message_fts WHERE node_id") })
+            assertEquals(1, restoreQueries.count { it.startsWith("DELETE FROM message_fts WHERE rowid IN") })
+            assertEquals(0, restoreQueries.count { it.startsWith("DELETE FROM message_fts WHERE rowid IN") && it.contains("AND node_id") })
             assertEquals(incoming, repository.exportChatHistory().single { it.id == old.id })
             assertEquals(unrelated, repository.getConversationById(unrelated.id))
             db.openHelper.writableDatabase.query("SELECT COUNT(*) FROM message_fts WHERE conversation_id = '${old.id}'").use {

@@ -8,6 +8,12 @@ package me.rerere.rikkahub.ui.components.message
 
 import androidx.compose.ui.util.fastForEachIndexed
 import me.rerere.ai.ui.UIMessagePart
+import me.rerere.ai.ui.ToolApprovalState
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
+import me.rerere.rikkahub.ui.components.charts.ChartSpec
 
 /**
  * 思考步骤类型，用于分组 Reasoning 和 Tool
@@ -28,6 +34,7 @@ sealed interface ThinkingStep {
 sealed interface MessagePartBlock {
     data class ThinkingBlock(val steps: List<ThinkingStep>) : MessagePartBlock
     data class ContentBlock(val part: UIMessagePart, val index: Int) : MessagePartBlock
+    data class ChartBlock(val spec: ChartSpec, val index: Int) : MessagePartBlock
 }
 
 /**
@@ -53,6 +60,10 @@ fun List<UIMessagePart>.groupMessageParts(): List<MessagePartBlock> {
 
             is UIMessagePart.Tool -> {
                 currentThinkingSteps.add(ThinkingStep.ToolStep(part))
+                part.displayedChart()?.let { chart ->
+                    flushThinkingSteps()
+                    result.add(MessagePartBlock.ChartBlock(chart, index))
+                }
             }
 
             else -> {
@@ -63,4 +74,15 @@ fun List<UIMessagePart>.groupMessageParts(): List<MessagePartBlock> {
     }
     flushThinkingSteps()
     return result
+}
+
+/** Only an acknowledged successful chart call can produce visible content. */
+internal fun UIMessagePart.Tool.displayedChart(): ChartSpec? {
+    if (toolName != "chart_display" || !isExecuted ||
+        approvalState is ToolApprovalState.Pending || approvalState is ToolApprovalState.Denied) return null
+    val result = output.singleOrNull() as? UIMessagePart.Text ?: return null
+    val payload = runCatching { Json.parseToJsonElement(result.text) as? JsonObject }.getOrNull() ?: return null
+    val success = payload["success"] as? JsonPrimitive ?: return null
+    if (success.isString || success.booleanOrNull != true || "error" in payload) return null
+    return runCatching { ChartSpec.fromJson(Json.parseToJsonElement(input)) }.getOrNull()
 }

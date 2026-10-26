@@ -40,7 +40,7 @@ class WorkspaceDocumentsProvider : DocumentsProvider() {
         val result = MatrixCursor(projection ?: DEFAULT_ROOT_PROJECTION)
         val context = context ?: return result
         val workspaces = runCatching { runBlocking { dao.getAll() } }.getOrDefault(emptyList())
-        for (workspace in workspaces) {
+        for (workspace in workspaces.filterNot { it.isSsh() }) {
             result.newRow().apply {
                 add(Root.COLUMN_ROOT_ID, workspace.root)
                 add(Root.COLUMN_DOCUMENT_ID, workspace.root)
@@ -141,6 +141,9 @@ class WorkspaceDocumentsProvider : DocumentsProvider() {
     private fun resolve(documentId: String): Pair<String, File> {
         val root = documentId.substringBefore('/')
         val relative = documentId.substringAfter('/', "")
+        // Remote workspaces use the in-app SFTP browser, never an empty local cache directory.
+        val workspace = runBlocking { dao.getAll().firstOrNull { it.root == root } }
+        require(workspace != null && !workspace.isSsh()) { "Local workspace not found" }
         val filesDir = manager.filesDir(root)
         val target = if (relative.isBlank()) {
             filesDir

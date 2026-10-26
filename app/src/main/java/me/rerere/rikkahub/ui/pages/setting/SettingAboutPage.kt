@@ -27,6 +27,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Icon
+import androidx.compose.material3.CircularProgressIndicator
 import me.rerere.rikkahub.ui.theme.LargeFlexibleTopAppBar
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
@@ -36,6 +37,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -58,12 +60,23 @@ import me.rerere.rikkahub.ui.context.LocalNavController
 import me.rerere.rikkahub.ui.theme.CustomColors
 import me.rerere.rikkahub.utils.openUrl
 import me.rerere.rikkahub.utils.plus
+import me.rerere.rikkahub.utils.ProjectLinks
+import me.rerere.rikkahub.utils.aboutBuildLabel
+import me.rerere.rikkahub.utils.aboutUpdateStatus
+import me.rerere.rikkahub.utils.UiState
+import me.rerere.rikkahub.utils.UpdateInfo
+import me.rerere.rikkahub.utils.UpdateChecker
+import kotlinx.coroutines.launch
+import org.koin.compose.koinInject
 
 @Composable
 fun SettingAboutPage() {
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
     val context = LocalContext.current
     val navController = LocalNavController.current
+    val updateChecker: UpdateChecker = koinInject()
+    val scope = rememberCoroutineScope()
+    var updateState by remember { mutableStateOf<UiState<UpdateInfo>>(UiState.Idle) }
     val emojiOptions = remember {
         listOf(
             "🎉", "✨", "🌟", "💫", "🎊", "🥳", "🎈", "🎆", "🎇", "🧨",
@@ -149,9 +162,25 @@ fun SettingAboutPage() {
                             ),
                             leadingContent = { Icon(HugeIcons.Code, null) },
                             supportingContent = {
-                                Text("${BuildConfig.VERSION_NAME} / ${BuildConfig.VERSION_CODE} / ${BuildConfig.GIT_COMMIT} / ${BuildConfig.BUILD_TIME}")
+                                Text(aboutBuildLabel(BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE.toString(),
+                                    BuildConfig.GIT_COMMIT, BuildConfig.BUILD_TIME,
+                                    BuildConfig.APPLICATION_ID, BuildConfig.BUILD_TYPE))
                             },
                             headlineContent = { Text(stringResource(R.string.about_page_version)) },
+                        )
+                        item(
+                            onClick = {
+                                if (updateState !is UiState.Loading) {
+                                    updateState = UiState.Loading
+                                    scope.launch { updateChecker.checkUpdate().collect { updateState = it } }
+                                }
+                            },
+                            leadingContent = { Icon(HugeIcons.Code, null) },
+                            supportingContent = { Text(aboutUpdateStatus(updateState, BuildConfig.VERSION_NAME)) },
+                            headlineContent = { Text("检查更新") },
+                            trailingContent = {
+                                if (updateState is UiState.Loading) CircularProgressIndicator(Modifier.size(24.dp))
+                            },
                         )
                         item(
                             leadingContent = { Icon(HugeIcons.SmartPhone01, null) },
@@ -168,26 +197,44 @@ fun SettingAboutPage() {
                         modifier = Modifier.padding(horizontal = 8.dp),
                     ) {
                         item(
-                            onClick = { context.openUrl("https://github.com/sue1231513/orangechat") },
+                            onClick = { context.openUrl(ProjectLinks.HOME) },
                             leadingContent = { Icon(HugeIcons.Earth, null) },
                             supportingContent = {
-                                Text("https://github.com/sue1231513/orangechat")
+                                Text(ProjectLinks.HOME)
                             },
                             headlineContent = { Text(stringResource(R.string.about_page_website)) },
                         )
                         item(
-                            onClick = { context.openUrl("https://github.com/sue1231513/orangechat") },
+                            onClick = { context.openUrl(ProjectLinks.HOME) },
                             leadingContent = { Icon(HugeIcons.Github, null) },
                             supportingContent = {
-                                Text("https://github.com/sue1231513/orangechat")
+                                Text(ProjectLinks.HOME)
                             },
                             headlineContent = { Text(stringResource(R.string.about_page_github)) },
                         )
                         item(
-                            onClick = { context.openUrl("https://github.com/sue1231513/orangechat/blob/master/LICENSE") },
+                            onClick = { navController.navigate(Screen.WebView(url = ProjectLinks.DOCUMENTATION)) },
+                            leadingContent = { Icon(HugeIcons.File02, null) },
+                            supportingContent = { Text("本项目使用说明") },
+                            headlineContent = { Text("使用文档") },
+                        )
+                        item(
+                            onClick = { context.openUrl(ProjectLinks.ISSUES) },
+                            leadingContent = { Icon(HugeIcons.Github, null) },
+                            supportingContent = { Text(ProjectLinks.ISSUES) },
+                            headlineContent = { Text("问题反馈") },
+                        )
+                        item(
+                            onClick = { context.openUrl(ProjectLinks.RELEASES) },
+                            leadingContent = { Icon(HugeIcons.Earth, null) },
+                            supportingContent = { Text("打开本项目发布页，按当前安装渠道核对") },
+                            headlineContent = { Text("版本发布") },
+                        )
+                        item(
+                            onClick = { context.openUrl(ProjectLinks.LICENSE) },
                             leadingContent = { Icon(HugeIcons.File02, null) },
                             supportingContent = {
-                                Text("https://github.com/sue1231513/orangechat/blob/master/LICENSE")
+                                Text(ProjectLinks.LICENSE)
                             },
                             headlineContent = { Text(stringResource(R.string.about_page_license)) },
                         )
@@ -199,7 +246,7 @@ fun SettingAboutPage() {
                         modifier = Modifier.padding(horizontal = 8.dp),
                     ) {
                         item(
-                            onClick = { context.openUrl("https://github.com/rikkahub/rikkahub") },
+                            onClick = { context.openUrl(ProjectLinks.RIKKAHUB_UPSTREAM) },
                             leadingContent = { Icon(HugeIcons.Github, null) },
                             supportingContent = {
                                 Text(stringResource(R.string.about_page_upstream_desc))

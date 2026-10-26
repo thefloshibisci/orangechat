@@ -27,6 +27,8 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DrawerState
 import androidx.compose.material3.DrawerValue
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LocalContentColor
@@ -44,6 +46,7 @@ import androidx.compose.material3.adaptive.currentWindowDpSize
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.key
 import androidx.compose.ui.platform.LocalUriHandler
 import me.rerere.rikkahub.ui.components.workspace.LocalWorkspaceDownloadHandler
 import me.rerere.rikkahub.ui.components.workspace.rememberWorkspaceDownloadHandler
@@ -106,7 +109,6 @@ import me.rerere.rikkahub.R
 import me.rerere.rikkahub.Screen
 import me.rerere.rikkahub.data.datastore.DisplayMaterialMode
 import me.rerere.rikkahub.data.datastore.Settings
-import me.rerere.rikkahub.data.datastore.getAssistantById
 import me.rerere.rikkahub.data.datastore.findProvider
 import me.rerere.rikkahub.data.datastore.getCurrentAssistant
 import me.rerere.rikkahub.data.datastore.getCurrentChatModel
@@ -116,7 +118,9 @@ import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.service.ChatError
 import me.rerere.rikkahub.service.VoiceCallService
 import me.rerere.rikkahub.ui.components.ai.ChatInput
+import me.rerere.rikkahub.ui.components.ai.MessageQueuePanel
 import me.rerere.rikkahub.ui.components.message.LiveBubbleBlurContext
+import me.rerere.rikkahub.ui.components.message.LiveBubbleBlurGeometry
 import me.rerere.rikkahub.ui.components.message.LocalLiveBubbleBlur
 import me.rerere.rikkahub.ui.context.LocalNavController
 import me.rerere.rikkahub.ui.context.LocalToaster
@@ -289,6 +293,7 @@ fun ChatPage(id: Uuid, text: String?, files: List<Uri>, nodeId: Uuid? = null, au
         else -> {
             ModalNavigationDrawer(
                 drawerState = drawerState,
+                scrimColor = Color.Transparent,
                 drawerContent = {
                     ChatDrawerContent(
                         navController = navController,
@@ -350,12 +355,23 @@ private fun ChatPageContent(
     onClearAllErrors: () -> Unit,
 ) {
     val reactions by vm.reactions.collectAsStateWithLifecycle()
+    val messageQueue by vm.messageQueue.collectAsStateWithLifecycle()
     val reactionPresets = remember(setting.customReactionPresets) {
         effectiveChatReactionPresets(setting.customReactionPresets)
     }
     val scope = rememberCoroutineScope()
     val toaster = LocalToaster.current
     var previewMode by rememberSaveable { mutableStateOf(false) }
+    var showConversationSettings by rememberSaveable(conversation.id) { mutableStateOf(false) }
+    if (showConversationSettings) {
+        ConversationSettingsDialog(
+            conversation = conversation,
+            assistant = setting.getAssistantById(conversation.assistantId) ?: setting.getCurrentAssistant(),
+            onSave = vm::updateAssistant,
+            onReset = vm::resetConversationConfig,
+            onDismiss = { showConversationSettings = false },
+        )
+    }
 
     val workspaceHandler = rememberWorkspaceDownloadHandler(
         setting.getAssistantById(conversation.assistantId)?.workspaceId?.toString()
@@ -404,8 +420,7 @@ private fun ChatPageContent(
         }
     }
     // 背景容器窗口原点与像素尺寸（现有内容 Box 同时是 AssistantBackground 的容器）
-    var bubbleBlurBackgroundOrigin by remember { mutableStateOf(Offset.Unspecified) }
-    var bubbleBlurBackgroundSize by remember { mutableStateOf(Size.Unspecified) }
+    val bubbleBlurGeometry = remember { LiveBubbleBlurGeometry() }
     // 侧边栏抽屉模糊强度：继续由设置项控制，范围 3..20 dp（与设置页 Slider 一致）
     val blurRadiusPx = with(density) {
         setting.displaySetting.interfaceBlurRadius
@@ -461,11 +476,11 @@ private fun ChatPageContent(
                     // 气泡真实背景模糊：记录背景容器（内容 Box）窗口原点与像素尺寸
                     if (origin.isFinite && coordinates.size.width > 0 && coordinates.size.height > 0) {
                         val size = coordinates.size.toSize()
-                        if (origin != bubbleBlurBackgroundOrigin) {
-                            bubbleBlurBackgroundOrigin = origin
+                        if (origin != bubbleBlurGeometry.originInWindow) {
+                            bubbleBlurGeometry.originInWindow = origin
                         }
-                        if (size != bubbleBlurBackgroundSize) {
-                            bubbleBlurBackgroundSize = size
+                        if (size != bubbleBlurGeometry.sizePx) {
+                            bubbleBlurGeometry.sizePx = size
                         }
                     }
                 }
@@ -518,8 +533,7 @@ private fun ChatPageContent(
             LocalWorkspaceDownloadHandler provides workspaceHandler,
             LocalLiveBubbleBlur provides LiveBubbleBlurContext(
                 imageBitmap = if (enableLiveBubbleBlur) bubbleBlurBackgroundBitmap else null,
-                backgroundOriginInWindow = bubbleBlurBackgroundOrigin,
-                backgroundSizePx = bubbleBlurBackgroundSize,
+                geometry = bubbleBlurGeometry,
                 baseColor = chatBackgroundVisuals.baseColor,
                 imageAlpha = chatBackgroundVisuals.imageAlpha,
                 gradientTopAlpha = chatBackgroundVisuals.gradientTopAlpha,
@@ -546,6 +560,7 @@ private fun ChatPageContent(
                     onUpdateTitle = {
                         vm.updateTitle(it)
                     },
+                    onConversationSettings = { showConversationSettings = true },
                     onVoiceCall = {
                         val activeId = VoiceCallService.activeConversationId.value
                         when {
@@ -563,101 +578,128 @@ private fun ChatPageContent(
                 )
             },
             bottomBar = {
-                ChatInput(
-                    state = inputState,
-                    loading = loadingJob != null,
-                    settings = setting,
-                    conversation = conversation,
-                    mcpManager = vm.mcpManager,
-                    hazeState = hazeState,
-                    autoStartVoice = autoStartVoice,
-                    onCancelClick = {
-                        vm.stopGeneration()
-                    },
-                    enableSearch = enableWebSearch,
-                    onToggleSearch = {
-                        vm.updateSettings(setting.copy(enableWebSearch = !enableWebSearch))
-                    },
-                    onSendClick = {
-                        if (currentChatModel == null) {
-                            toaster.show("请先选择模型", type = ToastType.Error)
-                            return@ChatInput
-                        }
-                        if (inputState.isEditing()) {
-                            vm.handleMessageEdit(
-                                parts = inputState.getContents(),
-                                messageId = inputState.editingMessage!!,
+                Column {
+                    key(conversation.id) {
+                        MessageQueuePanel(
+                            state = messageQueue,
+                            onRemove = vm::removeQueuedMessage,
+                            onBeginEdit = vm::beginQueuedMessageEdit,
+                            onFinishEdit = vm::finishQueuedMessageEdit,
+                            onPause = vm::pauseMessageQueue,
+                            onResume = vm::resumeMessageQueue,
+                        )
+                    }
+                    ChatInput(
+                        state = inputState,
+                        loading = loadingJob != null,
+                        settings = setting,
+                        conversation = conversation,
+                        mcpManager = vm.mcpManager,
+                        hazeState = hazeState,
+                        autoStartVoice = autoStartVoice,
+                        onCancelClick = {
+                            vm.stopGeneration()
+                        },
+                        enableSearch = enableWebSearch,
+                        onToggleSearch = {
+                            vm.updateSettings(setting, setting.copy(enableWebSearch = it))
+                        },
+                        onSendClick = {
+                            if (currentChatModel == null) {
+                                toaster.show("请先选择模型", type = ToastType.Error)
+                                return@ChatInput
+                            }
+                            if (inputState.isEditing()) {
+                                if (loadingJob != null) {
+                                    toaster.show("请先停止当前回复，再保存历史消息的编辑", type = ToastType.Warning)
+                                    return@ChatInput
+                                }
+                                vm.handleMessageEdit(
+                                    parts = inputState.getContents(),
+                                    messageId = inputState.editingMessage!!,
+                                )
+                            } else {
+                                if (!vm.handleMessageSend(inputState.getContents())) {
+                                    toaster.show("消息未发送，输入内容已保留，请稍后重试", type = ToastType.Error)
+                                    return@ChatInput
+                                }
+                                scope.launch {
+                                    chatListState.requestScrollToItem(conversation.currentMessages.size + 5)
+                                }
+                            }
+                            inputState.clearInput()
+                        },
+                        onStickerSend = { markdown ->
+                            if (currentChatModel == null) {
+                                toaster.show("请先选择模型", type = ToastType.Error)
+                                return@ChatInput
+                            }
+                            vm.handleMessageSend(
+                                listOf(UIMessagePart.Text(markdown))
                             )
-                        } else {
-                            vm.handleMessageSend(inputState.getContents())
                             scope.launch {
                                 chatListState.requestScrollToItem(conversation.currentMessages.size + 5)
                             }
-                        }
-                        inputState.clearInput()
-                    },
-                    onStickerSend = { markdown ->
-                        if (currentChatModel == null) {
-                            toaster.show("请先选择模型", type = ToastType.Error)
-                            return@ChatInput
-                        }
-                        vm.handleMessageSend(
-                            listOf(UIMessagePart.Text(markdown))
-                        )
-                        scope.launch {
-                            chatListState.requestScrollToItem(conversation.currentMessages.size + 5)
-                        }
-                    },
-                    onVoiceMessage = { url, duration, transcript, sendAudio ->
-                        if (currentChatModel == null) {
-                            toaster.show("请先选择模型", type = ToastType.Error)
-                            return@ChatInput
-                        }
-                        vm.handleMessageSend(
-                            listOf(
-                                recordedVoicePart(url, duration, transcript, sendAudio)
+                        },
+                        onVoiceMessage = { url, duration, transcript, sendAudio ->
+                            if (currentChatModel == null) {
+                                toaster.show("请先选择模型", type = ToastType.Error)
+                                return@ChatInput
+                            }
+                            vm.handleMessageSend(
+                                listOf(
+                                    recordedVoicePart(url, duration, transcript, sendAudio)
+                                )
                             )
-                        )
-                        scope.launch {
-                            chatListState.requestScrollToItem(conversation.currentMessages.size + 5)
-                        }
-                    },
-                    onLongSendClick = {
-                        if (inputState.isEditing()) {
-                            vm.handleMessageEdit(
-                                parts = inputState.getContents(),
-                                messageId = inputState.editingMessage!!,
-                            )
-                        } else {
-                            vm.handleMessageSend(content = inputState.getContents(), answer = false)
                             scope.launch {
                                 chatListState.requestScrollToItem(conversation.currentMessages.size + 5)
                             }
-                        }
-                        inputState.clearInput()
-                    },
-                    onUpdateChatModel = {
-                        vm.setChatModel(
-                            assistant = setting.getAssistantById(conversation.assistantId) ?: setting.getCurrentAssistant(),
-                            model = it,
-                        )
-                    },
-                    onUpdateAssistant = { updated ->
-                        setting.assistants.find { it.id == updated.id }?.let { previous ->
-                            vm.updateAssistant(previous, updated)
-                        }
-                    },
-                    onUpdateSearchService = { index ->
-                        vm.updateSettings(
-                            setting.copy(
-                                searchServiceSelected = index
+                        },
+                        onLongSendClick = {
+                            if (inputState.isEditing()) {
+                                if (loadingJob != null) {
+                                    toaster.show("请先停止当前回复，再保存历史消息的编辑", type = ToastType.Warning)
+                                    return@ChatInput
+                                }
+                                vm.handleMessageEdit(
+                                    parts = inputState.getContents(),
+                                    messageId = inputState.editingMessage!!,
+                                )
+                            } else {
+                                if (!vm.handleMessageSend(content = inputState.getContents(), answer = false)) {
+                                    toaster.show("消息未发送，输入内容已保留，请稍后重试", type = ToastType.Error)
+                                    return@ChatInput
+                                }
+                                scope.launch {
+                                    chatListState.requestScrollToItem(conversation.currentMessages.size + 5)
+                                }
+                            }
+                            inputState.clearInput()
+                        },
+                        onUpdateChatModel = {
+                            vm.setChatModel(
+                                assistant = setting.getAssistantById(conversation.assistantId) ?: setting.getCurrentAssistant(),
+                                model = it,
                             )
-                        )
-                    },
-                    onCompressContext = { additionalPrompt, targetTokens, keepRecentMessages, mergeWithPrevious, onProgress ->
-                        vm.handleCompressContext(additionalPrompt, targetTokens, keepRecentMessages, mergeWithPrevious, onProgress)
-                    },
-                )
+                        },
+                        onUpdateAssistant = { updated ->
+                            setting.assistants.find { it.id == updated.id }?.let { previous ->
+                                vm.updateAssistant(previous, updated)
+                            }
+                        },
+                        onUpdateSetting = { vm.updateSettings(setting, it) },
+                        onUpdateSearchService = { index ->
+                            vm.updateSettings(
+                                setting, setting.copy(
+                                    searchServiceSelected = index
+                                )
+                            )
+                        },
+                        onCompressContext = { additionalPrompt, targetTokens, keepRecentMessages, mergeWithPrevious, onProgress ->
+                            vm.handleCompressContext(additionalPrompt, targetTokens, keepRecentMessages, mergeWithPrevious, onProgress)
+                        },
+                    )
+                }
             },
             containerColor = Color.Transparent,
         ) { innerPadding ->
@@ -810,9 +852,11 @@ private fun TopBar(
     onNewChat: () -> Unit,
     onUpdateTitle: (String) -> Unit,
     onVoiceCall: () -> Unit,
+    onConversationSettings: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
     val toaster = LocalToaster.current
+    var showOptions by remember { mutableStateOf(false) }
     val titleState = useEditState<String> {
         onUpdateTitle(it)
     }
@@ -875,12 +919,20 @@ private fun TopBar(
                 Icon(HugeIcons.Voice, "Voice Call")
             }
 
-            IconButton(
-                onClick = {
-                    onClickMenu()
+            Box {
+                IconButton(onClick = { showOptions = true }) {
+                    Icon(if (previewMode) HugeIcons.Cancel01 else HugeIcons.LeftToRightListBullet, "会话菜单")
                 }
-            ) {
-                Icon(if (previewMode) HugeIcons.Cancel01 else HugeIcons.LeftToRightListBullet, "Chat Options")
+                DropdownMenu(expanded = showOptions, onDismissRequest = { showOptions = false }) {
+                    DropdownMenuItem(text = { Text("会话设置") }, onClick = {
+                        showOptions = false
+                        onConversationSettings()
+                    })
+                    DropdownMenuItem(text = { Text(if (previewMode) "退出预览" else "预览对话") }, onClick = {
+                        showOptions = false
+                        onClickMenu()
+                    })
+                }
             }
 
             IconButton(

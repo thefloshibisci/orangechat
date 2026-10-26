@@ -38,6 +38,15 @@ class AssistantGenerationParamsTest {
     private val history = listOf(UIMessage.user("question"))
 
     @Test
+    fun `official OpenCode receives conversation identity while lookalikes do not`() {
+        val assistant = Assistant()
+        for (url in listOf("https://opencode.ai/inference/go/v1", "https://opencode.ai/zen/v1")) {
+            assertEquals("conversation-one", params(assistant, provider = provider.copy(baseUrl = url)).conversationId)
+        }
+        assertNull(params(assistant, provider = provider.copy(baseUrl = "https://opencode.ai.example/v1")).conversationId)
+    }
+
+    @Test
     fun `unset sampling stays absent in regular and proactive provider requests`() {
         val assistant = Assistant()
         val regular = params(assistant, tools = listOf(tool("lookup")))

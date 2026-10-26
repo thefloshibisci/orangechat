@@ -46,4 +46,6 @@ data class ConversationEntity(
     val legacyCompressedSummary: String = "",
     @ColumnInfo("compression_history", defaultValue = "'[]'")
     val compressionHistory: String = "[]",
+    @ColumnInfo("conversation_config", defaultValue = "''")
+    val config: String = "",
 )

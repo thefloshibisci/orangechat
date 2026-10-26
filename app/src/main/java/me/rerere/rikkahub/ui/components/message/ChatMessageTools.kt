@@ -82,9 +82,7 @@ import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
-import kotlinx.serialization.json.jsonArray
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
+import me.rerere.common.http.jsonArrayOrNull
 import me.rerere.ai.ui.ToolApprovalState
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.common.http.jsonObjectOrNull
@@ -266,8 +264,8 @@ fun ChainOfThoughtScope.ChatMessageToolStep(
 
         ToolNames.ZIP_FILES, ToolNames.WRITE_FILES -> {
             val zipName = arguments.getStringContent("zip_name") ?: ""
-            val fileCount = arguments.jsonObject.get("files")?.jsonArray?.size ?: 0
-            val editCount = arguments.jsonObject.get("edits")?.jsonArray?.size ?: 0
+            val fileCount = arguments.jsonObjectOrNull?.get("files")?.jsonArrayOrNull?.size ?: 0
+            val editCount = arguments.jsonObjectOrNull?.get("edits")?.jsonArrayOrNull?.size ?: 0
             val isEdit = arguments.getStringContent("base_files") == "previous" && editCount > 0
             when {
                 isEdit && zipName.isNotBlank() -> "✏️ $zipName ($editCount edits)"
@@ -314,7 +312,7 @@ fun ChainOfThoughtScope.ChatMessageToolStep(
             content.getStringContent("content") != null
 
         ToolNames.SEARCH_WEB -> content.getStringContent("answer") != null ||
-            (content?.jsonObject?.get("items")?.jsonArray?.isNotEmpty() == true)
+            (content?.jsonObjectOrNull?.get("items")?.jsonArrayOrNull?.isNotEmpty() == true)
 
         ToolNames.SCRAPE_WEB -> arguments.getStringContent("url") != null
         ToolNames.TTS -> arguments.getStringContent("text") != null
@@ -420,7 +418,7 @@ fun ChainOfThoughtScope.ChatMessageToolStep(
                                 overflow = TextOverflow.Ellipsis,
                             )
                         }
-                        val items = content?.jsonObject?.get("items")?.jsonArray ?: emptyList()
+                        val items = content?.jsonObjectOrNull?.get("items")?.jsonArrayOrNull ?: emptyList()
                         if (items.isNotEmpty()) {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
@@ -456,13 +454,13 @@ fun ChainOfThoughtScope.ChatMessageToolStep(
                     if ((tool.toolName == ToolNames.ZIP_FILES || tool.toolName == ToolNames.WRITE_FILES) && tool.isExecuted && content != null) {
                         val context = LocalContext.current
                         val zipName = content.getStringContent("zip_name") ?: "files.zip"
-                        val totalFiles = content.jsonObject.get("total_files")?.jsonPrimitive?.contentOrNull?.toIntOrNull()
-                            ?: content.jsonObject.get("files")?.jsonArray?.size ?: 0
+                        val totalFiles = content.getStringContent("total_files")?.toIntOrNull()
+                            ?: content.jsonObjectOrNull?.get("files")?.jsonArrayOrNull?.size ?: 0
 
                         // 从工具执行结果中读取确切文件内容（不再猜数据源）
                         // write_files 工具现在在输出 JSON 中包含 files_content 字段
                         val fileContents = remember(content) {
-                            val filesContentObj = content.jsonObject["files_content"]?.jsonObject
+                            val filesContentObj = content.jsonObjectOrNull?.get("files_content")?.jsonObjectOrNull
                             if (filesContentObj != null) {
                                 filesContentObj.entries.mapNotNull { (name, element) ->
                                     runCatching {
@@ -471,13 +469,10 @@ fun ChainOfThoughtScope.ChatMessageToolStep(
                                 }
                             } else {
                                 // 向后兼容: 如果工具结果中没有 files_content, 尝试从 arguments 提取 (full write 模式)
-                                arguments.jsonObject.get("files")?.jsonArray?.mapNotNull { fileElement ->
-                                    runCatching {
-                                        val obj = fileElement.jsonObject
-                                        val name = obj["name"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
-                                        val fileContent = obj["content"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
-                                        name to fileContent
-                                    }.getOrNull()
+                                arguments.jsonObjectOrNull?.get("files")?.jsonArrayOrNull?.mapNotNull { fileElement ->
+                                    val name = fileElement.getStringContent("name") ?: return@mapNotNull null
+                                    val fileContent = fileElement.getStringContent("content") ?: return@mapNotNull null
+                                    name to fileContent
                                 } ?: emptyList()
                             }
                         }
@@ -736,7 +731,7 @@ private fun SearchWebPreview(
     content: JsonElement,
 ) {
     val context = LocalContext.current
-    val items = content.jsonObject["items"]?.jsonArray ?: emptyList()
+    val items = content.jsonObjectOrNull?.get("items")?.jsonArrayOrNull ?: emptyList()
     val answer = content.getStringContent("answer")
     val query = arguments.getStringContent("query") ?: ""
 
@@ -823,7 +818,7 @@ private fun SearchWebPreview(
 
 @Composable
 private fun ScrapeWebPreview(content: JsonElement) {
-    val urls = content.jsonObject["urls"]?.jsonArray ?: emptyList()
+    val urls = content.jsonObjectOrNull?.get("urls")?.jsonArrayOrNull ?: emptyList()
 
     LazyColumn(
         modifier = Modifier
@@ -841,20 +836,20 @@ private fun ScrapeWebPreview(content: JsonElement) {
         }
 
         items(urls) { url ->
-            val urlObject = url.jsonObject
+            val urlObject = url.jsonObjectOrNull ?: return@items
             Column(
                 modifier = Modifier.fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
                 Text(
-                    text = urlObject["url"]?.jsonPrimitive?.content ?: "",
+                    text = urlObject.getStringContent("url") ?: "",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f),
                     modifier = Modifier.fillMaxWidth()
                 )
                 Card {
                     MarkdownBlock(
-                        content = urlObject["content"]?.jsonPrimitive?.content ?: "",
+                        content = urlObject.getStringContent("content") ?: "",
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(8.dp)
@@ -971,13 +966,13 @@ private fun ChainOfThoughtScope.AskUserToolStep(
     // Parse questions from arguments
     val questions = remember(arguments) {
         runCatching {
-            arguments.jsonObject["questions"]?.jsonArray?.map { q ->
-                val obj = q.jsonObject
+            arguments.jsonObjectOrNull?.get("questions")?.jsonArrayOrNull?.mapNotNull { q ->
+                val obj = q.jsonObjectOrNull ?: return@mapNotNull null
                 AskUserQuestion(
-                    id = obj["id"]?.jsonPrimitive?.contentOrNull ?: "",
-                    question = obj["question"]?.jsonPrimitive?.contentOrNull ?: "",
-                    options = obj["options"]?.jsonArray?.mapNotNull { it.jsonPrimitive.contentOrNull } ?: emptyList(),
-                    selectionType = obj["selection_type"]?.jsonPrimitive?.contentOrNull ?: "text"
+                    id = obj.getStringContent("id") ?: return@mapNotNull null,
+                    question = obj.getStringContent("question") ?: return@mapNotNull null,
+                    options = obj["options"]?.jsonArrayOrNull?.mapNotNull { it.jsonPrimitiveOrNull?.contentOrNull } ?: emptyList(),
+                    selectionType = obj.getStringContent("selection_type") ?: "text"
                 )
             } ?: emptyList()
         }.getOrElse { emptyList() }
@@ -1125,8 +1120,8 @@ private fun ChainOfThoughtScope.AskUserToolStep(
                             val answerJson = runCatching {
                                 JsonInstant.parseToJsonElement(answeredState.answer)
                             }.getOrNull()
-                            val answerText = answerJson?.jsonObject?.get("answers")
-                                ?.jsonObject?.get(q.id)?.jsonPrimitive?.contentOrNull
+                            val answerText = answerJson?.jsonObjectOrNull?.get("answers")
+                                ?.getStringContent(q.id)
                                 ?: answeredState.answer
                             Text(
                                 text = answerText,

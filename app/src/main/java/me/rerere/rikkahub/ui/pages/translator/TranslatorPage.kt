@@ -11,6 +11,7 @@ import me.rerere.rikkahub.ui.pages.setting.settingsScaffoldContainerColor
 import android.content.ClipData
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.Clipboard
+import me.rerere.hugeicons.stroke.Clock02
 import me.rerere.hugeicons.stroke.LanguageCircle
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
@@ -36,6 +37,7 @@ import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.FloatingActionButtonDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearWavyProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MenuAnchorType
@@ -51,6 +53,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
@@ -81,6 +84,7 @@ fun TranslatorPage(vm: TranslatorVM = koinViewModel()) {
     val clipboard = LocalClipboard.current
     val toaster = LocalToaster.current
     val scope = rememberCoroutineScope()
+    var showHistory by rememberSaveable { mutableStateOf(false) }
 
     // 处理错误
     LaunchedEffect(Unit) {
@@ -100,6 +104,9 @@ fun TranslatorPage(vm: TranslatorVM = koinViewModel()) {
                     BackButton()
                 },
                 actions = {
+                    IconButton(onClick = { showHistory = true }) {
+                        Icon(HugeIcons.Clock02, contentDescription = "翻译历史")
+                    }
                     ModelSelector(
                         modelId = settings.translateModeId,
                         onSelect = {
@@ -211,6 +218,19 @@ fun TranslatorPage(vm: TranslatorVM = koinViewModel()) {
                 }
             }
         }
+    }
+
+    if (showHistory) {
+        TranslationHistorySheet(
+            history = vm.history,
+            onRestore = {
+                vm.restoreHistory(it)
+                showHistory = false
+            },
+            onDelete = vm::deleteHistory,
+            onClear = vm::clearHistory,
+            onDismiss = { showHistory = false },
+        )
     }
 }
 

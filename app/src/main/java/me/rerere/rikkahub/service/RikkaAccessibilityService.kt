@@ -67,6 +67,7 @@ class RikkaAccessibilityService : AccessibilityService() {
     }
 
     override fun onUnbind(intent: android.content.Intent?): Boolean {
+        me.rerere.rikkahub.data.service.AppLockGuard.onServiceDisconnected()
         instance = null
         _running.value = false
         _lastActions.value = emptyList()
@@ -75,6 +76,7 @@ class RikkaAccessibilityService : AccessibilityService() {
     }
 
     override fun onDestroy() {
+        me.rerere.rikkahub.data.service.AppLockGuard.onServiceDisconnected()
         instance = null
         _running.value = false
         gestureHandlerThread.quitSafely()
@@ -83,6 +85,9 @@ class RikkaAccessibilityService : AccessibilityService() {
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        if (event?.eventType == AccessibilityEvent.TYPE_WINDOWS_CHANGED) {
+            me.rerere.rikkahub.data.service.AppLockGuard.onWindowsChanged()
+        }
         // Phase 12 — feed foreground-app transitions to the workflow trigger dispatcher.
         // We only care about TYPE_WINDOW_STATE_CHANGED and only when the package name is
         // present. The dispatcher itself de-dupes (skips no-op transitions) and dispatches
@@ -90,6 +95,7 @@ class RikkaAccessibilityService : AccessibilityService() {
         if (event?.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
             val pkg = event.packageName?.toString()
             if (!pkg.isNullOrBlank()) {
+                me.rerere.rikkahub.data.service.AppLockGuard.onForegroundChange(pkg)
                 me.rerere.rikkahub.workflow.trigger.AppForegroundDispatcher.onForegroundChange(pkg)
             }
         }
@@ -99,12 +105,18 @@ class RikkaAccessibilityService : AccessibilityService() {
         // Required override; no-op.
     }
 
-    fun currentApplicationPackage(): String? {
-        val application = windows.firstOrNull {
-            it.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_APPLICATION &&
-                (it.isActive || it.isFocused)
-        }?.root
-        val root = application ?: rootInActiveWindow ?: return null
+    fun currentApplicationPackage(beneathOverlay: Boolean = false): String? {
+        val applicationWindows = windows.filter {
+            it.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_APPLICATION
+        }
+        val application = (applicationWindows.firstOrNull {
+            it.isActive || it.isFocused
+        } ?: if (beneathOverlay) applicationWindows.firstOrNull() else null)?.root
+        val root = application ?: run {
+            // Lock exits must not mistake our overlay's active root for the app below it.
+            if (beneathOverlay) return null
+            rootInActiveWindow ?: return null
+        }
         return try {
             root.packageName?.toString()?.takeIf { it.isNotBlank() }
         } finally {

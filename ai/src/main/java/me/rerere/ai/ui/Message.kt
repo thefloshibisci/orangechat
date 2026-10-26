@@ -13,6 +13,8 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 import me.rerere.ai.core.MessageRole
 import me.rerere.ai.core.TokenUsage
 import me.rerere.ai.provider.Model
@@ -20,6 +22,11 @@ import me.rerere.ai.util.json
 import kotlin.time.Clock
 import kotlin.time.Instant
 import kotlin.uuid.Uuid
+
+private fun UIMessagePart.hasThoughtSignature(): Boolean =
+    listOf("thoughtSignature", "thought_signature").any { key ->
+        (metadata?.get(key) as? JsonPrimitive)?.contentOrNull?.isNotBlank() == true
+    }
 
 // 公共消息抽象, 具体的Provider实现会转换为API接口需要的DTO
 @Serializable
@@ -38,19 +45,34 @@ data class UIMessage(
     private fun appendChunk(chunk: MessageChunk): UIMessage {
         val choice = chunk.choices.getOrNull(0)
         val message = choice?.delta ?: choice?.message
+        if (chunk.replaceContent && message != null) {
+            return copy(
+                parts = parts.dropLast(chunk.replacedParts) + message.parts,
+                annotations = annotations.dropLast(chunk.replacedAnnotations) + message.annotations,
+            )
+        }
         return message?.let { delta ->
             // Handle Parts
             var newParts = delta.parts.fold(parts) { acc, deltaPart ->
                 when (deltaPart) {
                     is UIMessagePart.Text -> {
-                        // Skip empty text deltas
-                        if (deltaPart.text.isEmpty()) {
+                        // A Gemini streaming part may carry only a thought signature and an
+                        // empty text value. Keep that metadata so it survives history replay.
+                        if (deltaPart.text.isEmpty() && deltaPart.metadata == null) {
                             acc
                         } else {
                             val lastPart = acc.lastOrNull()
-                            if (lastPart is UIMessagePart.Text) {
+                            // Signed parts must keep their original boundaries, including a
+                            // signature-only final streaming part. Never overwrite a signature
+                            // or attach it to text from a different part.
+                            if (lastPart is UIMessagePart.Text &&
+                                !lastPart.hasThoughtSignature() && !deltaPart.hasThoughtSignature()
+                            ) {
                                 // Append to the last Text part
-                                acc.dropLast(1) + lastPart.copy(text = lastPart.text + deltaPart.text)
+                                acc.dropLast(1) + lastPart.copy(
+                                    text = lastPart.text + deltaPart.text,
+                                    metadata = deltaPart.metadata ?: lastPart.metadata
+                                )
                             } else {
                                 // Create new Text part
                                 acc + deltaPart
@@ -81,7 +103,9 @@ data class UIMessage(
                             acc
                         } else {
                             val lastPart = acc.lastOrNull()
-                            if (lastPart is UIMessagePart.Reasoning) {
+                            if (lastPart is UIMessagePart.Reasoning &&
+                                !lastPart.hasThoughtSignature() && !deltaPart.hasThoughtSignature()
+                            ) {
                                 // Append to the last Reasoning part
                                 acc.dropLast(1) + UIMessagePart.Reasoning(
                                     reasoning = lastPart.reasoning + deltaPart.reasoning,
@@ -810,6 +834,11 @@ data class MessageChunk(
     val model: String,
     val choices: List<UIMessageChoice>,
     val usage: TokenUsage? = null,
+    // Used only by providers emitting complete snapshots of their current request's output.
+    val replaceContent: Boolean = false,
+    // Snapshot providers replace only their previous emission, preserving earlier tool rounds.
+    val replacedParts: Int = 0,
+    val replacedAnnotations: Int = 0,
 )
 
 @Serializable

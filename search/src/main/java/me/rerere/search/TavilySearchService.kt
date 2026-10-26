@@ -98,7 +98,7 @@ object TavilySearchService : SearchService<SearchServiceOptions.TavilyOptions> {
                 put("max_results", commonOptions.resultSize)
                 put("search_depth", serviceOptions.depth.ifEmpty { "advanced" })
                 put("topic", topic)
-                put("include_answer", "advanced")
+                put("include_answer", false)
             }
             val apiKey = keyRoulette.next(serviceOptions.apiKey, serviceOptions.id.toString())
 

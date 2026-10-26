@@ -149,21 +149,29 @@ fun SettingSpeechPage(vm: SettingVM = koinViewModel()) {
         modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
         containerColor = settingsScaffoldContainerColor(CustomColors.topBarColors.containerColor),
     ) { innerPadding ->
+        Column(modifier = Modifier.padding(innerPadding)) {
+            VoiceCallListeningSetting(
+                enabled = settings.voiceCallKeepListeningDuringReply,
+                onEnabledChange = { enabled ->
+                    vm.updateSettings(settings.copy(voiceCallKeepListeningDuringReply = enabled))
+                },
+            )
         when (selectedPage) {
             0 -> TTSProviderList(
                 settings = settings,
                 onUpdateSettings = vm::updateSettings,
                 onEdit = { editingTTSProvider = it },
-                modifier = Modifier.padding(innerPadding)
+                modifier = Modifier.weight(1f)
             )
 
             1 -> ASRProviderList(
                 settings = settings,
                 onUpdateSettings = vm::updateSettings,
                 onEdit = { editingASRProvider = it },
-                modifier = Modifier.padding(innerPadding)
+                modifier = Modifier.weight(1f)
             )
 
+        }
         }
     }
 
@@ -292,6 +300,25 @@ fun SettingSpeechPage(vm: SettingVM = koinViewModel()) {
                 }
             }
         }
+    }
+}
+
+@Composable
+internal fun VoiceCallListeningSetting(enabled: Boolean, onEnabledChange: (Boolean) -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+        horizontalArrangement = Arrangement.spacedBy(16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text("回复期间继续监听", style = MaterialTheme.typography.titleSmall)
+            Text(
+                "语音通话中，开启后可说话打断朗读；关闭后，生成和朗读期间暂停监听，结束后恢复。静音始终优先。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Switch(checked = enabled, onCheckedChange = onEnabledChange)
     }
 }
 

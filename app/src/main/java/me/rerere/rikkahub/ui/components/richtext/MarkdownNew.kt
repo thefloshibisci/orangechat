@@ -82,47 +82,10 @@ import me.rerere.rikkahub.ui.components.table.DataTable
 import me.rerere.rikkahub.ui.context.LocalSettings
 import me.rerere.rikkahub.ui.theme.JetbrainsMono
 import me.rerere.rikkahub.utils.toDp
-import org.intellij.markdown.flavours.gfm.GFMFlavourDescriptor
-import org.intellij.markdown.html.HtmlGenerator
-import org.intellij.markdown.parser.MarkdownParser
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 import org.jsoup.nodes.Node
 import org.jsoup.nodes.TextNode
-
-// ---- Preprocessing (mirrors Markdown.kt logic) ----
-
-private val INLINE_LATEX_REGEX = Regex("\\\\\\((.+?)\\\\\\)")
-private val BLOCK_LATEX_REGEX = Regex("\\\\\\[(.+?)\\\\\\]", RegexOption.DOT_MATCHES_ALL)
-private val CODE_BLOCK_REGEX = Regex("```[\\s\\S]*?```|`[^`\n]*`", RegexOption.DOT_MATCHES_ALL)
-
-private fun preProcess(content: String): String {
-    val codeBlocks = mutableListOf<IntRange>()
-    CODE_BLOCK_REGEX.findAll(content).forEach { codeBlocks.add(it.range) }
-    fun isInCodeBlock(pos: Int) = codeBlocks.any { pos in it }
-
-    var result = INLINE_LATEX_REGEX.replace(content) { m ->
-        if (isInCodeBlock(m.range.first)) m.value else "$" + m.groupValues[1] + "$"
-    }
-    result = BLOCK_LATEX_REGEX.replace(result) { m ->
-        if (isInCodeBlock(m.range.first)) m.value else "$$" + m.groupValues[1] + "$$"
-    }
-    return result
-}
-
-// ---- HTML generation ----
-
-private val flavour by lazy {
-    GFMFlavourDescriptor(makeHttpsAutoLinks = true, useSafeLinks = true)
-}
-
-private val parser by lazy { MarkdownParser(flavour) }
-
-private fun generateMarkdownHtml(content: String): String {
-    val preprocessed = preProcess(content)
-    val tree = parser.buildMarkdownTreeFromString(preprocessed)
-    return HtmlGenerator(preprocessed, tree, flavour).generateHtml()
-}
 
 // ---- Main composable ----
 

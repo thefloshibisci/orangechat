@@ -60,7 +60,7 @@ class MessageReactionMigrationTest {
         val migrated = room(name)
         try {
             val db = migrated.openHelper.writableDatabase
-            assertEquals(34, db.version)
+            assertEquals(42, db.version)
             db.query("SELECT COUNT(*) FROM ConversationEntity").use {
                 assertTrue(it.moveToFirst())
                 assertEquals(1, it.getInt(0))

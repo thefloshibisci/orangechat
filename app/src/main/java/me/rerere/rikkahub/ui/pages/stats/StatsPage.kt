@@ -62,6 +62,7 @@ import java.time.temporal.TemporalAdjusters
 @Composable
 fun StatsPage(vm: StatsVM = koinViewModel()) {
     val stats by vm.stats.collectAsStateWithLifecycle()
+    val usage by vm.usageStats.collectAsStateWithLifecycle()
 
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
 
@@ -92,6 +93,14 @@ fun StatsPage(vm: StatsVM = koinViewModel()) {
                 contentPadding = padding + PaddingValues(8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
+                item {
+                    RequestUsageCard(
+                        state = usage,
+                        onRangeChange = vm::setUsageRange,
+                        onRetry = vm::refreshUsage,
+                        modifier = Modifier.padding(horizontal = 8.dp),
+                    )
+                }
                 item {
                     HeatmapCard(
                         conversationsPerDay = stats.conversationsPerDay,

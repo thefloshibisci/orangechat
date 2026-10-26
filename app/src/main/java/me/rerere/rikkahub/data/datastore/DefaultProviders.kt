@@ -293,4 +293,18 @@ val DEFAULT_PROVIDERS = listOf(
             )
         }
     ),
+    ProviderSetting.OpenAI(
+        id = Uuid.parse("703ec8d1-1352-46d9-a725-bd647f0b7dd0"),
+        name = "OpenCode Go",
+        baseUrl = "https://opencode.ai/inference/go/v1",
+        enabled = false,
+        builtIn = true,
+    ),
+    ProviderSetting.OpenAI(
+        id = Uuid.parse("86312f4a-7581-48c3-b035-56919d2f9393"),
+        name = "OpenCode Zen",
+        baseUrl = "https://opencode.ai/inference/v1",
+        enabled = false,
+        builtIn = true,
+    ),
 )

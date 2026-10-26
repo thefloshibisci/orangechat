@@ -77,6 +77,9 @@ fun WorkspacePage() {
     val resources = LocalResources.current
 
     var showAddDialog by rememberSaveable { mutableStateOf(false) }
+    var showCreateChoice by remember { mutableStateOf(false) }
+    var showSshDialog by remember { mutableStateOf(false) }
+    var editSsh by remember { mutableStateOf<WorkspaceEntity?>(null) }
     var deleteTarget by remember { mutableStateOf<WorkspaceEntity?>(null) }
     var renameTarget by remember { mutableStateOf<WorkspaceEntity?>(null) }
 
@@ -90,7 +93,7 @@ fun WorkspacePage() {
             )
         },
         floatingActionButton = {
-            FloatingActionButton(onClick = { showAddDialog = true }) {
+            FloatingActionButton(onClick = { showCreateChoice = true }) {
                 Icon(HugeIcons.Add01, contentDescription = null)
             }
         },
@@ -137,11 +140,31 @@ fun WorkspacePage() {
                     onClick = { navController.navigate(Screen.WorkspaceDetail(workspace.id)) },
                     onDelete = { deleteTarget = workspace },
                     onRename = { renameTarget = workspace },
+                    onEditSsh = { editSsh = workspace; showSshDialog = true },
                 )
             }
         }
     }
 
+    if (showCreateChoice) {
+        AlertDialog(
+            onDismissRequest = { showCreateChoice = false },
+            title = { Text("添加工作区") },
+            text = { Text("选择此工作区保存和执行文件的位置。") },
+            confirmButton = {
+                TextButton(onClick = { showCreateChoice = false; editSsh = null; showSshDialog = true }) {
+                    Text("远程 SSH 工作区")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCreateChoice = false; showAddDialog = true }) { Text("本地工作区") }
+            },
+        )
+    }
+    if (showSshDialog) {
+        WorkspaceSshDialog(existing = editSsh, onDismiss = { showSshDialog = false },
+            onSaved = { showSshDialog = false })
+    }
     if (showAddDialog) {
         AddWorkspaceDialog(
             onDismiss = { showAddDialog = false },
@@ -167,7 +190,9 @@ fun WorkspacePage() {
         },
         onDismiss = { deleteTarget = null },
     ) {
-        Text(stringResource(R.string.workspace_page_delete_message, deleteTarget?.name ?: ""))
+        Text(if (deleteTarget?.isSsh() == true) {
+            "仅移除此 SSH 工作区的连接配置，不删除服务器上的文件。"
+        } else stringResource(R.string.workspace_page_delete_message, deleteTarget?.name ?: ""))
     }
 
     renameTarget?.let { workspace ->
@@ -191,6 +216,7 @@ private fun WorkspaceCard(
     onClick: () -> Unit,
     onDelete: () -> Unit,
     onRename: () -> Unit,
+    onEditSsh: () -> Unit,
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
     val status = runCatching { WorkspaceShellStatus.valueOf(workspace.shellStatus) }
@@ -224,7 +250,9 @@ private fun WorkspaceCard(
                     style = MaterialTheme.typography.titleSmallEmphasized,
                 )
                 Text(
-                    text = stringResource(workspaceStatusLabel(status)),
+                    text = if (workspace.isSsh()) {
+                        workspace.sshSettings()?.let { "SSH · ${it.username}@${it.host}:${it.port}" } ?: "SSH · 配置无效"
+                    } else stringResource(workspaceStatusLabel(status)),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -241,6 +269,10 @@ private fun WorkspaceCard(
                     onDismissRequest = { menuExpanded = false },
                     border = materialModeBorderStroke(),
                 ) {
+                    if (workspace.isSsh()) DropdownMenuItem(
+                        text = { Text("编辑 SSH 连接") },
+                        onClick = { menuExpanded = false; onEditSsh() },
+                    )
                     DropdownMenuItem(
                         text = { Text(stringResource(R.string.workspace_page_rename)) },
                         onClick = {

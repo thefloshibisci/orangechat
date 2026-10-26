@@ -14,6 +14,21 @@ import org.junit.Test
 
 class DefaultProvidersTest {
     @Test
+    fun `OpenCode presets use separate current Go and Zen catalogs and start disabled`() {
+        val providers = DEFAULT_PROVIDERS.filterIsInstance<ProviderSetting.OpenAI>()
+        val go = providers.single { it.name == "OpenCode Go" }
+        val zen = providers.single { it.name == "OpenCode Zen" }
+        assertEquals("https://opencode.ai/inference/go/v1", go.baseUrl)
+        assertEquals("https://opencode.ai/inference/v1", zen.baseUrl)
+        for (provider in listOf(go, zen)) {
+            assertFalse(provider.enabled)
+            assertTrue(provider.builtIn)
+            assertEquals("", provider.apiKey)
+        }
+        assertEquals(DEFAULT_PROVIDERS.size, DEFAULT_PROVIDERS.map { it.id }.distinct().size)
+    }
+
+    @Test
     fun `default providers should include vercel ai gateway with expected balance config`() {
         val vercelProviders = DEFAULT_PROVIDERS
             .filterIsInstance<ProviderSetting.OpenAI>()

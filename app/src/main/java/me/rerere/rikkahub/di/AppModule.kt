@@ -89,6 +89,8 @@ val appModule = module {
             workspaceRepository = get(),
             json = get(),
             memoryRepository = get(),
+            localScenes = get(),
+            localSceneSettings = get(),
         )
     }
 
@@ -155,6 +157,8 @@ val appModule = module {
             memoryBankService = get(),
             folderRepository = get(),
             extraInfoInjectionCollector = get(),
+            sereinHookRepository = get(),
+            usageRecorder = get(),
         )
     }
 

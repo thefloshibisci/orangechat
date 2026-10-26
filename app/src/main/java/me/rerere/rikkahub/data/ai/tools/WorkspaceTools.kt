@@ -24,6 +24,7 @@ import me.rerere.workspace.WorkspaceManager
 import me.rerere.workspace.WorkspaceStorageArea
 import org.koin.java.KoinJavaComponent.getKoin
 import java.io.ByteArrayOutputStream
+import java.io.OutputStream
  
 private const val SHELL_TIMEOUT_MAX_SECONDS = 600L
 private const val MAX_READ_FILE_BYTES = 8L * 1024 * 1024
@@ -47,7 +48,7 @@ suspend fun createWorkspaceTools(
     val approvalOverrides = workspaceRepository.getById(workspaceId)?.toolApprovalOverrides().orEmpty()
     fun needsApproval(name: String) = resolveWorkspaceToolApproval(name, approvalOverrides)
  
-    val shellCwd = cwd?.removePrefix("/workspace/")?.removePrefix("/workspace")
+    val shellCwd = cwd
  
     return listOf(
         createReadFileTool(workspaceId, needsApproval("workspace_read_file"), workspaceRepository),
@@ -69,8 +70,8 @@ private fun createReadFileTool(
 ) = Tool(
     name = "workspace_read_file",
     description = """
-        Read a file using the assistant's bound workspace Rootfs. Paths must be absolute inside Rootfs.
-        Use /workspace for the workspace files area.
+        Read a file using the assistant's bound workspace execution environment. Paths must be absolute inside Rootfs.
+        Use the workspace directory given in the system instructions.
         Supports UTF-8 text files and image files (png, jpg, jpeg, gif, webp, bmp).
     """.trimIndent().replace("\n", " "),
     parameters = {
@@ -107,8 +108,8 @@ private fun createWriteFileTool(
 ) = Tool(
     name = "workspace_write_file",
     description = """
-        Write a UTF-8 text file using the assistant's bound workspace Rootfs. Paths must be absolute inside Rootfs.
-        Use /workspace for the workspace files area.
+        Write a UTF-8 text file using the assistant's bound workspace execution environment. Paths must be absolute inside Rootfs.
+        Use the workspace directory given in the system instructions.
     """.trimIndent().replace("\n", " "),
     parameters = {
         InputSchema.Obj(
@@ -144,8 +145,8 @@ private fun createEditFileTool(
 ) = Tool(
     name = "workspace_edit_file",
     description = """
-        Edit a UTF-8 text file using the assistant's bound workspace Rootfs. Paths must be absolute inside Rootfs.
-        Use /workspace for the workspace files area.
+        Edit a UTF-8 text file using the assistant's bound workspace execution environment. Paths must be absolute inside Rootfs.
+        Use the workspace directory given in the system instructions.
         Provide old_text and new_text. By default old_text must occur exactly once; set replace_all=true to replace every occurrence.
         If no exact match is found, whitespace-tolerant line matching is attempted automatically.
     """.trimIndent().replace("\n", " "),
@@ -214,12 +215,12 @@ private fun createShellTool(
 ) = Tool(
     name = "workspace_shell",
     description = buildString {
-        append("Run a shell command in the assistant's bound workspace Rootfs. The workspace files area is mounted at /workspace. ")
+        append("Run a shell command in the assistant's bound workspace execution environment. See the workspace system instructions for its working directory. ")
         append("Use cwd for a path relative to the workspace files root. ")
         if (!defaultCwd.isNullOrBlank()) {
             append("Defaults to '$defaultCwd'. ")
         }
-        append("Requires Rootfs to be installed and ready.")
+        append("Requires the workspace to be ready.")
     },
     parameters = {
         InputSchema.Obj(
@@ -254,8 +255,9 @@ private fun createShellTool(
     execute = {
         val params = it.jsonObject
         val command = params.string("command") ?: error("command is required")
-        val cwd = (params.string("cwd") ?: defaultCwd.orEmpty())
-            .removePrefix("/workspace/").removePrefix("/workspace")
+        val layout = checkNotNull(workspaceRepository.layout(workspaceId)) { "Workspace not found" }
+        val cwd = layout.relativeToWorkspace(params.string("cwd") ?: defaultCwd.orEmpty())
+        require(!cwd.startsWith('/')) { "cwd must be inside the bound workspace directory" }
         val timeoutMillis = params.string("timeout")?.toLongOrNull()
             ?.coerceIn(1L, SHELL_TIMEOUT_MAX_SECONDS)
             ?.times(1_000L)
@@ -282,20 +284,20 @@ private suspend fun WorkspaceRepository.readTextInRootfs(
     workspaceId: String,
     path: String,
 ): String {
-    val (area, relativePath) = rootfsPathToAreaAndRelative(path)
+    val (area, relativePath) = rootfsPathToAreaAndRelative(path, layout(workspaceId)?.workspaceDir ?: "/workspace")
     val size = fileSize(workspaceId, area, relativePath)
     require(size <= MAX_READ_FILE_BYTES) {
         "File is too large to read: $path (${size / 1024 / 1024}MB, max ${MAX_READ_FILE_BYTES / 1024 / 1024}MB). Use shell commands like head, tail, or grep to read parts of it."
     }
     val buffer = ByteArrayOutputStream(size.toInt())
-    exportFile(workspaceId, area, relativePath, buffer)
+    exportFile(workspaceId, area, relativePath, boundedWorkspaceOutput(buffer, MAX_READ_FILE_BYTES))
     return buffer.toString(Charsets.UTF_8.name())
 }
  
-private fun rootfsPathToAreaAndRelative(path: String): Pair<WorkspaceStorageArea, String> {
+private fun rootfsPathToAreaAndRelative(path: String, workspaceDir: String): Pair<WorkspaceStorageArea, String> {
     val trimmed = path.trimEnd('/')
-    return if (trimmed == "/workspace" || trimmed.startsWith("/workspace/")) {
-        WorkspaceStorageArea.FILES to trimmed.removePrefix("/workspace").trimStart('/')
+    return if (trimmed == workspaceDir || trimmed.startsWith("${workspaceDir.trimEnd('/')}/")) {
+        WorkspaceStorageArea.FILES to trimmed.removePrefix(workspaceDir).trimStart('/')
     } else {
         WorkspaceStorageArea.LINUX to trimmed.trimStart('/')
     }
@@ -305,9 +307,9 @@ private suspend fun WorkspaceRepository.readImageInRootfs(
     workspaceId: String,
     path: String,
 ): List<UIMessagePart> {
-    val (area, relativePath) = rootfsPathToAreaAndRelative(path)
+    val (area, relativePath) = rootfsPathToAreaAndRelative(path, layout(workspaceId)?.workspaceDir ?: "/workspace")
     val buffer = ByteArrayOutputStream()
-    exportFile(workspaceId, area, relativePath, buffer)
+    exportFile(workspaceId, area, relativePath, boundedWorkspaceOutput(buffer, MAX_READ_FILE_BYTES))
     val bytes = buffer.toByteArray()
  
     val filesManager = getKoin().get<FilesManager>()
@@ -329,6 +331,10 @@ private suspend fun WorkspaceRepository.writeTextInRootfs(
     text: String,
     overwrite: Boolean,
 ): WorkspaceFileEntry {
+    if (getById(workspaceId)?.isSsh() == true) {
+        val (area, relative) = rootfsPathToAreaAndRelative(path, checkNotNull(layout(workspaceId)).workspaceDir)
+        return writeText(workspaceId, area, relative, text, overwrite)
+    }
     val pathArg = path.shellQuote()
     val result = runRootfsCommand(
         workspaceId = workspaceId,
@@ -350,6 +356,22 @@ private suspend fun WorkspaceRepository.writeTextInRootfs(
         stdin = text.toByteArray(Charsets.UTF_8),
     )
     return result.stdout.parseRootfsEntry()
+}
+
+/** Stat is advisory: a remote file may grow while it is downloaded. */
+internal fun boundedWorkspaceOutput(output: OutputStream, limit: Long): OutputStream = object : OutputStream() {
+    private var count = 0L
+    override fun write(value: Int) {
+        require(count < limit) { "Workspace file exceeds read limit" }
+        output.write(value)
+        count++
+    }
+    override fun write(bytes: ByteArray, offset: Int, length: Int) {
+        require(length >= 0 && count + length <= limit) { "Workspace file exceeds read limit" }
+        output.write(bytes, offset, length)
+        count += length
+    }
+    override fun close() = output.close()
 }
  
 private suspend fun WorkspaceRepository.runRootfsCommand(
@@ -430,9 +452,9 @@ private fun JsonObjectBuilder.putPathProperty(required: Boolean) {
         put(
             "description",
             if (required) {
-                "Absolute path inside Rootfs. Use /workspace for the workspace files area."
+                "Absolute path in the workspace execution environment. Use the workspace directory given in the system instructions."
             } else {
-                "Optional absolute path inside Rootfs. Use /workspace for the workspace files area."
+                "Optional absolute path in the workspace execution environment. Use the workspace directory given in the system instructions."
             }
         )
     })

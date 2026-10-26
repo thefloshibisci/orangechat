@@ -268,6 +268,8 @@ private fun ColumnScope.ProviderConfigureOpenAI(
     onEdit: (provider: ProviderSetting.OpenAI) -> Unit
 ) {
     val toaster = LocalToaster.current
+    val automaticOpenCodeProtocol =
+        me.rerere.ai.provider.providers.openCodeApiRoot(provider.baseUrl) != null
 
     provider.description()
 
@@ -319,7 +321,8 @@ private fun ColumnScope.ProviderConfigureOpenAI(
     )
 
     OutlinedTextField(
-        value = if (provider.useResponseApi) provider.responsesPath else provider.chatCompletionsPath,
+        value = if (automaticOpenCodeProtocol) "OpenCode：按模型自动选择协议"
+        else if (provider.useResponseApi) provider.responsesPath else provider.chatCompletionsPath,
         onValueChange = { path ->
             onEdit(
                 if (provider.useResponseApi) {
@@ -333,7 +336,7 @@ private fun ColumnScope.ProviderConfigureOpenAI(
             Text(stringResource(id = R.string.setting_provider_page_api_path))
         },
         modifier = Modifier.fillMaxWidth(),
-        enabled = !provider.builtIn
+        enabled = !provider.builtIn && !automaticOpenCodeProtocol
     )
 
     Row(
@@ -343,6 +346,7 @@ private fun ColumnScope.ProviderConfigureOpenAI(
         val responseAPIWarning = stringResource(id = R.string.setting_provider_page_response_api_warning)
         Checkbox(
             checked = provider.useResponseApi,
+            enabled = !automaticOpenCodeProtocol,
             onCheckedChange = {
                 onEdit(provider.copy(useResponseApi = it))
 
@@ -530,7 +534,7 @@ private fun ColumnScope.ProviderConfigureGoogle(
         Checkbox(
             checked = provider.vertexAI,
             onCheckedChange = {
-                onEdit(provider.copy(vertexAI = it))
+                onEdit(provider.copy(vertexAI = it, useInteractionsApi = if (it) false else provider.useInteractionsApi))
             }
         )
     }
@@ -550,6 +554,17 @@ private fun ColumnScope.ProviderConfigureGoogle(
     }
 
     if (!provider.vertexAI) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Gemini Interactions API", modifier = Modifier.weight(1f))
+            Checkbox(
+                checked = provider.useInteractionsApi,
+                onCheckedChange = { onEdit(provider.copy(useInteractionsApi = it)) },
+            )
+        }
+        Text(
+            "默认关闭。开启后使用 Interactions 接口；对话历史仍由本机管理。需要提供商支持该接口，不适用于 Vertex AI。",
+            style = MaterialTheme.typography.bodySmall,
+        )
         OutlinedTextField(
             value = provider.baseUrl,
             onValueChange = {

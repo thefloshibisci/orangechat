@@ -28,25 +28,54 @@ class SkillManager(
     }
 
     suspend fun listSkills(): List<SkillMetadata> = withContext(Dispatchers.IO) {
-        val skillsDir = getSkillsDir()
-        skillsDir.listFiles()
-            ?.filter { it.isDirectory }
-            ?.mapNotNull { dir ->
-                val skillFile = dir.resolve("SKILL.md")
-                if (!skillFile.exists()) return@mapNotNull null
-                parseSkillFile(skillFile, dir)
-            }
-            ?: emptyList()
+        skillDirs().mapNotNull { dir ->
+            val skillFile = dir.resolve("SKILL.md")
+            if (!skillFile.isFile) return@mapNotNull null
+            parseSkillFile(skillFile, dir)
+        }
     }
 
+    fun listInvalidSkillDirs(): List<InvalidSkillDir> = skillDirs().mapNotNull { dir ->
+        invalidReason(dir)?.let { InvalidSkillDir(dir.name, it) }
+    }.sortedBy { it.dirName }
+
+    suspend fun deleteInvalidSkillDir(dirName: String): Boolean = withContext(Dispatchers.IO) {
+        val dir = resolveSkillDir(dirName) ?: return@withContext false
+        if (!dir.isDirectory || isTemporarySkillDir(dir)) return@withContext false
+        // A directory may have been repaired since the cleanup list was displayed.
+        if (invalidReason(dir) == null) return@withContext false
+        dir.deleteRecursively()
+    }
+
+    private fun skillDirs(): List<File> = getSkillsDir().listFiles().orEmpty()
+        .filter { dir ->
+            dir.isDirectory && !isTemporarySkillDir(dir) &&
+                resolveSkillDir(dir.name) == dir.canonicalFile
+        }
+
+    private fun isTemporarySkillDir(dir: File): Boolean =
+        Regex("""\..+\.(staging|backup)\.\d+\.tmp""").matches(dir.name)
+
+    private fun invalidReason(dir: File): String? = runCatching {
+        val file = dir.resolve("SKILL.md")
+        if (!file.isFile) return "缺少 SKILL.md"
+        val fields = SkillFrontmatterParser.parse(file.readText())
+        when {
+            fields["name"].isNullOrBlank() -> "缺少技能名称"
+            fields["description"].isNullOrBlank() -> "缺少技能说明"
+            else -> null
+        }
+    }.getOrElse { "无法读取技能文件" }
+
     fun readSkillBody(skillName: String): String? {
-        val skillFile = resolveSkillDir(skillName)?.resolve("SKILL.md") ?: return null
+        val skillFile = (findSkillDirByDeclaredName(skillName) ?: getSkillDir(skillName))
+            ?.resolve("SKILL.md") ?: return null
         if (!skillFile.exists()) return null
         return SkillFrontmatterParser.extractBody(skillFile.readText())
     }
 
     fun readSkillContent(skillName: String): String? {
-        val skillFile = resolveSkillDir(skillName)?.resolve("SKILL.md") ?: return null
+        val skillFile = getSkillDir(skillName)?.resolve("SKILL.md") ?: return null
         if (!skillFile.exists()) return null
         return skillFile.readText()
     }
@@ -59,10 +88,12 @@ class SkillManager(
         return parseSkillFile(skillFile, skillDir)
     }
 
-    suspend fun deleteSkill(name: String): Boolean = withContext(Dispatchers.IO) {
-        val skillDir = resolveSkillDir(name) ?: return@withContext false
+    suspend fun deleteSkill(skill: SkillMetadata): Boolean = withContext(Dispatchers.IO) {
+        val name = skill.name
+        val skillDir = resolveSkillDir(skill.skillDir.name) ?: return@withContext false
+        if (!skillDir.isDirectory || skillDir != skill.skillDir.canonicalFile) return@withContext false
         val deleted = skillDir.deleteRecursively()
-        if (deleted) {
+        if (deleted && listSkills().none { it.name == name }) {
             settingsStore.update { settings ->
                 settings.copy(
                     assistants = settings.assistants.map { assistant ->
@@ -78,10 +109,21 @@ class SkillManager(
         deleted
     }
 
-    fun getSkillDir(skillName: String): File? = resolveSkillDir(skillName)
+    fun getSkillDir(skillName: String): File? {
+        val direct = resolveSkillDir(skillName)
+        if (direct?.isDirectory == true) return direct
+        return findSkillDirByDeclaredName(skillName)
+    }
+
+    private fun findSkillDirByDeclaredName(skillName: String): File? {
+        return skillDirs().firstOrNull { dir ->
+            val file = dir.resolve("SKILL.md")
+            file.isFile && parseSkillFile(file, dir)?.name == skillName
+        }
+    }
 
     fun saveSkillFile(skillName: String, relativePath: String, content: String): Boolean {
-        val skillDir = resolveSkillDir(skillName) ?: return false
+        val skillDir = getSkillDir(skillName) ?: return false
         val target = SkillPaths.resolveSkillFile(skillDir, relativePath) ?: return false
         target.parentFile?.mkdirs()
         target.writeText(content)
@@ -134,13 +176,13 @@ class SkillManager(
     }
 
     fun deleteSkillFile(skillName: String, relativePath: String): Boolean {
-        val skillDir = resolveSkillDir(skillName) ?: return false
+        val skillDir = getSkillDir(skillName) ?: return false
         val target = SkillPaths.resolveSkillFile(skillDir, relativePath) ?: return false
         return target.delete()
     }
 
     fun resolveSkillFile(skillName: String, relativePath: String): File? {
-        val skillDir = resolveSkillDir(skillName) ?: return null
+        val skillDir = findSkillDirByDeclaredName(skillName) ?: getSkillDir(skillName) ?: return null
         return SkillPaths.resolveSkillFile(skillDir, relativePath)
     }
 
@@ -177,6 +219,8 @@ class SkillManager(
         }
     }
 }
+
+data class InvalidSkillDir(val dirName: String, val reason: String)
 
 data class SkillMetadata(
     val name: String,

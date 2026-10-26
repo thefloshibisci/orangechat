@@ -76,7 +76,7 @@ fun createAppLockTool(context: Context): Tool = Tool(
     name = "app_lock",
     needsApproval = true,
     description = "Lock or unlock specific apps on the device. When a locked app is opened, the user is " +
-        "bounced to the home screen and shown a PIN-entry overlay before they can use it again. " +
+        "shown a lock screen with a PIN pad when configured, plus exits to Home and OrangeChat. " +
         "This is an interception layer built on the accessibility service, NOT an OS-level 'cannot launch' " +
         "restriction - a user who disables the accessibility service can bypass it. Actions: " +
         "'set_pin' (set/change the unlock PIN, required before locking any app in require_pin=true mode, 4-6 digits), " +
@@ -121,9 +121,9 @@ fun createAppLockTool(context: Context): Tool = Tool(
                         "later (false). Use true when you want a real security barrier the user can pass on their own " +
                         "with the correct PIN (requires set_pin to have been called first). Use false when you want to " +
                         "personally gatekeep access — e.g. you locked an app to stop the user doing something, and you " +
-                        "want them to have to come back and convince YOU to unlock it, with no technical way around it. " +
+                        "want them to return to OrangeChat and ask you to unlock it. " +
                         "In false mode, the lock screen shows only the app icon and your message — no PIN pad, no buttons " +
-                        "the user can tap to unlock themselves."
+                        "the user can tap to unlock themselves. Exit buttons always let them leave the locked app."
                     )
                 }
             },

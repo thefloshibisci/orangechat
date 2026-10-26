@@ -27,7 +27,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import me.rerere.rikkahub.ui.theme.LargeFlexibleTopAppBar
@@ -58,7 +57,6 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.AssistantMemory
-import me.rerere.rikkahub.data.model.ExternalMemory
 import me.rerere.rikkahub.ui.components.nav.BackButton
 import me.rerere.rikkahub.ui.components.ui.CardGroup
 import me.rerere.rikkahub.ui.pages.setting.settingsScaffoldContainerColor
@@ -68,7 +66,6 @@ import me.rerere.rikkahub.ui.hooks.useEditState
 import me.rerere.rikkahub.ui.theme.CustomColors
 import org.koin.androidx.compose.koinViewModel
 import org.koin.core.parameter.parametersOf
-import kotlin.uuid.Uuid
 
 @Composable
 fun AssistantMemoryPage(id: String) {
@@ -79,7 +76,6 @@ fun AssistantMemoryPage(id: String) {
     )
     val assistant by vm.assistant.collectAsStateWithLifecycle()
     val memories by vm.memories.collectAsStateWithLifecycle()
-    val externalMemories by vm.externalMemories.collectAsStateWithLifecycle()
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
 
     Scaffold(
@@ -102,12 +98,10 @@ fun AssistantMemoryPage(id: String) {
             modifier = Modifier.padding(innerPadding),
             assistant = assistant,
             memories = memories,
-            externalMemories = externalMemories,
             onUpdateAssistant = { vm.update(assistant, it) },
             onDeleteMemory = { vm.deleteMemory(it) },
             onAddMemory = { vm.addMemory(it) },
             onUpdateMemory = { vm.updateMemory(it) },
-            onUpdateExternalMemoryIds = { vm.updateExternalMemoryIds(it) }
         )
     }
 }
@@ -117,12 +111,10 @@ private fun AssistantMemoryContent(
     modifier: Modifier = Modifier,
     assistant: Assistant,
     memories: List<AssistantMemory>,
-    externalMemories: List<ExternalMemory>,
     onUpdateAssistant: (Assistant) -> Unit,
     onAddMemory: (AssistantMemory) -> Unit,
     onUpdateMemory: (AssistantMemory) -> Unit,
     onDeleteMemory: (AssistantMemory) -> Unit,
-    onUpdateExternalMemoryIds: (Set<Uuid>) -> Unit,
 ) {
     val memoryDialogState = useEditState<AssistantMemory> {
         if (it.id == 0) {
@@ -132,7 +124,7 @@ private fun AssistantMemoryContent(
         }
     }
     var pendingDeleteMemory by remember { mutableStateOf<AssistantMemory?>(null) }
-    var showExternalMemoryPicker by remember { mutableStateOf(false) }
+    val navController = me.rerere.rikkahub.ui.context.LocalNavController.current
 
     // 记忆对话框
     memoryDialogState.EditStateContent { memory, update ->
@@ -281,18 +273,10 @@ private fun AssistantMemoryContent(
                 },
             )
             item(
-                headlineContent = { Text("外置记忆库") },
-                supportingContent = {
-                    val count = assistant.externalMemoryIds.size
-                    Text(
-                        text = if (count == 0) "未配置" else "已选择 ${count} 个记忆库",
-                    )
-                },
-                trailingContent = {
-                    IconButton(onClick = { showExternalMemoryPicker = true }) {
-                        Icon(HugeIcons.Brain01, contentDescription = null)
-                    }
-                }
+                onClick = { navController.navigate(me.rerere.rikkahub.Screen.ExternalMemories) },
+                headlineContent = { Text("进阶记忆") },
+                supportingContent = { Text("Serein 自动召回、本地原话与记忆管理") },
+                trailingContent = { Icon(HugeIcons.Brain01, contentDescription = null) },
             )
         }
 
@@ -348,86 +332,6 @@ private fun AssistantMemoryContent(
         }
     )
 
-    if (showExternalMemoryPicker) {
-        ExternalMemoryPickerDialog(
-            externalMemories = externalMemories,
-            selectedIds = assistant.externalMemoryIds,
-            onDismiss = { showExternalMemoryPicker = false },
-            onConfirm = { selectedIds ->
-                onUpdateExternalMemoryIds(selectedIds)
-                showExternalMemoryPicker = false
-            }
-        )
-    }
-}
-
-@Composable
-private fun ExternalMemoryPickerDialog(
-    externalMemories: List<ExternalMemory>,
-    selectedIds: Set<Uuid>,
-    onDismiss: () -> Unit,
-    onConfirm: (Set<Uuid>) -> Unit,
-) {
-    var currentSelection by remember { mutableStateOf(selectedIds) }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("选择外置记忆库") },
-        text = {
-            Column(
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                if (externalMemories.isEmpty()) {
-                    Text(
-                        text = "暂无可用的外置记忆库，请先在扩展管理中创建。",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                } else {
-                    externalMemories.forEach { memory ->
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Checkbox(
-                                checked = memory.id in currentSelection,
-                                onCheckedChange = { checked ->
-                                    currentSelection = if (checked) {
-                                        currentSelection + memory.id
-                                    } else {
-                                        currentSelection - memory.id
-                                    }
-                                }
-                            )
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = memory.name,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                )
-                                Text(
-                                    text = memory.supabaseUrl,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = { onConfirm(currentSelection) }) {
-                Text("确定")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("取消")
-            }
-        }
-    )
 }
 
 @Composable

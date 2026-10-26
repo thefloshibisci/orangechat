@@ -21,6 +21,8 @@ import me.rerere.rikkahub.data.db.dao.MemoryBankDAO
 import me.rerere.rikkahub.data.db.dao.MemoryDAO
 import me.rerere.rikkahub.data.db.dao.MessageNodeDAO
 import me.rerere.rikkahub.data.db.dao.WorkspaceDAO
+import me.rerere.rikkahub.data.db.dao.TranslationHistoryDAO
+import me.rerere.rikkahub.data.db.dao.UsageRecordDAO
 import me.rerere.rikkahub.data.db.entity.ConversationEntity
 import me.rerere.rikkahub.data.db.entity.FavoriteEntity
 import me.rerere.rikkahub.data.db.entity.FolderEntity
@@ -31,6 +33,8 @@ import me.rerere.rikkahub.data.db.entity.MemoryEntity
 import me.rerere.rikkahub.data.db.entity.MessageNodeEntity
 import me.rerere.rikkahub.data.db.entity.SshHostEntity
 import me.rerere.rikkahub.data.db.entity.WorkspaceEntity
+import me.rerere.rikkahub.data.db.entity.TranslationHistoryEntity
+import me.rerere.rikkahub.data.db.entity.UsageRecordEntity
 import me.rerere.rikkahub.data.db.dao.SshHostDao
 import me.rerere.rikkahub.data.security.SecurityAuditDao
 import me.rerere.rikkahub.data.security.SecurityAuditEntity
@@ -61,8 +65,17 @@ import me.rerere.rikkahub.utils.JsonInstant
         SshHostEntity::class,
         SecurityAuditEntity::class,
         MessageReaction::class,
+        me.rerere.rikkahub.data.serein.RawArchiveRevision::class,
+        me.rerere.rikkahub.data.serein.RawArchiveHead::class,
+        me.rerere.rikkahub.data.serein.LocalScene::class,
+        me.rerere.rikkahub.data.serein.LocalSceneRevision::class,
+        me.rerere.rikkahub.data.serein.SereinHookSnapshot::class,
+        me.rerere.rikkahub.data.serein.SereinHookDelivery::class,
+        me.rerere.rikkahub.data.serein.SereinUpload::class,
+        UsageRecordEntity::class,
+        TranslationHistoryEntity::class,
     ],
-    version = 34,
+    version = 42,
     autoMigrations = [
         AutoMigration(from = 1, to = 2),
         AutoMigration(from = 2, to = 3),
@@ -88,6 +101,10 @@ import me.rerere.rikkahub.utils.JsonInstant
 )
 @TypeConverters(TokenUsageConverter::class)
 abstract class AppDatabase : RoomDatabase() {
+    abstract fun translationHistoryDao(): TranslationHistoryDAO
+
+    abstract fun usageRecordDao(): UsageRecordDAO
+
     abstract fun conversationDao(): ConversationDAO
 
     abstract fun memoryDao(): MemoryDAO
@@ -114,6 +131,10 @@ abstract class AppDatabase : RoomDatabase() {
 
     abstract fun securityAuditDao(): SecurityAuditDao
     abstract fun messageReactionDao(): MessageReactionDAO
+    abstract fun rawArchiveDao(): me.rerere.rikkahub.data.serein.RawArchiveDAO
+    abstract fun localSceneDao(): me.rerere.rikkahub.data.serein.LocalSceneDAO
+    abstract fun sereinHookDao(): me.rerere.rikkahub.data.serein.SereinHookDAO
+    abstract fun sereinUploadDao(): me.rerere.rikkahub.data.serein.SereinUploadDAO
 }
 
 object TokenUsageConverter {
