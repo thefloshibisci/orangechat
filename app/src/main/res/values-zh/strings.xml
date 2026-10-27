@@ -1265,4 +1265,12 @@ mDNS 地址：使用 .local 主机名，同一网络中的其他设备可通过�
   <string name="compression_undo_all_hint">将清除全部摘要与压缩记录，让 %1$d 条原文重新参与上下文选择，可能大幅增加 token 用量。确认撤销全部吗？</string>
   <string name="compression_undo_no_history">这份压缩记录没有逐次快照，无法只撤销最近一次。此版本之后的新压缩会保存恢复点。</string>
   <string name="compression_undo_hint">清除摘要和覆盖标记，让原文重新参与上下文选择，可能增加 token 用量。原文不会删除。</string>
+  <string name="compression_send_hint_short">只发送勾选的摘要，压缩前原文不会发送。</string>
+  <string name="compression_send">发送</string>
+  <string name="compression_split_mode">摘要切段</string>
+  <string name="compression_round">第 %1$d 次压缩</string>
+  <string name="compression_round_send">发送第 %1$d 次压缩的摘要</string>
+  <string name="compression_round_part">第 %1$d 段</string>
+  <string name="compression_undo_confirm">撤销</string>
+  <string name="compression_undo_all_option">撤销全部压缩</string>
 </resources>

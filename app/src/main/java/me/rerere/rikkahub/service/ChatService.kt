@@ -76,6 +76,7 @@ import me.rerere.ai.ui.UIMessageAnnotation
 import me.rerere.rikkahub.data.model.ConversationSummary
 import me.rerere.rikkahub.data.model.CompressionUndoMode
 import me.rerere.rikkahub.data.model.summaryParagraphs
+import me.rerere.rikkahub.data.model.withResolvedGroups
 import me.rerere.rikkahub.data.ai.buildConversationRequestMessages
 import me.rerere.rikkahub.data.ai.hasDurableToolEvidence
 import me.rerere.rikkahub.data.ai.recoverInterruptedExecution
@@ -1958,7 +1959,7 @@ class ChatService(
                 onProgress("正在合并往期摘要…")
                 compressTextOnce(textsToMerge, ::compressContent)
             }
-            mergePlan.preservedSummaries + summaryParagraphs(merged)
+            mergePlan.preservedSummaries.withResolvedGroups(base.compressionHistory) + summaryParagraphs(merged)
         }
         onProgress("正在保存摘要…")
         session.withStateLock {

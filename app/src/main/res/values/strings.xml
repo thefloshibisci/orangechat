@@ -1271,4 +1271,12 @@
   <string name="compression_undo_all_hint">将清除全部摘要与压缩记录，让 %1$d 条原文重新参与上下文选择，可能大幅增加 token 用量。确认撤销全部吗？</string>
   <string name="compression_undo_no_history">这份压缩记录没有逐次快照，无法只撤销最近一次。此版本之后的新压缩会保存恢复点。</string>
   <string name="compression_undo_hint">清除摘要和覆盖标记，让原文重新参与上下文选择，可能增加 token 用量。原文不会删除。</string>
+  <string name="compression_send_hint_short">Only checked summaries are sent; compressed originals never are.</string>
+  <string name="compression_send">Send</string>
+  <string name="compression_split_mode">Split into paragraphs</string>
+  <string name="compression_round">Compression #%1$d</string>
+  <string name="compression_round_send">Send summary of compression #%1$d</string>
+  <string name="compression_round_part">Part %1$d</string>
+  <string name="compression_undo_confirm">Undo</string>
+  <string name="compression_undo_all_option">Undo all compressions</string>
 </resources>

@@ -244,7 +244,7 @@ fun ChatPage(id: Uuid, text: String?, files: List<Uri>, nodeId: Uuid? = null, au
                         !(msg.role == me.rerere.ai.core.MessageRole.USER && msg.toText().contains("[主动消息上下文]"))
                 }.indexOfFirst { it.id == nodeId }
                 if (index >= 0) {
-                    vm.showCompressedHistory = true
+                    vm.revealCompressedHistoryTemporarily()
                     chatListState.scrollToItem(index)
                 }
             } else {

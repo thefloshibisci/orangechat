@@ -286,14 +286,55 @@ data class ConversationSummary(
     val id: Uuid = Uuid.random(),
     val text: String,
     val sendToModel: Boolean = true,
+    // Entries produced by the same compression (or merge) share one group. Null only in legacy data.
+    val group: Uuid? = null,
 ) {
     fun splitLines(): List<ConversationSummary> = text.lines().filter { it.isNotBlank() }.mapIndexed { index, line ->
         copy(id = if (index == 0) id else Uuid.random(), text = line.trim())
     }.ifEmpty { listOf(this) }
 }
 
-fun summaryParagraphs(text: String): List<ConversationSummary> =
-    text.trim().split(Regex("\n\\s*\n")).filter { it.isNotBlank() }.map { ConversationSummary(text = it.trim()) }
+fun summaryParagraphs(text: String, group: Uuid = Uuid.random()): List<ConversationSummary> =
+    text.trim().split(Regex("\n\\s*\n")).filter { it.isNotBlank() }
+        .map { ConversationSummary(text = it.trim(), group = group) }
+
+/**
+ * Gives legacy entries (group == null) a group: the compression round that first produced them,
+ * inferred from the checkpoints. Entries that already carry a group are returned unchanged.
+ */
+fun List<ConversationSummary>.withResolvedGroups(
+    history: List<ConversationCompressionSnapshot>,
+): List<ConversationSummary> {
+    if (none { it.group == null }) return this
+    val roundGroups = mutableMapOf<Int, Uuid>()
+    return map { summary ->
+        if (summary.group != null) return@map summary
+        val round = history.indexOfFirst { snapshot -> snapshot.summaries.any { it.id == summary.id } }
+            .takeIf { it >= 0 } ?: history.size
+        summary.copy(group = roundGroups.getOrPut(round) { Uuid.random() })
+    }
+}
+
+/** Groups entries by compression round, in the order each round first appears. */
+fun List<ConversationSummary>.summaryRounds(): List<List<ConversationSummary>> =
+    groupBy { it.group }.values.toList()
+
+/**
+ * Replaces one round's entries with paragraphs parsed from [text], keeping the round's position.
+ * Unchanged paragraphs keep their id and send flag; new ones follow the round's current selection.
+ */
+fun List<ConversationSummary>.withRoundText(group: Uuid, text: String): List<ConversationSummary> {
+    val old = filter { it.group == group }
+    val send = old.isEmpty() || old.any { it.sendToModel }
+    val unused = old.toMutableList()
+    val replacement = summaryParagraphs(text, group).map { part ->
+        val reused = unused.firstOrNull { it.text == part.text }
+        if (reused != null) { unused.remove(reused); reused } else part.copy(sendToModel = send)
+    }.ifEmpty { listOf(ConversationSummary(text = "", sendToModel = send, group = group)) }
+    val at = indexOfFirst { it.group == group }.takeIf { it >= 0 } ?: size
+    val rest = filterNot { it.group == group }
+    return rest.take(at) + replacement + rest.drop(at)
+}
 
 @Serializable
 data class MessageNode(
