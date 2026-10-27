@@ -366,6 +366,11 @@ object WorkflowJson {
                 ParseResult.Err("invalid_trigger", "time_cron.time_of_day must be HH:mm 24h")
             t.daysOfWeek.any { it !in 1..7 } ->
                 ParseResult.Err("invalid_trigger", "time_cron.days_of_week values must be 1..7 (ISO, 1=Mon)")
+            t.timezone != null && runCatching { java.time.ZoneId.of(t.timezone) }.isFailure ->
+                ParseResult.Err("invalid_trigger", "time_cron.timezone must be a valid IANA timezone")
+            t.cron?.trim()?.startsWith("@every") == true
+                && me.rerere.rikkahub.workflow.trigger.TimeCronTriggerFamily.derivePeriodMs(t) == null ->
+                ParseResult.Err("invalid_trigger", "time_cron interval must be between 60 seconds and 365 days")
             // Reject unparseable cron up front so the LLM gets a repair signal at create
             // time instead of a workflow that silently fires hourly. Valid means either
             // the trigger family's own subset (@hourly/@daily/@weekly/@every Nx) or a

@@ -199,7 +199,11 @@ private fun WorkflowRow(
 
 internal fun oneLineTriggerSummary(def: WorkflowDefinition): String = when (val t = def.trigger) {
     is TriggerSpec.TimeCron ->
-        if (!t.timeOfDay.isNullOrBlank()) "每天 ${t.timeOfDay}" else "定时"
+        if (me.rerere.rikkahub.workflow.trigger.TimeCronTriggerFamily.computeNextFireMs(
+                t, t.timezone?.let { runCatching { java.time.ZoneId.of(it) }.getOrNull() } ?: java.time.ZoneId.systemDefault(), System.currentTimeMillis(),
+            ) == null) "定时配置无效，请编辑修复"
+        else if (!t.timeOfDay.isNullOrBlank()) "${if (t.daysOfWeek.isEmpty()) "每天" else "指定星期"} ${t.timeOfDay}"
+        else intervalTriggerSummary(t.cron) ?: "定时：${t.cron.orEmpty()}"
     is TriggerSpec.WifiConnected -> "WiFi 连接" + (t.ssid?.let { "($it)" }.orEmpty())
     is TriggerSpec.WifiDisconnected -> "WiFi 断开" + (t.ssid?.let { "($it)" }.orEmpty())
     is TriggerSpec.BluetoothDeviceConnected -> "蓝牙连接"

@@ -26,7 +26,13 @@ data class Model(
     // Discovered from Codex; optional for old configurations and manually added models.
     val codexReasoningEfforts: List<String> = emptyList(),
     val audioInputMode: AudioInputMode = AudioInputMode.AUTO,
+    // Older saved models keep their existing capabilities until the user opts in.
+    val capabilityMode: ModelCapabilityMode = ModelCapabilityMode.LEGACY,
+    val capabilitySource: String? = null,
 )
+
+@Serializable
+enum class ModelCapabilityMode { LEGACY, AUTO, MANUAL }
 
 @Serializable
 enum class ModelType {

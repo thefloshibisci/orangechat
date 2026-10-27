@@ -58,13 +58,16 @@ fun workflowCreateTool(
 
         SUPPORTED TRIGGER TYPES (use these exact strings in trigger.type):
           time_cron — recurring schedule. Either:
+              cron: "@every 30m" — repeat every 30 minutes (s/m/h/d units; prefer
+                  intervals >= 15 minutes; Android may defer background execution), OR
               cron: "<5-field cron>"  (max once per minute), OR
               time_of_day: "HH:mm" — fires every day at that time (and every day in
                   days_of_week if provided, [1..7] ISO 1=Mon).
               ALWAYS RECURRING. To run once, delete the workflow after the first fire,
               or use the schedule_job tool with schedule_type:"once" instead.
           wifi_connected / wifi_disconnected — params: ssid (optional, null = any)
-          bluetooth_device_connected / bluetooth_device_disconnected — params: device_address (optional)
+          Bluetooth triggers are unavailable in this build (Bluetooth runtime permission
+              is not declared). Do not create them; existing saved definitions are retained.
           headphones_plugged / headphones_unplugged — no params
           power_connected / power_disconnected — no params (charger plug/unplug)
           battery_below / battery_above — params: threshold_percent (1..100), fires on transition
@@ -254,7 +257,7 @@ fun workflowUpdateTool(
         Replace an existing workflow's full definition. The id field must match an existing
         workflow; otherwise the call is rejected. Same trigger / condition / action schema
         as workflow_create — see that tool's description for the full enumeration of
-        supported trigger types (time_cron, wifi_*, bluetooth_*, headphones_*, power_*,
+        supported trigger types (time_cron, wifi_*, headphones_*, power_*,
         battery_*, geofence_*, app_*, notification_received, boot_completed, screen_*,
         manual) and condition types.
     """.trimIndent().replace("\n", " "),

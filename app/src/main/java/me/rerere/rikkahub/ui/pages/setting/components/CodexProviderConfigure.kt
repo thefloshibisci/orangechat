@@ -39,13 +39,8 @@ fun CodexProviderConfigure(provider: ProviderSetting.Codex, onEdit: (ProviderSet
         val current = latestProvider
         val models = manager.getProviderByType(current).listModels(current)
         if (models.isEmpty()) { feedback = "官方未返回可用模型，请稍后重试"; return }
-        val merged = models.map { model ->
-            current.models.firstOrNull { it.modelId == model.modelId }?.let { old ->
-                old.copy(inputModalities = model.inputModalities, abilities = model.abilities,
-                    codexReasoningEfforts = model.codexReasoningEfforts)
-            } ?: model
-        }
-        latestEdit(latestProvider.copy(models = current.models.filter { old -> merged.none { it.modelId == old.modelId } } + merged))
+        val latest = latestProvider
+        latestEdit(latest.copy(models = mergeCodexModelMetadata(latest, models, addMissing = true)))
         feedback = "已获取 ${models.size} 个模型"
     }
 
@@ -61,6 +56,7 @@ fun CodexProviderConfigure(provider: ProviderSetting.Codex, onEdit: (ProviderSet
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text("ChatGPT 订阅 · OpenAI Codex", style = MaterialTheme.typography.titleMedium)
         Text("直接连接 OpenAI 官方服务。OAuth 凭据只保存在本机，不随配置或备份导出。", style = MaterialTheme.typography.bodySmall)
+        Text("自动识别模型在登录或刷新模型后跟随官方资料更新，保存配置后生效；打开模型列表时也会更新。手动设置保留，离线使用上次能力。", style = MaterialTheme.typography.bodySmall)
         Text("当前：${if (storageUnavailable) "本机凭据暂时无法读取" else if (accounts.isEmpty()) "未登录" else "已登录 ${accounts.size} 个账号"}")
         if (storageUnavailable) {
             Text("凭据仍保留在本机。请解锁设备后重试，无需立即重新登录。", style = MaterialTheme.typography.bodySmall)

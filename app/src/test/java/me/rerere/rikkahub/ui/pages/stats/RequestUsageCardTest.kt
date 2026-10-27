@@ -66,6 +66,23 @@ class RequestUsageCardTest {
         compose.onNodeWithText("这个时间范围还没有请求记录。新请求完成后会自动显示；旧消息仍可在下方历史统计查看。").assertIsDisplayed()
     }
 
+    @Test fun `refresh keeps previous totals visible without a transient annotation`() {
+        compose.setContent { MaterialTheme {
+            RequestUsageCard(
+                RequestUsageState(
+                    range = UsageTimeRange.WEEK,
+                    summaryRange = UsageTimeRange.TODAY,
+                    summary = UsageSummary(UsageTotals(requestCount = 2, totalTokens = 123), emptyList(), emptyList(), emptyList()),
+                    isLoading = true,
+                ), {}, {},
+            )
+        } }
+        compose.onNodeWithText("正在读取近7天 · 暂显示今天数据").assertDoesNotExist()
+        compose.onNodeWithText("2 次请求").assertIsDisplayed()
+        compose.onNodeWithText("已报告 123 token").assertIsDisplayed()
+        compose.onNodeWithText("正在读取请求用量…").assertDoesNotExist()
+    }
+
     private fun show(summary: UsageSummary) {
         compose.setContent { MaterialTheme {
             Column(Modifier.verticalScroll(rememberScrollState())) {

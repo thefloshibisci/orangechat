@@ -9,20 +9,25 @@ package me.rerere.rikkahub.workflow.trigger
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import androidx.work.ExistingWorkPolicy
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkManager
 
 /**
  * Manifest-declared receiver for BOOT_COMPLETED / MY_PACKAGE_REPLACED / QUICKBOOT_POWERON.
- * Forwards to [WorkflowBootDispatcher.onBoot] so any `boot_completed` workflow fires after
- * the device boots. The dispatcher is a no-op until [TriggerRegistry.start] has bound the
- * boot trigger family; the family's cold-boot fallback then reads enabled workflows straight
- * from the repository.
+ * A unique worker survives the receiver's short lifetime and does not depend on the
+ * application's asynchronous trigger-registry initialization finishing first.
  */
 class WorkflowBootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         when (intent.action) {
             Intent.ACTION_BOOT_COMPLETED,
             Intent.ACTION_MY_PACKAGE_REPLACED,
-            "android.intent.action.QUICKBOOT_POWERON" -> WorkflowBootDispatcher.onBoot()
+            "android.intent.action.QUICKBOOT_POWERON" -> WorkManager.getInstance(context).enqueueUniqueWork(
+                "workflow_boot_dispatch",
+                ExistingWorkPolicy.KEEP,
+                OneTimeWorkRequestBuilder<WorkflowBootWorker>().build(),
+            )
         }
     }
 }

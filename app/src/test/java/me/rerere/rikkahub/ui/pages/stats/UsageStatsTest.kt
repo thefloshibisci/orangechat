@@ -99,6 +99,29 @@ class UsageStatsTest {
         assertEquals(3L, states.last().summary?.totals?.requestCount)
     }
 
+    @Test fun `range refresh retains visible totals with their original scope until new data arrives`() = runTest {
+        val ranges = MutableStateFlow(UsageTimeRange.TODAY)
+        val next = CompletableDeferred<UsageSummary>()
+        val states = mutableListOf<RequestUsageState>()
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+            requestUsageStates(ranges, MutableStateFlow(1L), clock) { window ->
+                if (window.since == 0L) next.await() else summary(2)
+            }.collect { states += it }
+        }
+        runCurrent()
+        ranges.value = UsageTimeRange.ALL
+        runCurrent()
+        assertTrue(states.last().isLoading)
+        assertEquals(UsageTimeRange.ALL, states.last().range)
+        assertEquals(UsageTimeRange.TODAY, states.last().summaryRange)
+        assertEquals(2L, states.last().summary?.totals?.requestCount)
+        next.complete(summary(9))
+        runCurrent()
+        assertFalse(states.last().isLoading)
+        assertEquals(UsageTimeRange.ALL, states.last().summaryRange)
+        assertEquals(9L, states.last().summary?.totals?.requestCount)
+    }
+
     @Test fun `read failures expose retryable state and later invalidation recovers`() = runTest {
         val revisions = MutableStateFlow(1L)
         val states = mutableListOf<RequestUsageState>()

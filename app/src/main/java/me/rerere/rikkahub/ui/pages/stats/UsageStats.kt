@@ -7,6 +7,7 @@ import kotlinx.coroutines.flow.buffer
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.flow.onStart
+import kotlinx.coroutines.flow.scan
 import me.rerere.rikkahub.data.db.dao.UsageSummary
 import java.text.NumberFormat
 import java.time.Clock
@@ -44,6 +45,8 @@ data class RequestUsageState(
     val isLoading: Boolean = true,
     val error: String? = null,
     val providerNames: Map<String, String> = emptyMap(),
+    /** Scope of the visible summary while a newly selected range is loading. */
+    val summaryRange: UsageTimeRange = range,
 )
 
 /** Both changing a range and an invalidation cancel the previous read before publishing. */
@@ -63,7 +66,13 @@ internal fun requestUsageStates(
             RequestUsageState(range = range, isLoading = false, error = "暂时无法读取请求用量，请重试。")
         }
     }.buffer(0).onStart { emit(RequestUsageState(range = range)) }
-}.buffer(0)
+}.buffer(0).scan(RequestUsageState()) { previous, next ->
+    // Keep the card's content and height while reading a new range. Its old scope is
+    // retained explicitly so the selected chip never relabels old numbers as new data.
+    if (next.isLoading && previous.summary != null) {
+        next.copy(summary = previous.summary, summaryRange = previous.summaryRange)
+    } else next
+}
 
 internal fun usageNumber(value: Long): String = NumberFormat.getIntegerInstance().format(value)
 

@@ -16,11 +16,6 @@ import kotlinx.serialization.json.contentOrNull
 import me.rerere.rikkahub.workflow.model.*
 import org.koin.androidx.compose.koinViewModel
 
-private enum class TriggerChoice(val title: String) {
-    MANUAL("手动运行"), TIME("每天定时"), WIFI_ON("连接 WiFi"), WIFI_OFF("断开 WiFi"),
-    BT_ON("连接蓝牙设备"), BT_OFF("断开蓝牙设备"), HEADPHONES_ON("插入耳机"), HEADPHONES_OFF("拔出耳机"),
-    POWER_ON("接入电源"), POWER_OFF("断开电源"), SCREEN_ON("屏幕点亮"), SCREEN_OFF("屏幕熄灭"), BOOT("开机完成"),
-}
 private data class DraftAction(val tool: String, val args: String, val timeout: String)
 
 @Composable
@@ -32,7 +27,12 @@ fun WorkflowEditorDialog(initial: WorkflowDefinition, onDismiss: () -> Unit, onS
     var dailyCap by remember(initial.id) { mutableStateOf(initial.maxRunsPerDay?.toString().orEmpty()) }
     var time by remember(initial.id) { mutableStateOf((initial.trigger as? TriggerSpec.TimeCron)?.timeOfDay ?: "08:00") }
     var ssid by remember(initial.id) { mutableStateOf((initial.trigger as? TriggerSpec.WifiConnected)?.ssid ?: (initial.trigger as? TriggerSpec.WifiDisconnected)?.ssid.orEmpty()) }
-    var choice by remember(initial.id) { mutableStateOf(initial.toChoice()) }
+    val initialInterval = remember(initial.id) { Regex("^@every\\s+(\\d+)([mhd])$").matchEntire((initial.trigger as? TriggerSpec.TimeCron)?.cron?.trim().orEmpty()) }
+    var interval by remember(initial.id) { mutableStateOf(initialInterval?.groupValues?.get(1) ?: "30") }
+    var intervalUnit by remember(initial.id) { mutableStateOf(IntervalUnit.entries.firstOrNull { it.suffix == initialInterval?.groupValues?.get(2) } ?: IntervalUnit.MINUTES) }
+    var cron by remember(initial.id) { mutableStateOf((initial.trigger as? TriggerSpec.TimeCron)?.cron ?: "0 9 * * 1-5") }
+    var battery by remember(initial.id) { mutableStateOf(when (val trigger = initial.trigger) { is TriggerSpec.BatteryBelow -> trigger.thresholdPercent; is TriggerSpec.BatteryAbove -> trigger.thresholdPercent; else -> 20 }.toString()) }
+    var choice by remember(initial.id) { mutableStateOf(initial.trigger.editorChoice()) }
     var menuExpanded by remember { mutableStateOf(false) }
     var validationError by remember { mutableStateOf<String?>(null) }
     var saving by remember { mutableStateOf(false) }
@@ -45,9 +45,33 @@ fun WorkflowEditorDialog(initial: WorkflowDefinition, onDismiss: () -> Unit, onS
             OutlinedTextField(description, { description = it }, label = { Text("描述（可选）") }, enabled = !saving, modifier = Modifier.fillMaxWidth())
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { Text("状态", Modifier.weight(1f).padding(top = 10.dp)); FilterChip(enabled = !saving, selected = enabled, onClick = { enabled = !enabled }, label = { Text(if (enabled) "已启用" else "已停用") }) }
             Text("触发器", style = MaterialTheme.typography.titleSmall)
+            if (initial.trigger is TriggerSpec.TimeCron && oneLineTriggerSummary(initial) == "定时配置无效，请编辑修复") {
+                Text("原定时配置无效，已停止自动执行；请修正后保存。", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+            }
             OutlinedButton(enabled = !saving, onClick = { menuExpanded = true }, modifier = Modifier.fillMaxWidth()) { Text(choice?.title ?: "已保留原触发器（暂不支持编辑）") }
             DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) { TriggerChoice.entries.forEach { item -> DropdownMenuItem(text = { Text(item.title) }, onClick = { choice = item; menuExpanded = false }) } }
-            when (choice) { TriggerChoice.TIME -> OutlinedTextField(time, { time = it }, label = { Text("时间（HH:mm）") }, singleLine = true, enabled = !saving, modifier = Modifier.fillMaxWidth()); TriggerChoice.WIFI_ON, TriggerChoice.WIFI_OFF -> OutlinedTextField(ssid, { ssid = it }, label = { Text("SSID（留空表示任意 WiFi）") }, singleLine = true, enabled = !saving, modifier = Modifier.fillMaxWidth()); else -> Unit }
+            when (choice) {
+                TriggerChoice.TIME -> OutlinedTextField(time, { time = it }, label = { Text("时间（HH:mm）") }, singleLine = true, enabled = !saving, modifier = Modifier.fillMaxWidth())
+                TriggerChoice.INTERVAL -> {
+                    OutlinedTextField(interval, { interval = it.filter(Char::isDigit) }, label = { Text("每隔多久运行一次") }, singleLine = true, enabled = !saving, modifier = Modifier.fillMaxWidth())
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        IntervalUnit.entries.forEach { unit -> FilterChip(selected = intervalUnit == unit, onClick = { intervalUnit = unit }, enabled = !saving, label = { Text(unit.title) }) }
+                    }
+                }
+                TriggerChoice.CRON -> OutlinedTextField(cron, { cron = it }, label = { Text("Cron（分 时 日 月 周）") }, supportingText = { Text("例如 0 9 * * 1-5：周一到周五 09:00") }, singleLine = true, enabled = !saving, modifier = Modifier.fillMaxWidth())
+                TriggerChoice.BATTERY_LOW, TriggerChoice.BATTERY_HIGH -> OutlinedTextField(battery, { battery = it.filter(Char::isDigit) }, label = { Text("电量百分比（1-100）") }, singleLine = true, enabled = !saving, modifier = Modifier.fillMaxWidth())
+                TriggerChoice.WIFI_ON, TriggerChoice.WIFI_OFF -> OutlinedTextField(ssid, { ssid = it }, label = { Text("SSID（留空表示任意 WiFi）") }, supportingText = { Text("指定 WiFi 名称需要定位权限及系统定位开启。") }, singleLine = true, enabled = !saving, modifier = Modifier.fillMaxWidth())
+                else -> Unit
+            }
+            if (choice == TriggerChoice.INTERVAL) {
+                Text("系统可能因省电策略延后执行；间隔从保存后开始，最低 15 分钟，不补跑错过的次数。", style = MaterialTheme.typography.bodySmall)
+            } else if (choice in listOf(TriggerChoice.TIME, TriggerChoice.CRON)) {
+                Text("系统可能因省电策略延后执行；错过的时间不会逐次补跑。", style = MaterialTheme.typography.bodySmall)
+            } else if (choice == null && (initial.trigger is TriggerSpec.BluetoothDeviceConnected || initial.trigger is TriggerSpec.BluetoothDeviceDisconnected)) {
+                Text("原蓝牙触发器已保留；此版本未提供蓝牙授权，建议改选其他触发器。", style = MaterialTheme.typography.bodySmall)
+            } else if (choice != TriggerChoice.MANUAL && choice != TriggerChoice.BOOT) {
+                Text("此类事件需应用进程仍在运行；后台被系统关闭后，重新打开应用才会继续监听。", style = MaterialTheme.typography.bodySmall)
+            }
             Text("执行步骤（${actions.size}/${WorkflowConstants.MAX_ACTIONS}）", style = MaterialTheme.typography.titleSmall)
             if (catalog.isEmpty()) Text("工具目录暂时不可用；已有步骤仍可编辑，保存时会继续校验。", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
             actions.forEachIndexed { index, action -> ActionDraftRow(index, action, catalog, saving, { actions[index] = it }, { actions.removeAt(index) }, { delta -> val target = index + delta; if (target in actions.indices) { val x = actions.removeAt(index); actions.add(target, x) } }, { if (actions.size < WorkflowConstants.MAX_ACTIONS) actions.add(index + 1, action) }) }
@@ -62,7 +86,7 @@ fun WorkflowEditorDialog(initial: WorkflowDefinition, onDismiss: () -> Unit, onS
             val cd = cooldown.toIntOrNull() ?: error("冷却秒数无效"); require(cd in 0..WorkflowConstants.MAX_COOLDOWN_S) { "冷却秒数范围为 0..${WorkflowConstants.MAX_COOLDOWN_S}" }
             val cap = dailyCap.toIntOrNull(); require(dailyCap.isBlank() || cap != null) { "每日上限无效" }; require(cap == null || cap in WorkflowConstants.MAX_RUNS_PER_DAY_FLOOR..WorkflowConstants.MAX_RUNS_PER_DAY_CEIL) { "每日上限范围无效" }
             val parsed = actions.mapIndexed { i, a -> require(a.tool.isNotBlank()) { "第 ${i + 1} 步请选择工具" }; val args = runCatching { Json.parseToJsonElement(a.args) as? JsonObject }.getOrNull() ?: error("第 ${i + 1} 步参数必须是 JSON 对象"); val timeout = a.timeout.toIntOrNull() ?: error("第 ${i + 1} 步超时无效"); require(timeout in WorkflowConstants.MIN_ACTION_TIMEOUT_S..WorkflowConstants.MAX_ACTION_TIMEOUT_S) { "第 ${i + 1} 步超时范围为 1..600 秒" }; WorkflowAction(a.tool.trim(), args, timeout) }
-            val next = initial.copy(name = name.trim(), description = description.trim().ifBlank { null }, enabled = enabled, trigger = choice?.toTrigger(time, ssid, initial.trigger) ?: initial.trigger, actions = parsed, cooldownSeconds = cd, maxRunsPerDay = cap)
+            val next = initial.copy(name = name.trim(), description = description.trim().ifBlank { null }, enabled = enabled, trigger = choice?.toTrigger(time, ssid, initial.trigger, interval, intervalUnit, cron, battery) ?: initial.trigger, actions = parsed, cooldownSeconds = cd, maxRunsPerDay = cap)
             // Keep legacy actions editable even when a disabled MCP/plugin is absent from the
             // current catalog; newly selected tools still come from the catalog dropdown.
             val known = (catalog.map { it.name } + initial.actions.map { it.tool }).toSet()
@@ -102,9 +126,4 @@ fun WorkflowEditorDialog(initial: WorkflowDefinition, onDismiss: () -> Unit, onS
 fun toolDisplayName(name: String, description: String): String {
     val summary = description.lineSequence().firstOrNull { it.isNotBlank() }?.trim()?.take(56)
     return if (summary.isNullOrBlank()) name else "$name · $summary"
-}
-private fun WorkflowDefinition.toChoice(): TriggerChoice? = when (trigger) { is TriggerSpec.TimeCron -> if (trigger.timeOfDay != null) TriggerChoice.TIME else null; is TriggerSpec.WifiConnected -> TriggerChoice.WIFI_ON; is TriggerSpec.WifiDisconnected -> TriggerChoice.WIFI_OFF; is TriggerSpec.BluetoothDeviceConnected -> TriggerChoice.BT_ON; is TriggerSpec.BluetoothDeviceDisconnected -> TriggerChoice.BT_OFF; TriggerSpec.HeadphonesPlugged -> TriggerChoice.HEADPHONES_ON; TriggerSpec.HeadphonesUnplugged -> TriggerChoice.HEADPHONES_OFF; TriggerSpec.PowerConnected -> TriggerChoice.POWER_ON; TriggerSpec.PowerDisconnected -> TriggerChoice.POWER_OFF; TriggerSpec.ScreenOn -> TriggerChoice.SCREEN_ON; TriggerSpec.ScreenOff -> TriggerChoice.SCREEN_OFF; TriggerSpec.BootCompleted -> TriggerChoice.BOOT; TriggerSpec.Manual -> TriggerChoice.MANUAL; else -> null }
-private fun TriggerChoice.toTrigger(time: String, ssid: String, original: TriggerSpec): TriggerSpec = when (this) {
-    TriggerChoice.TIME -> (original as? TriggerSpec.TimeCron)?.takeIf { it.cron == null }?.copy(timeOfDay = time) ?: TriggerSpec.TimeCron(timeOfDay = time)
-    TriggerChoice.WIFI_ON -> TriggerSpec.WifiConnected(ssid.ifBlank { null }); TriggerChoice.WIFI_OFF -> TriggerSpec.WifiDisconnected(ssid.ifBlank { null }); TriggerChoice.BT_ON -> TriggerSpec.BluetoothDeviceConnected(); TriggerChoice.BT_OFF -> TriggerSpec.BluetoothDeviceDisconnected(); TriggerChoice.HEADPHONES_ON -> TriggerSpec.HeadphonesPlugged; TriggerChoice.HEADPHONES_OFF -> TriggerSpec.HeadphonesUnplugged; TriggerChoice.POWER_ON -> TriggerSpec.PowerConnected; TriggerChoice.POWER_OFF -> TriggerSpec.PowerDisconnected; TriggerChoice.SCREEN_ON -> TriggerSpec.ScreenOn; TriggerChoice.SCREEN_OFF -> TriggerSpec.ScreenOff; TriggerChoice.BOOT -> TriggerSpec.BootCompleted; TriggerChoice.MANUAL -> TriggerSpec.Manual
 }

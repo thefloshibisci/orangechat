@@ -421,6 +421,7 @@ class RouteActivity : ComponentActivity() {
                     alignment = Alignment.TopCenter,
                     showCloseButton = true,
                 )
+                me.rerere.rikkahub.ui.components.ui.AppUpdateHost()
                 Box(
                     modifier = Modifier
                         .fillMaxSize()

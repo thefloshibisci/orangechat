@@ -1424,6 +1424,7 @@ class ChatService(
                 onToolCheckpoint = { checkpointMessages ->
                     diagnosticTrace?.stage("saving tool checkpoint")
                     session.withStateLock {
+                        if (session.isDeleted || session.getJob() !== rawArchiveOwner) return@withStateLock
                         if (regenerationNodeId != null && regenerationMessageId == null) {
                             regenerationMessageId = checkpointMessages.firstOrNull { it.id !in requestMessageIds }?.id
                         }

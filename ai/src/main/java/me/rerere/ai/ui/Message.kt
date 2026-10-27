@@ -40,7 +40,8 @@ data class UIMessage(
     val finishedAt: LocalDateTime? = null,
     val modelId: Uuid? = null,
     val usage: TokenUsage? = null,
-    val translation: String? = null
+    val translation: String? = null,
+    val modelTimings: List<ModelTurnTiming> = emptyList(),
 ) {
     private fun appendChunk(chunk: MessageChunk): UIMessage {
         val choice = chunk.choices.getOrNull(0)
@@ -487,7 +488,8 @@ sealed class UIMessagePart {
         val input: String,
         val output: List<UIMessagePart> = emptyList(),
         val approvalState: ToolApprovalState = ToolApprovalState.Auto,
-        override var metadata: JsonObject? = null
+        override var metadata: JsonObject? = null,
+        val timing: ToolTiming? = null,
     ) : UIMessagePart() {
         /** Whether the tool has been executed (has output) */
         val isExecuted: Boolean get() = output.isNotEmpty()
@@ -511,6 +513,7 @@ sealed class UIMessagePart {
                 output = output + other.output,
                 approvalState = approvalState,
                 metadata = if (other.metadata != null) other.metadata else metadata,
+                timing = timing ?: other.timing,
             )
         }
     }

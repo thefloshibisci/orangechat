@@ -44,9 +44,8 @@ internal fun RequestUsageCard(
                     FilterChip(selected = state.range == range, onClick = { onRangeChange(range) }, label = { Text(range.label) })
                 }
             }
-            Text("按本地时间统计", style = MaterialTheme.typography.labelSmall)
             when {
-                state.isLoading -> {
+                state.isLoading && state.summary == null -> {
                     CircularProgressIndicator()
                     Text("正在读取请求用量…", style = MaterialTheme.typography.bodyMedium)
                 }

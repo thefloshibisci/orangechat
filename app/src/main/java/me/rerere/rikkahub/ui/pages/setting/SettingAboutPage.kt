@@ -172,7 +172,7 @@ fun SettingAboutPage() {
                             onClick = {
                                 if (updateState !is UiState.Loading) {
                                     updateState = UiState.Loading
-                                    scope.launch { updateChecker.checkUpdate().collect { updateState = it } }
+                                    scope.launch { updateChecker.checkUpdate(force = true).collect { updateState = it } }
                                 }
                             },
                             leadingContent = { Icon(HugeIcons.Code, null) },

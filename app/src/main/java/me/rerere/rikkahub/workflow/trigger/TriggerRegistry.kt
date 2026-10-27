@@ -60,7 +60,7 @@ class TriggerRegistry(
     private val power = PowerTriggerFamily(context, triggerScope)
     private val screen = ScreenTriggerFamily(context, triggerScope)
     private val battery = BatteryTriggerFamily(context, triggerScope)
-    private val timeCron = TimeCronTriggerFamily(context, triggerScope)
+    private val timeCron = TimeCronTriggerFamily(context)
     private val geofence = GeofenceTriggerFamily(context, triggerScope)
     private val appForeground = AppForegroundTriggerFamily(triggerScope)
     private val notification = NotificationTriggerFamily(triggerScope)
@@ -140,8 +140,9 @@ class TriggerRegistry(
     }
 
     /** Called by [WorkflowTimeCronWorker] when its scheduled time arrives. */
-    suspend fun fireFromTimeCronWorker(workflowId: String) {
-        timeCron.onWorkerFired(workflowId)
+    suspend fun fireFromTimeCronWorker(workflowId: String, callback: TriggerFireCallback? = engineFire, scheduledFingerprint: String? = null) {
+        // A worker can start before the debounced repository sync populates the family.
+        timeCron.onWorkerFired(workflowId, callback, scheduledFingerprint)
     }
 
     suspend fun shutdown() {

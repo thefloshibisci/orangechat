@@ -96,18 +96,21 @@ import androidx.compose.ui.util.fastFilter
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.dokar.sonner.ToastType
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import me.rerere.ai.provider.BuiltInTools
 import me.rerere.ai.provider.AudioInputMode
 import me.rerere.ai.provider.supportsDirectAudio
 import me.rerere.ai.provider.Modality
 import me.rerere.ai.provider.Model
+import me.rerere.ai.provider.ModelCapabilityMode
 import me.rerere.ai.provider.ModelAbility
 import me.rerere.ai.provider.ModelType
 import me.rerere.ai.provider.ProviderManager
 import me.rerere.ai.provider.ProviderSetting
 import me.rerere.ai.provider.TextGenerationParams
 import me.rerere.ai.registry.ModelRegistry
+import me.rerere.rikkahub.data.model.ModelCapabilitySync
 import me.rerere.ai.ui.UIMessage
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.ui.components.ai.ModelAbilityTag
@@ -396,21 +399,36 @@ private fun ModelList(
     onEditModel: (Model, Model) -> Unit,
 ) {
     val providerManager = koinInject<ProviderManager>()
-    val modelList by produceState(emptyList(), providerSetting) {
-        runCatching {
-            println("loading models...")
-            value = providerManager.getProviderByType(providerSetting)
-                .listModels(providerSetting)
+    val capabilitySync = koinInject<ModelCapabilitySync>()
+    val capabilityState by capabilitySync.state.collectAsStateWithLifecycle()
+    val capabilityScope = rememberCoroutineScope()
+    var modelListRefresh by remember(providerSetting.id) { mutableStateOf(0) }
+    var loadingModels by remember(providerSetting.id) { mutableStateOf(false) }
+    var modelListError by remember(providerSetting.id) { mutableStateOf<String?>(null) }
+    // Capability saves and model reordering must not trigger another authenticated list request.
+    val listingProvider = remember(providerSetting) { providerSetting.copyProvider(models = emptyList()) }
+    val modelList by produceState(emptyList(), listingProvider, modelListRefresh) {
+        loadingModels = true
+        modelListError = null
+        try {
+            val discovered = providerManager.getProviderByType(listingProvider).listModels(listingProvider)
                 .sortedBy { it.modelId }
-                .toList()
-        }.onFailure {
-            it.printStackTrace()
+            value = discovered
+            if (listingProvider is ProviderSetting.Codex) capabilitySync.applyCodexMetadata(discovered)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            modelListError = "模型列表更新失败，继续使用已保存的模型能力。"
+        } finally {
+            loadingModels = false
         }
     }
     var expanded by rememberSaveable { mutableStateOf(true) }
     val lazyListState = rememberLazyListState()
     val reorderableLazyListState = rememberReorderableLazyListState(lazyListState) { from, to ->
-        onUpdateProvider(providerSetting.moveMove(from.index, to.index))
+        val fromIndex = providerSetting.models.indexOfFirst { it.id == from.key }
+        val toIndex = providerSetting.models.indexOfFirst { it.id == to.key }
+        if (fromIndex >= 0 && toIndex >= 0) onUpdateProvider(providerSetting.moveMove(fromIndex, toIndex))
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -427,6 +445,40 @@ private fun ModelList(
             verticalArrangement = Arrangement.spacedBy(8.dp),
             state = lazyListState
         ) {
+            item {
+                OutlinedCard(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        if (providerSetting is ProviderSetting.Codex) {
+                            Text("Codex 官方模型能力", style = MaterialTheme.typography.titleSmall)
+                            Text(
+                                "在登录、刷新模型或打开模型列表时更新自动识别的图片、工具和推理能力。原有或手动设置保留，可在模型编辑中开启自动识别；离线使用上次资料。",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                            modelListError?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+                            TextButton(onClick = { modelListRefresh++ }, enabled = !loadingModels) {
+                                Text(if (loadingModels) "正在刷新官方模型…" else "刷新官方模型资料")
+                            }
+                        } else {
+                            Text("模型能力资料", style = MaterialTheme.typography.titleSmall)
+                            Text(
+                                "自动识别会让图片、工具和推理能力每日跟随 models.dev 资料更新。新模型默认开启；原有模型保留当前设置，可在编辑中开启。离线继续使用已保存的资料。",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                            capabilityState.error?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+                            capabilityState.lastUpdatedAt?.let {
+                                Text(
+                                    "资料更新于 ${java.text.DateFormat.getDateTimeInstance().format(java.util.Date(it))}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                            }
+                            TextButton(
+                                onClick = { capabilityScope.launch { capabilitySync.refresh(force = true) } },
+                                enabled = !capabilityState.refreshing,
+                            ) { Text(if (capabilityState.refreshing) "正在更新资料…" else "立即更新模型资料") }
+                        }
+                    }
+                }
+            }
             // 模型列表
             if (providerSetting.models.isEmpty()) {
                 item {
@@ -510,6 +562,7 @@ private fun ModelSettingsForm(
 ) {
     val pagerState = rememberPagerState { 3 }
     val scope = rememberCoroutineScope()
+    val capabilitySync = koinInject<ModelCapabilitySync>()
 
     fun setModelId(id: String) {
         val inputModality = ModelRegistry.MODEL_INPUT_MODALITIES.getData(id)
@@ -521,7 +574,9 @@ private fun ModelSettingsForm(
                 displayName = id,
                 inputModalities = inputModality,
                 outputModalities = outputModality,
-                abilities = abilities
+                abilities = abilities,
+                capabilityMode = ModelCapabilityMode.AUTO,
+                capabilitySource = "builtin",
             )
         )
     }
@@ -612,15 +667,42 @@ private fun ModelSettingsForm(
                             }
                         )
 
+                        run {
+                            val usesCodexMetadata = (model.providerOverwrite ?: parentProvider) is ProviderSetting.Codex
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Column(Modifier.weight(1f)) {
+                                    Text("自动识别模型能力")
+                                    Text(
+                                        when {
+                                            model.capabilityMode != ModelCapabilityMode.AUTO -> "使用手动设置，自动更新不会覆盖当前能力"
+                                            usesCodexMetadata -> "跟随 Codex 官方资料，在登录或刷新模型列表时更新"
+                                            model.capabilitySource?.startsWith("models.dev:") == true -> "来源：${model.capabilitySource}"
+                                            else -> "使用内置资料，联网精确匹配成功后自动更新"
+                                        },
+                                        style = MaterialTheme.typography.bodySmall,
+                                    )
+                                }
+                                Switch(
+                                    checked = model.capabilityMode == ModelCapabilityMode.AUTO,
+                                    onCheckedChange = { enabled ->
+                                        onModelChange(
+                                            if (enabled && parentProvider != null) capabilitySync.enableAutomatic(parentProvider, model)
+                                            else model.copy(capabilityMode = ModelCapabilityMode.MANUAL, capabilitySource = null)
+                                        )
+                                    },
+                                )
+                            }
+                        }
+
                         ModelModalitySelector(
                             model = model,
                             inputModalities = model.inputModalities,
                             onUpdateInputModalities = {
-                                onModelChange(model.copy(inputModalities = it))
+                                onModelChange(model.copy(inputModalities = it, capabilityMode = ModelCapabilityMode.MANUAL, capabilitySource = null))
                             },
                             outputModalities = model.outputModalities,
                             onUpdateOutputModalities = {
-                                onModelChange(model.copy(outputModalities = it))
+                                onModelChange(model.copy(outputModalities = it, capabilityMode = ModelCapabilityMode.MANUAL, capabilitySource = null))
                             }
                         )
 
@@ -628,7 +710,7 @@ private fun ModelSettingsForm(
                             ModalAbilitySelector(
                                 abilities = model.abilities,
                                 onUpdateAbilities = {
-                                    onModelChange(model.copy(abilities = it))
+                                    onModelChange(model.copy(abilities = it, capabilityMode = ModelCapabilityMode.MANUAL, capabilitySource = null))
                                 }
                             )
                         }
@@ -745,7 +827,9 @@ private fun AddModelButton(
                     if (parentProvider is ProviderSetting.Codex) model else model.copy(
                         inputModalities = inputModalities,
                         outputModalities = outputModalities,
-                        abilities = abilities
+                        abilities = abilities,
+                        capabilityMode = ModelCapabilityMode.AUTO,
+                        capabilitySource = "builtin",
                     )
                 )
             },
@@ -761,7 +845,9 @@ private fun AddModelButton(
                             if (parentProvider is ProviderSetting.Codex) model else model.copy(
                                 inputModalities = ModelRegistry.MODEL_INPUT_MODALITIES.getData(model.modelId),
                                 outputModalities = ModelRegistry.MODEL_OUTPUT_MODALITIES.getData(model.modelId),
-                                abilities = ModelRegistry.MODEL_ABILITIES.getData(model.modelId)
+                                abilities = ModelRegistry.MODEL_ABILITIES.getData(model.modelId),
+                                capabilityMode = ModelCapabilityMode.AUTO,
+                                capabilitySource = "builtin",
                             )
                         }
                     )
@@ -780,7 +866,7 @@ private fun AddModelButton(
 
         Button(
             onClick = {
-                dialogState.open(Model())
+                dialogState.open(Model(capabilityMode = ModelCapabilityMode.AUTO))
             }
         ) {
             Row(

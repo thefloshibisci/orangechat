@@ -28,11 +28,12 @@ class WorkflowTimeCronWorker(
 ) : CoroutineWorker(appContext, params), KoinComponent {
 
     private val registry: TriggerRegistry by inject()
+    private val engine: me.rerere.rikkahub.workflow.execution.WorkflowEngine by inject()
 
     override suspend fun doWork(): Result {
         applicationContext.awaitChatRecovery()
         val workflowId = inputData.getString(TimeCronTriggerFamily.KEY_WORKFLOW_ID) ?: return Result.failure()
-        registry.fireFromTimeCronWorker(workflowId)
+        registry.fireFromTimeCronWorker(workflowId, engine.triggerCallback, inputData.getString(TimeCronTriggerFamily.KEY_SCHEDULE))
         return Result.success()
     }
 }

@@ -95,12 +95,14 @@ val appModule = module {
     }
 
     single {
-        UpdateChecker(get())
+        UpdateChecker(get(), get(), get())
     }
 
     single {
         AppScope()
     }
+
+    single { me.rerere.rikkahub.data.model.ModelCapabilitySync(get(), get()) }
 
     single<EmojiData> {
         EmojiUtils.loadEmoji(get())

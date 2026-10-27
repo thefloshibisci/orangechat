@@ -28,7 +28,7 @@ internal fun aboutUpdateStatus(state: UiState<UpdateInfo>, currentVersion: Strin
     UiState.Idle -> "仅检查本项目正式版"
     UiState.Loading -> "正在检查本项目正式版…"
     is UiState.Success -> if (Version(state.data.version) > Version(currentVersion)) {
-        "发现新版本 ${state.data.version}，请在下方「版本发布」查看"
+        "发现新版本 ${state.data.version}，可直接下载更新"
     } else {
         "当前已是最新版本（$currentVersion）"
     }
@@ -62,19 +62,38 @@ internal fun projectUpdateAssetMatchesChannel(name: String, applicationId: Strin
     }
 }
 
-internal fun selectProjectUpdate(release: GithubRelease, applicationId: String): UpdateInfo {
+internal fun projectUpdateAssetMatchesAbi(name: String, supportedAbis: List<String>): Boolean {
+    if (supportedAbis.isEmpty()) return true // Host-side callers without a device ABI.
+    val value = name.lowercase(java.util.Locale.ROOT)
+    val abi = when {
+        "arm64-v8a" in value || Regex("(?:^|[-_])arm64(?:[-_.]|$)").containsMatchIn(value) -> "arm64-v8a"
+        "armeabi-v7a" in value || "armv7" in value -> "armeabi-v7a"
+        "x86_64" in value || "x86-64" in value -> "x86_64"
+        Regex("(?:^|[-_])x86(?:[-_.]|$)").containsMatchIn(value) -> "x86"
+        "universal" in value -> return true
+        else -> return false
+    }
+    return abi in supportedAbis
+}
+
+internal fun selectProjectUpdate(
+    release: GithubRelease,
+    applicationId: String,
+    supportedAbis: List<String> = emptyList(),
+): UpdateInfo {
     check(!release.draft && !release.prerelease &&
         release.tagName.matches(Regex("[vV]?\\d+(?:\\.\\d+){1,3}(?:\\+[A-Za-z0-9.-]+)?"))) {
         "更新源未返回可用的正式版本"
     }
     val downloads = release.assets.filter { asset ->
         asset.size > 0 && isTrustedProjectDownload(asset.browserDownloadUrl, asset.name, release.tagName) &&
-            projectUpdateAssetMatchesChannel(asset.name, applicationId)
+            projectUpdateAssetMatchesChannel(asset.name, applicationId) &&
+            projectUpdateAssetMatchesAbi(asset.name, supportedAbis)
     }.map { asset ->
         val megabytes = asset.size.toDouble() / (1024 * 1024)
         val size = if (megabytes >= 1) String.format("%.1f MB", megabytes)
         else String.format("%.0f KB", asset.size.toDouble() / 1024)
-        UpdateDownload(asset.name, asset.browserDownloadUrl, size)
+        UpdateDownload(asset.name, asset.browserDownloadUrl, size, asset.size, asset.digest)
     }
     check(downloads.isNotEmpty()) { "当前安装渠道暂无可直接覆盖的安装包，请在项目发布页核对" }
     return UpdateInfo(
