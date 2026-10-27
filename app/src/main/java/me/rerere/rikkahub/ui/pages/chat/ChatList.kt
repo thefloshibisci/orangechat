@@ -127,6 +127,9 @@ private const val TAG = "ChatList"
 private const val LoadingIndicatorKey = "LoadingIndicator"
 private const val ScrollBottomKey = "ScrollBottomKey"
 
+/** Plain holder (not snapshot state) so tracking the previous list never triggers recomposition. */
+private class CompressedHistoryToggleAnchor(var show: Boolean, var nodes: List<MessageNode>)
+
 @Composable
 fun ChatList(
     showCompressedHistory: Boolean = false,
@@ -322,6 +325,20 @@ private fun ChatListNormal(
                 !(msg.role == MessageRole.USER && text.contains("[主动消息上下文]"))
             }
         }
+
+        // Toggling the eye must not jump: keep the message on screen. If that message is an original
+        // that just got hidden, land on the first message after the latest compression instead.
+        val toggleAnchor = remember { CompressedHistoryToggleAnchor(showCompressedHistory, displayNodes) }
+        if (toggleAnchor.show != showCompressedHistory) {
+            val anchorId = toggleAnchor.nodes.getOrNull(state.firstVisibleItemIndex)?.id
+            if (anchorId != null) {
+                val target = displayNodes.indexOfFirst { it.id == anchorId }
+                if (target >= 0) state.requestScrollToItem(target, state.firstVisibleItemScrollOffset)
+                else state.requestScrollToItem(0)
+            }
+            toggleAnchor.show = showCompressedHistory
+        }
+        toggleAnchor.nodes = displayNodes
 
         LazyColumn(
             state = state,

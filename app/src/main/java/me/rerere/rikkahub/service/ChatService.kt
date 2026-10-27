@@ -65,6 +65,7 @@ import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.data.model.ConversationSummary
 import me.rerere.rikkahub.data.model.CompressionUndoMode
 import me.rerere.rikkahub.data.model.summaryParagraphs
+import me.rerere.rikkahub.data.model.withResolvedGroups
 import me.rerere.rikkahub.data.ai.buildConversationRequestMessages
 import me.rerere.rikkahub.data.ai.planCompressionSummaryMerge
 import me.rerere.rikkahub.data.ai.mergeExistingSummaryDraft
@@ -1537,7 +1538,8 @@ class ChatService(
         val textsToMerge = mergePlan.textsToMerge
         val merged = if (textsToMerge.size == 1) textsToMerge.single() else
             compressMessages(textsToMerge.map { UIMessage.user(it) })
-        val summaries = mergePlan.preservedSummaries + summaryParagraphs(merged)
+        val summaries = mergePlan.preservedSummaries.withResolvedGroups(base.compressionHistory) +
+            summaryParagraphs(merged)
         session.saveMutex.withLock {
             val updated = session.state.value.withCompressionResult(base, sources, summaries)
             saveConversationLocked(conversationId, updated)

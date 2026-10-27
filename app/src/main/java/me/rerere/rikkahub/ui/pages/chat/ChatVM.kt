@@ -44,6 +44,8 @@ import me.rerere.rikkahub.data.repository.ConversationRepository
 import me.rerere.rikkahub.data.repository.FavoriteRepository
 import me.rerere.rikkahub.service.ChatError
 import me.rerere.rikkahub.service.ChatService
+import me.rerere.rikkahub.ui.hooks.readBooleanPreference
+import me.rerere.rikkahub.ui.hooks.writeBooleanPreference
 import me.rerere.rikkahub.ui.hooks.writeStringPreference
 import me.rerere.rikkahub.ui.hooks.ChatInputState
 import me.rerere.rikkahub.utils.UiState
@@ -66,7 +68,23 @@ class ChatVM(
     private val _conversationId: Uuid = Uuid.parse(id)
     val conversation: StateFlow<Conversation> = chatService.getConversationFlow(_conversationId)
     var chatListInitialized by mutableStateOf(false) // 聊天列表是否已经滚动到底部
-    var showCompressedHistory by mutableStateOf(false)
+    private val showCompressedHistoryKey = "compression_show_original_$_conversationId"
+    private var showCompressedHistoryState by mutableStateOf(
+        context.readBooleanPreference(showCompressedHistoryKey, false)
+    )
+
+    /** Per-conversation eye toggle; persisted so switching chats or relaunching keeps the user's choice. */
+    var showCompressedHistory: Boolean
+        get() = showCompressedHistoryState
+        set(value) {
+            showCompressedHistoryState = value
+            context.writeBooleanPreference(showCompressedHistoryKey, value)
+        }
+
+    /** Reveal originals for a one-off jump (e.g. from favorites) without overwriting the saved preference. */
+    fun revealCompressedHistoryTemporarily() {
+        showCompressedHistoryState = true
+    }
     var summaryDialogConversation by mutableStateOf<Conversation?>(null)
 
     fun openSummary(conversationId: Uuid) {
