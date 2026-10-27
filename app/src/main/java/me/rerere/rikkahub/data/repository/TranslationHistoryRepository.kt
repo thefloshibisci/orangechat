@@ -1,6 +1,6 @@
 package me.rerere.rikkahub.data.repository
 
-import androidx.paging.PagingSource
+import kotlinx.coroutines.flow.Flow
 import me.rerere.rikkahub.data.db.dao.TranslationHistoryDAO
 import me.rerere.rikkahub.data.db.entity.TranslationHistoryEntity
 import kotlin.uuid.Uuid
@@ -10,7 +10,7 @@ private const val MAX_HISTORY_COUNT = 100
 class TranslationHistoryRepository(
     private val dao: TranslationHistoryDAO,
 ) {
-    fun pagingAll(): PagingSource<Int, TranslationHistoryEntity> = dao.pagingAll()
+    fun observeRecent(): Flow<List<TranslationHistoryEntity>> = dao.observeRecent()
 
     suspend fun add(
         sourceText: String,

@@ -25,6 +25,7 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -33,11 +34,17 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.paging.LoadState
-import androidx.paging.PagingData
-import androidx.paging.compose.LazyPagingItems
-import androidx.paging.compose.collectAsLazyPagingItems
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.onStart
+import kotlinx.coroutines.flow.runningFold
+import kotlinx.coroutines.flow.update
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.Delete01
 import me.rerere.rikkahub.data.db.entity.TranslationHistoryEntity
@@ -49,54 +56,74 @@ import java.util.Locale
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun TranslationHistorySheet(
-    history: Flow<PagingData<TranslationHistoryEntity>>,
+    history: Flow<List<TranslationHistoryEntity>>,
     onRestore: (TranslationHistoryEntity) -> Unit,
     onDelete: (TranslationHistoryEntity) -> Unit,
     onClear: () -> Unit,
     onDismiss: () -> Unit,
 ) {
-    val entries = history.collectAsLazyPagingItems()
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         containerColor = MaterialTheme.colorScheme.surfaceContainer,
     ) {
-        TranslationHistoryPagingContent(entries, onRestore, onDelete, onClear,
+        TranslationHistoryDataContent(history, onRestore, onDelete, onClear,
             modifier = Modifier.fillMaxHeight(0.85f))
     }
 }
 
 @Composable
-internal fun TranslationHistoryPagingContent(
-    entries: LazyPagingItems<TranslationHistoryEntity>,
+internal fun TranslationHistoryDataContent(
+    history: Flow<List<TranslationHistoryEntity>>,
     onRestore: (TranslationHistoryEntity) -> Unit,
     onDelete: (TranslationHistoryEntity) -> Unit,
     onClear: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    // Count, keys and displayed data must belong to one immutable paging presentation.
-    // Lazy layout may still ask an old key factory after deletion publishes an empty one.
-    val snapshot = entries.itemSnapshotList
+    val retries = remember(history) { MutableStateFlow(0L) }
+    val presentations = remember(history) {
+        retries.flatMapLatest {
+            history.map<List<TranslationHistoryEntity>, HistoryUpdate> { HistoryUpdate.Loaded(it) }
+                .onStart { emit(HistoryUpdate.Loading) }
+                .catch { error ->
+                    if (error is CancellationException) throw error
+                    emit(HistoryUpdate.Failed(error))
+                }
+        }.runningFold(HistoryPresentation()) { previous, update ->
+            when (update) {
+                HistoryUpdate.Loading -> previous.copy(refreshState = LoadState.Loading)
+                is HistoryUpdate.Loaded -> HistoryPresentation(update.entries, LoadState.NotLoading(true))
+                is HistoryUpdate.Failed -> previous.copy(refreshState = LoadState.Error(update.error))
+            }
+        }
+    }
+    val presentation by presentations.collectAsStateWithLifecycle(initialValue = HistoryPresentation())
+    // History is bounded to 100 records. One immutable list supplies count, keys and content;
+    // LazyColumn still composes only visible rows, without paging-generation/index races.
+    val snapshot = presentation.entries
     TranslationHistoryContent(
             itemCount = snapshot.size,
-            itemAt = { index ->
-                val item = snapshot.getOrNull(index)
-                if (index >= 0 && entries.itemSnapshotList === snapshot && index < entries.itemCount) {
-                    // Access only to issue a load hint; always display the captured presentation.
-                    // The presenter can replace its generation before its Compose state is applied.
-                    try { entries[index] } catch (_: IndexOutOfBoundsException) { /* stale load hint */ }
-                }
-                item
-            },
+            itemAt = snapshot::getOrNull,
             itemKey = { index -> snapshot.getOrNull(index)?.id ?: "loading-$index" },
-            refreshState = entries.loadState.refresh,
-            appendState = entries.loadState.append,
-            onRetry = entries::retry,
+            refreshState = presentation.refreshState,
+            appendState = LoadState.NotLoading(true),
+            onRetry = { retries.update { it + 1 } },
             onRestore = onRestore,
             onDelete = onDelete,
             onClear = onClear,
             modifier = modifier,
         )
+}
+
+private data class HistoryPresentation(
+    val entries: List<TranslationHistoryEntity> = emptyList(),
+    val refreshState: LoadState = LoadState.Loading,
+)
+
+private sealed interface HistoryUpdate {
+    data object Loading : HistoryUpdate
+    data class Loaded(val entries: List<TranslationHistoryEntity>) : HistoryUpdate
+    data class Failed(val error: Throwable) : HistoryUpdate
 }
 
 @Composable
@@ -189,7 +216,11 @@ private fun TranslationHistoryItem(
         .ifBlank { "未知语言" }
     val date = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm", locale)
         .format(Instant.ofEpochMilli(entry.createAt).atZone(ZoneId.systemDefault()))
-    Surface(shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.surfaceContainerHigh) {
+    Surface(
+        modifier = Modifier.testTag("translation_history_row_${entry.id}"),
+        shape = MaterialTheme.shapes.large,
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+    ) {
         Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Surface(
                 onClick = onRestore,

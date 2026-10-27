@@ -1,6 +1,6 @@
 package me.rerere.rikkahub.data.db.dao
 
-import androidx.paging.PagingSource
+import kotlinx.coroutines.flow.Flow
 import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
@@ -10,8 +10,9 @@ import me.rerere.rikkahub.data.db.entity.TranslationHistoryEntity
 
 @Dao
 interface TranslationHistoryDAO {
-    @Query("SELECT * FROM translation_history ORDER BY create_at DESC, id DESC")
-    fun pagingAll(): PagingSource<Int, TranslationHistoryEntity>
+    // Bound reads as well as writes, including databases with older, untrimmed history.
+    @Query("SELECT * FROM translation_history ORDER BY create_at DESC, id DESC LIMIT 100")
+    fun observeRecent(): Flow<List<TranslationHistoryEntity>>
 
     @Transaction
     suspend fun saveAndTrim(entity: TranslationHistoryEntity, keep: Int) {

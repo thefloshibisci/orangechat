@@ -4,10 +4,14 @@ import android.app.Application
 import androidx.activity.ComponentActivity
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.hasAnyAncestor
+import androidx.compose.ui.test.hasContentDescription
+import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithText
@@ -16,10 +20,11 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToIndex
-import androidx.paging.Pager
-import androidx.paging.PagingConfig
-import androidx.paging.compose.collectAsLazyPagingItems
+import androidx.lifecycle.Lifecycle
 import androidx.room.Room
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import me.rerere.rikkahub.data.db.AppDatabase
@@ -34,19 +39,31 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
+import java.util.concurrent.atomic.AtomicInteger
 
+/** Database/UI regressions for the history that previously used paging generations. */
 @RunWith(RobolectricTestRunner::class)
 @Config(application = Application::class, sdk = [28])
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class TranslationHistoryPagingTest {
     @get:Rule val compose = createAndroidComposeRule<ComponentActivity>()
     private lateinit var db: AppDatabase
+    private val visible = mutableStateOf(true)
     private val emptyText = "还没有翻译历史。完成翻译后会自动保存。"
+    private var contentShown = false
+
     @Before fun open() {
         db = Room.inMemoryDatabaseBuilder(RuntimeEnvironment.getApplication(), AppDatabase::class.java)
             .allowMainThreadQueries().build()
     }
-    @After fun close() { db.close() }
+
+    @After fun close() {
+        if (contentShown) {
+            compose.runOnIdle { visible.value = false }
+            compose.waitForIdle()
+        }
+        db.close()
+    }
 
     @Test fun emptyDatabasePresentsEmptyHistoryWithoutAccessingIndexZero() {
         show()
@@ -55,7 +72,7 @@ class TranslationHistoryPagingTest {
         compose.onNodeWithContentDescription("删除此条翻译记录").assertDoesNotExist()
     }
 
-    @Test fun deletingLastDatabaseRowPublishesAnEmptyPagingGeneration() {
+    @Test fun deletingLastDatabaseRowPublishesAnEmptyHistory() {
         seed(1); show()
         awaitText("source-0")
         compose.onNodeWithContentDescription("删除此条翻译记录").performClick()
@@ -67,7 +84,7 @@ class TranslationHistoryPagingTest {
     @Test fun deletingFirstRowKeepsFollowingRecordIdentityAndRestoreData() {
         seed(3)
         var restored: TranslationHistoryEntity? = null
-        show { restored = it }
+        show(onRestore = { restored = it })
         awaitText("source-2")
         compose.onAllNodesWithContentDescription("删除此条翻译记录")[0].performClick()
         compose.waitUntil(5_000) { compose.onAllNodesWithText("source-2").fetchSemanticsNodes().isEmpty() }
@@ -82,6 +99,72 @@ class TranslationHistoryPagingTest {
         awaitText("source-24")
         compose.onNodeWithTag("translation_history_list").performScrollToIndex(24)
         compose.onNodeWithText("source-0").assertIsDisplayed()
+        clearAndAssertEmpty()
+    }
+
+    @Test fun fullHundredRecordWindowScrollsAndRefillsWithCorrectIdentityAfterDeletion() {
+        seed(125)
+        var restored: TranslationHistoryEntity? = null
+        show(onRestore = { restored = it })
+        awaitText("source-124")
+        val list = compose.onNodeWithTag("translation_history_list")
+        list.performScrollToIndex(49)
+        compose.onNodeWithText("source-75").assertIsDisplayed()
+        list.performScrollToIndex(99)
+        compose.onNodeWithText("source-25").assertIsDisplayed()
+        compose.onNode(
+            hasContentDescription("删除此条翻译记录") and
+                hasAnyAncestor(hasTestTag("translation_history_row_id-25")),
+        ).performClick()
+        awaitText("source-24")
+        compose.onNodeWithText("source-25").assertDoesNotExist()
+        compose.onNodeWithText("source-24").performClick()
+        compose.runOnIdle { assertEquals(row(24), restored) }
+        assertEquals(124, rowCount())
+        clearAndAssertEmpty()
+    }
+
+    @Test fun retryResubscribesToDatabaseAfterReadFailure() {
+        seed(1)
+        val subscriptions = AtomicInteger()
+        val history = flow {
+            if (subscriptions.incrementAndGet() == 1) error("first read failed")
+            emitAll(db.translationHistoryDao().observeRecent())
+        }
+        show(history = history)
+        awaitText("读取翻译历史失败，请重试。")
+        compose.onNodeWithText(emptyText).assertDoesNotExist()
+        compose.onNodeWithText("重试").performClick()
+        awaitText("source-0")
+        compose.runOnIdle { assertEquals(2, subscriptions.get()) }
+    }
+
+    @Test fun historyObservationStopsInBackgroundAndWhenSheetContentIsDismissed() {
+        seed(1)
+        val collectors = AtomicInteger()
+        val history = flow {
+            collectors.incrementAndGet()
+            try {
+                emitAll(db.translationHistoryDao().observeRecent())
+            } finally {
+                collectors.decrementAndGet()
+            }
+        }
+        show(history = history)
+        awaitText("source-0")
+        assertEquals(1, collectors.get())
+        compose.activityRule.scenario.moveToState(Lifecycle.State.CREATED)
+        compose.waitUntil(5_000) { collectors.get() == 0 }
+        seed(2)
+        compose.activityRule.scenario.moveToState(Lifecycle.State.RESUMED)
+        awaitText("source-1")
+        assertEquals(1, collectors.get())
+        compose.runOnIdle { visible.value = false }
+        compose.waitForIdle()
+        compose.waitUntil(5_000) { collectors.get() == 0 }
+    }
+
+    private fun clearAndAssertEmpty() {
         compose.onNodeWithText("清空历史").performClick()
         compose.onNodeWithText("确认清空").performClick()
         awaitText(emptyText)
@@ -90,27 +173,39 @@ class TranslationHistoryPagingTest {
         assertEquals(0, rowCount())
     }
 
-    private fun show(onRestore: (TranslationHistoryEntity) -> Unit = {}) {
-        val history = Pager(PagingConfig(pageSize = 40, initialLoadSize = 40, enablePlaceholders = false)) {
-            db.translationHistoryDao().pagingAll()
-        }.flow
+    private fun show(
+        history: Flow<List<TranslationHistoryEntity>> = db.translationHistoryDao().observeRecent(),
+        onRestore: (TranslationHistoryEntity) -> Unit = {},
+    ) {
+        contentShown = true
         compose.setContent {
-            val entries = history.collectAsLazyPagingItems()
             val scope = rememberCoroutineScope()
             MaterialTheme {
-                TranslationHistoryPagingContent(entries, onRestore,
-                    onDelete = { row -> scope.launch { db.translationHistoryDao().deleteById(row.id) } },
-                    onClear = { scope.launch { db.translationHistoryDao().deleteAll() } },
-                    modifier = Modifier.fillMaxSize())
+                if (visible.value) {
+                    TranslationHistoryDataContent(
+                        history, onRestore,
+                        onDelete = { row -> scope.launch { db.translationHistoryDao().deleteById(row.id) } },
+                        onClear = { scope.launch { db.translationHistoryDao().deleteAll() } },
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                }
             }
         }
     }
+
     private fun awaitText(text: String) = compose.waitUntil(5_000) {
         compose.onAllNodesWithText(text).fetchSemanticsNodes().isNotEmpty()
     }
-    private fun seed(count: Int) = runBlocking { repeat(count) { db.translationHistoryDao().insert(row(it)) } }
+
+    private fun seed(count: Int) = runBlocking {
+        repeat(count) { db.translationHistoryDao().insert(row(it)) }
+    }
+
     private fun rowCount() = db.openHelper.readableDatabase.query("SELECT COUNT(*) FROM translation_history").use {
         it.moveToFirst(); it.getInt(0)
     }
-    private fun row(index: Int) = TranslationHistoryEntity("id-$index", "source-$index", "result-$index", "en", "model", index.toLong())
+
+    private fun row(index: Int) = TranslationHistoryEntity(
+        "id-$index", "source-$index", "result-$index", "en", "model", index.toLong(),
+    )
 }

@@ -1,10 +1,10 @@
 package me.rerere.rikkahub.data.db.dao
 
 import android.app.Application
-import androidx.paging.PagingSource
 import androidx.room.Room
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import me.rerere.rikkahub.data.db.AppDatabase
 import me.rerere.rikkahub.data.db.entity.TranslationHistoryEntity
@@ -22,7 +22,7 @@ import kotlin.uuid.Uuid
 @Config(sdk = [28], manifest = Config.NONE, application = Application::class)
 class TranslationHistoryDAOTest {
     @Test
-    fun `paging sorts by timestamp and id and preserves full unicode text and language tag`() = runBlocking {
+    fun `history sorts by timestamp and id and preserves full unicode text and language tag`() = runBlocking {
         withDatabase { db ->
             val dao = db.translationHistoryDao()
             val special = row("b", 2).copy(sourceText = " 原文\nemoji 👩🏽‍💻 <xml> ", translatedText = " 译文\n\"quoted\" ",
@@ -33,11 +33,25 @@ class TranslationHistoryDAOTest {
     }
 
     @Test
+    fun `history read is bounded to latest hundred even before legacy rows are trimmed`() = runBlocking {
+        withDatabase { db ->
+            val dao = db.translationHistoryDao()
+            repeat(125) { dao.insert(row(it.toString().padStart(3, '0'), 10)) }
+            assertEquals((124 downTo 25).map { row(it.toString().padStart(3, '0'), 10) }, entries(dao))
+            db.openHelper.readableDatabase.query("SELECT COUNT(*) FROM translation_history").use {
+                assertTrue(it.moveToFirst())
+                assertEquals(125, it.getInt(0))
+            }
+        }
+    }
+
+    @Test
     fun `save and trim retains deterministic latest hundred including tied timestamps`() = runBlocking {
         withDatabase { db ->
             val dao = db.translationHistoryDao()
             repeat(125) { n -> dao.saveAndTrim(row(n.toString().padStart(3, '0'), 10), 100) }
             assertEquals((124 downTo 25).map { row(it.toString().padStart(3, '0'), 10) }, entries(dao))
+            assertEquals(100, rowCount(db))
         }
     }
 
@@ -49,6 +63,7 @@ class TranslationHistoryDAOTest {
             (0 until 120).map { n -> async { repository.add("source-$n", "result-$n", "en", Uuid.random()) } }.awaitAll()
             val records = entries(dao)
             assertEquals(100, records.size)
+            assertEquals(100, rowCount(db))
             assertEquals(100, records.map { it.id }.toSet().size)
             assertTrue(records.all { it.sourceText.removePrefix("source-") == it.translatedText.removePrefix("result-") })
         }
@@ -111,15 +126,15 @@ class TranslationHistoryDAOTest {
     }
 
     private suspend fun entries(dao: TranslationHistoryDAO): List<TranslationHistoryEntity> {
-        val result = dao.pagingAll().load(PagingSource.LoadParams.Refresh(key = null, loadSize = 200, placeholdersEnabled = false))
-        return when (result) {
-            is PagingSource.LoadResult.Page -> result.data
-            is PagingSource.LoadResult.Error -> throw result.throwable
-            is PagingSource.LoadResult.Invalid -> error("Unexpected invalid history page")
-        }
+        return dao.observeRecent().first()
     }
 
     private fun row(id: String, time: Long) = TranslationHistoryEntity(id, "source-$id", "result-$id", "en", "model", time)
+
+    private fun rowCount(db: AppDatabase) = db.openHelper.readableDatabase.query("SELECT COUNT(*) FROM translation_history").use {
+        assertTrue(it.moveToFirst())
+        it.getInt(0)
+    }
 
     private suspend fun withDatabase(action: suspend (AppDatabase) -> Unit) {
         val db = Room.inMemoryDatabaseBuilder(RuntimeEnvironment.getApplication(), AppDatabase::class.java)

@@ -8,9 +8,6 @@ package me.rerere.rikkahub.ui.pages.translator
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import androidx.paging.Pager
-import androidx.paging.PagingConfig
-import androidx.paging.cachedIn
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -46,9 +43,7 @@ class TranslatorVM(
     val inputText = session.inputText
     val translatedText = session.translatedText
     val targetLanguage = session.targetLanguage
-    val history = Pager(PagingConfig(pageSize = 20, enablePlaceholders = false)) {
-        historyRepository.pagingAll()
-    }.flow.cachedIn(viewModelScope)
+    val history = historyRepository.observeRecent()
 
     fun updateSettings(settings: Settings) {
         val previous = this.settings.value
