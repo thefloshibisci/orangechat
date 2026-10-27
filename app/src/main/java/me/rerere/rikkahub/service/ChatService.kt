@@ -561,6 +561,7 @@ class ChatService(
         interaction: UIMessageAnnotation.AvatarInteraction? = null,
     ): QueuedMessage? {
         if (content.isEmptyInputMessage() || conversationId in deletedConversationIds) return null
+        if (answer) me.rerere.rikkahub.diagnostics.LatencyProbe.start(conversationId.toString())
         val session = getOrCreateSession(conversationId)
         val queued = synchronized(session) {
             if (session.isDeleted) return null
@@ -622,6 +623,7 @@ class ChatService(
         val job = appScope.launch(start = CoroutineStart.LAZY) {
             var failure: Throwable? = null
             try {
+                me.rerere.rikkahub.diagnostics.LatencyProbe.mark(conversationId.toString(), me.rerere.rikkahub.diagnostics.LatencyProbe.QUEUED)
                 trace.stage("initializing conversation")
                 initializeConversation(conversationId, updateSelectedAssistant = false)
                 val settings = settingsStore.settingsFlow.first()
@@ -648,6 +650,7 @@ class ChatService(
                     )
                     trace.stage("saving user message")
                     saveConversationLocked(conversationId, newConversation)
+                    me.rerere.rikkahub.diagnostics.LatencyProbe.mark(conversationId.toString(), me.rerere.rikkahub.diagnostics.LatencyProbe.SAVED)
                     assistant to processedContent
                 }
 
@@ -1379,6 +1382,7 @@ class ChatService(
 
             // start generating
             diagnosticTrace?.stage("building generation tools and context")
+            me.rerere.rikkahub.diagnostics.LatencyProbe.mark(conversationId.toString(), me.rerere.rikkahub.diagnostics.LatencyProbe.PREPARED)
             generationHandler.generateText(
                 settings = settings,
                 model = model,
@@ -1411,7 +1415,9 @@ class ChatService(
                     conversationId = conversationId,
                     conversation = conversation,
                     allowAppUsage = true,
-                ) else emptyList(),
+                ).also {
+                    me.rerere.rikkahub.diagnostics.LatencyProbe.mark(conversationId.toString(), me.rerere.rikkahub.diagnostics.LatencyProbe.TOOLS)
+                } else emptyList(),
                 pluginPromptInjections = buildList {
                     diagnosticTrace?.stage("loading plugin prompt injections")
                     addAll(pluginToolProvider.getPluginPromptInjections())

@@ -51,6 +51,7 @@ import me.rerere.rikkahub.data.ai.transformers.onGenerationFinish
 import me.rerere.rikkahub.data.ai.transformers.transforms
 import me.rerere.rikkahub.data.ai.transformers.visualTransforms
 import me.rerere.rikkahub.data.ai.tools.buildMemoryTools
+import me.rerere.rikkahub.diagnostics.LatencyProbe
 import me.rerere.rikkahub.data.ai.tools.buildWriteFilesTool
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.service.MemoryBankService
@@ -176,6 +177,12 @@ class GenerationHandler(
                     messages = turnMessages,
                     pluginPromptInjections = pluginPromptInjections,
                     onUpdateMessages = {
+                        LatencyProbe.mark(conversationId, LatencyProbe.FIRST_CHUNK)
+                        val hasText = it.lastOrNull()?.let { last ->
+                            LatencyProbe.bindMessage(conversationId, last.id.toString())
+                            last.parts.any { p -> p is me.rerere.ai.ui.UIMessagePart.Text && p.text.isNotBlank() }
+                        } == true
+                        if (hasText) LatencyProbe.mark(conversationId, LatencyProbe.FIRST_TEXT)
                         messages = reactionTurn.markPending(it.transforms(
                             transformers = outputTransformers,
                             context = context,
@@ -190,6 +197,7 @@ class GenerationHandler(
                             assistant = assistant,
                             settings = settings,
                         ))))
+                        if (hasText) LatencyProbe.mark(conversationId, LatencyProbe.TRANSFORMED)
                     },
                     transformers = inputTransformers,
                     model = model,
@@ -493,6 +501,7 @@ class GenerationHandler(
                 stream = stream,
             )
         )
+        LatencyProbe.mark(conversationId, LatencyProbe.REQUEST_BUILT)
         messages = generateModelTurn(
             providerImpl = providerImpl,
             providerSetting = provider,

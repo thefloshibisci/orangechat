@@ -418,8 +418,24 @@ fun ChatMessage(
             }
         }
  
+        val probeHasText = message.role == MessageRole.ASSISTANT &&
+            message.parts.any { it is UIMessagePart.Text && it.text.isNotBlank() }
+        if (probeHasText) {
+            androidx.compose.runtime.LaunchedEffect(message.id) {
+                androidx.compose.runtime.withFrameNanos { }
+                me.rerere.rikkahub.diagnostics.LatencyProbe.rendered(message.id.toString())
+            }
+        }
         ProvideTextStyle(textStyle) {
             ChatMessageNerdLine(message = message)
+        }
+        me.rerere.rikkahub.diagnostics.LatencyProbe.results[message.id.toString()]?.let { timing ->
+            androidx.compose.material3.Text(
+                text = "⏱ $timing",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.secondary.copy(alpha = 0.6f),
+                modifier = Modifier.padding(horizontal = 4.dp),
+            )
         }
     }
     if (showActionsSheet) {
