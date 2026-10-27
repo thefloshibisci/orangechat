@@ -39,6 +39,10 @@ interface ConversationDAO {
     @Query("SELECT * FROM conversationentity WHERE assistant_id = :assistantId ORDER BY is_pinned DESC, update_at DESC LIMIT :limit")
     suspend fun getRecentConversationsOfAssistant(assistantId: String, limit: Int): List<ConversationEntity>
 
+    /** 只取标题和时间，给「最近聊天」提示词用，不加载消息。 */
+    @Query("SELECT id, assistant_id as assistantId, title, is_pinned as isPinned, create_at as createAt, update_at as updateAt, folder_id as folderId FROM conversationentity WHERE assistant_id = :assistantId ORDER BY is_pinned DESC, update_at DESC LIMIT :limit")
+    suspend fun getRecentConversationHeadersOfAssistant(assistantId: String, limit: Int): List<LightConversationEntity>
+
     @Query("SELECT id FROM conversationentity WHERE assistant_id = :assistantId ORDER BY update_at DESC, create_at DESC, id ASC LIMIT 1")
     suspend fun getMostRecentConversationIdOfAssistant(assistantId: String): String?
 

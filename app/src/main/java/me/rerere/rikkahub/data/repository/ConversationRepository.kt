@@ -154,6 +154,9 @@ class ConversationRepository(
         }
     }
 
+    suspend fun getRecentConversationHeaders(assistantId: Uuid, limit: Int = 10): List<LightConversationEntity> =
+        conversationDAO.getRecentConversationHeadersOfAssistant(assistantId.toString(), limit)
+
     /** Lightweight lookup for background jobs; avoids decoding every node just to obtain an id. */
     suspend fun getMostRecentConversationId(assistantId: Uuid): Uuid? {
         return conversationDAO.getMostRecentConversationIdOfAssistant(assistantId.toString())
