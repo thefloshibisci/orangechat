@@ -24,12 +24,18 @@ object LatencyProbe {
 
     fun start(conversationId: String) {
         runs[conversationId] = Run(SystemClock.elapsedRealtime())
+        latest = conversationId
     }
 
     fun mark(conversationId: String?, label: String) {
         val run = conversationId?.let { runs[it] } ?: return
         synchronized(run) { run.marks.putIfAbsent(label, SystemClock.elapsedRealtime()) }
     }
+
+    @Volatile private var latest: String? = null
+
+    /** 网络层拿不到会话 id，记到最近一次发送上。 */
+    fun markLatest(label: String) = mark(latest, label)
 
     fun bindMessage(conversationId: String?, messageId: String) {
         val run = conversationId?.let { runs[it] } ?: return

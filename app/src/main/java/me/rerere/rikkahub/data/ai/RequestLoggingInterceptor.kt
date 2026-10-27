@@ -24,6 +24,9 @@ class RequestLoggingInterceptor : Interceptor {
 
     override fun intercept(chain: Interceptor.Chain): Response {
         val request = chain.request()
+        // 只记大请求（聊天主请求），MCP/插件的小请求不算
+        val probe = (request.body?.contentLength() ?: 0) > 50_000
+        if (probe) me.rerere.rikkahub.diagnostics.LatencyProbe.markLatest("序列化")
         val startTime = System.currentTimeMillis()
 
         val requestHeaders = request.headers.toMap()
@@ -37,7 +40,9 @@ class RequestLoggingInterceptor : Interceptor {
         var error: String? = null
 
         try {
+            if (probe) me.rerere.rikkahub.diagnostics.LatencyProbe.markLatest("复制日志")
             response = chain.proceed(request)
+            if (probe) me.rerere.rikkahub.diagnostics.LatencyProbe.markLatest("上传+等响应头")
         } catch (e: Exception) {
             error = e.message
             Logging.logRequest(

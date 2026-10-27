@@ -129,6 +129,7 @@ class GenerationHandler(
             reactionSourceMessages, conversationId, assistant, messages,
         )
         onReactionContextPrepared(reactionTurn)
+        LatencyProbe.mark(conversationId, "表情上下文")
         var messages: List<UIMessage> = messages
         val recoveredMessages = messages.recoverToolHistoryForRequest(json)
         if (recoveredMessages != messages) {
@@ -297,6 +298,7 @@ class GenerationHandler(
         conversationId: String? = null,
         reactionTurn: ReactionContextTurn? = null,
     ) {
+        LatencyProbe.mark(conversationId, "进入拼装")
         val baseMessages = buildList {
             val system = buildString {
                 val effectiveSystemPrompt =
@@ -315,6 +317,7 @@ class GenerationHandler(
                     append(buildMemoryPrompt(memories = memories))
                 }
  
+                LatencyProbe.mark(conversationId, "系统词")
                 // 外置记忆库召回
                 try {
                     val externalMemoryConfigs = settings.externalMemories.filter {
@@ -411,11 +414,13 @@ class GenerationHandler(
                     Log.w(TAG, "External memory recall failed", e)
                 }
  
+                LatencyProbe.mark(conversationId, "外置记忆")
                 if (assistant.enableRecentChatsReference) {
                     appendLine()
                     append(buildRecentChatsPrompt(assistant, conversationRepo))
                 }
  
+                LatencyProbe.mark(conversationId, "最近聊天")
                 // 代码文件命名和ZIP打包功能说明
                 appendLine()
                 append(buildCodeBlockPrompt())
@@ -467,7 +472,9 @@ class GenerationHandler(
                 }
  
             }
+            LatencyProbe.mark(conversationId, "工具说明等")
             addAll(buildConversationRequestMessages(system, messages, assistant.contextMessageSize, conversationContextSummary))
+            LatencyProbe.mark(conversationId, "截上下文")
         }
         val internalMessages = chatInteractionRepository.decorate(
             baseMessages,
@@ -475,7 +482,10 @@ class GenerationHandler(
             assistant,
             sourceMessages = messages,
             turn = reactionTurn,
-        ).let { filesManager.validAttachments(it, forSending = true) }.transforms(
+        ).also { LatencyProbe.mark(conversationId, "表情装饰") }
+            .let { filesManager.validAttachments(it, forSending = true) }
+            .also { LatencyProbe.mark(conversationId, "附件校验") }
+            .transforms(
             transformers = transformers,
             context = context,
             model = model,
@@ -483,7 +493,9 @@ class GenerationHandler(
             settings = settings,
             processingStatus = processingStatus,
             workspaceCwd = workspaceCwd,
-        ).let { filesManager.validAttachments(it, forSending = true) }.filterNot { it.parts.isEmpty() }
+        ).also { LatencyProbe.mark(conversationId, "输入转换") }
+            .let { filesManager.validAttachments(it, forSending = true) }.filterNot { it.parts.isEmpty() }
+        LatencyProbe.mark(conversationId, "二次校验")
  
         var messages: List<UIMessage> = messages
         val params = buildAssistantGenerationParams(
@@ -493,6 +505,7 @@ class GenerationHandler(
             conversationId = conversationId,
             tools = tools,
         )
+        LatencyProbe.mark(conversationId, "参数")
         aiLoggingManager.addLog(
             AILogging.Generation(
                 params = params,
