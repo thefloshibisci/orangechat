@@ -6,10 +6,12 @@ import androidx.activity.ComponentActivity
 import androidx.compose.material3.Text
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.SideEffect
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.assertExists
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import org.junit.Assert.*
@@ -30,6 +32,7 @@ class RememberMarkdownParseTest {
         val release = CountDownLatch(1)
         val finished = CountDownLatch(1)
         val parsedOnMain = AtomicBoolean(false)
+        val displayed = CopyOnWriteArrayList<String?>()
         val cache = MarkdownParseCache<String>()
         try {
             compose.setContent {
@@ -42,17 +45,21 @@ class RememberMarkdownParseTest {
                     }
                     "parsed:$it"
                 }
+                SideEffect { displayed += value }
                 Text(value ?: "pending")
             }
             assertTrue(started.await(5, TimeUnit.SECONDS))
             compose.onNodeWithText("pending").assertExists()
             compose.runOnIdle { source.value = "new" }
-            compose.waitUntil(5000) { cache.get("new") != null }
-            compose.onNodeWithText("parsed:new").assertExists()
+            compose.waitForIdle()
+            // The obsolete CPU parse cannot be interrupted, but must not overlap the next one.
+            assertNull(cache.get("new"))
             release.countDown()
             assertTrue(finished.await(5, TimeUnit.SECONDS))
+            compose.waitUntil(5000) { cache.get("new") != null }
             compose.waitForIdle()
             compose.onNodeWithText("parsed:new").assertExists()
+            assertFalse(displayed.contains("parsed:old"))
             assertFalse(parsedOnMain.get())
         } finally {
             release.countDown()
