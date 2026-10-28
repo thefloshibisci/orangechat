@@ -230,7 +230,7 @@ class RouteActivity : ComponentActivity() {
             }
             LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
                 runCatching {
-                    if (settingsStore.settingsFlow.value.keepAliveEnabled) {
+                    if (KeepAliveService.isSupported() && settingsStore.settingsFlow.value.keepAliveEnabled) {
                         KeepAliveService.start(this@RouteActivity, fromUserForeground = true)
                     }
                 }.onFailure { Log.e(TAG, "自动启动保活服务失败", it) }

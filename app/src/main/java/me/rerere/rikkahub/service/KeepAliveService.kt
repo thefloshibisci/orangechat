@@ -20,7 +20,8 @@ import me.rerere.rikkahub.R
 import me.rerere.rikkahub.RouteActivity
 
 /**
- * 前台保活服务，用于提升 App 后台存活能力，确保定时消息等功能稳定运行。
+ * Android 14 及以下的可选前台保活。Android 15+ 不再启动空转 dataSync 服务；
+ * 实际的定时任务、工作流和消息服务继续使用各自的生命周期与调度。
  *
  * 特性：
  * - START_STICKY：被系统杀死后自动重启
@@ -44,6 +45,8 @@ class KeepAliveService : Service() {
         // 自启动广播 Action
         const val ACTION_RESTART_KEEP_ALIVE = "me.rerere.orangechat.RESTART_KEEP_ALIVE"
 
+        fun isSupported(): Boolean = Build.VERSION.SDK_INT < Build.VERSION_CODES.VANILLA_ICE_CREAM
+
         /**
          * 检查服务是否正在运行（高版本系统 getRunningServices 可能受限，仅作参考）
          */
@@ -62,6 +65,10 @@ class KeepAliveService : Service() {
          * 启动保活服务（若未运行）
          */
         fun start(context: Context, fromUserForeground: Boolean = false) {
+            if (!isSupported()) {
+                stop(context)
+                return
+            }
             // Android resets the dataSync budget when the user returns to the foreground.
             // A task-removal broadcast or sticky restart must never clear this guard.
             if (fromUserForeground) setRestartBlocked(context, false)
@@ -115,7 +122,8 @@ class KeepAliveService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.d(TAG, "onStartCommand")
-        if (stopping || isRestartBlocked(this)) {
+        // Also drain sticky starts left by an older installed version, before posting any FGS.
+        if (!isSupported() || stopping || isRestartBlocked(this)) {
             stopImmediately()
             return START_NOT_STICKY
         }
@@ -201,7 +209,7 @@ class KeepAliveService : Service() {
      */
     override fun onTaskRemoved(rootIntent: Intent?) {
         super.onTaskRemoved(rootIntent)
-        if (stopping || isRestartBlocked(this)) return
+        if (!isSupported() || stopping || isRestartBlocked(this)) return
         Log.d(TAG, "onTaskRemoved")
         try {
             sendBroadcast(Intent(ACTION_RESTART_KEEP_ALIVE).apply {
