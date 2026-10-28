@@ -34,13 +34,19 @@ class PluginImageResults internal constructor(private val context: Context, priv
             val meta = Json.parseToJsonElement(metaText).jsonObject
             val count = (meta["chunks"] as? JsonPrimitive)?.intOrNull ?: error("Missing chunks")
             require(count in 1..700)
-            val encoded = StringBuilder()
-            repeat(count) { index ->
-                val chunk = store.getData("$key.$index") ?: error("Image chunk is missing")
-                require(chunk.length <= 24000 && encoded.length + chunk.length <= 16000000)
-                encoded.append(chunk)
+            // 逐块流式解码：不再先拼成一整段 base64 字符串（最多 16M 字符 ≈ 32MB）再整体复制解码，
+            // 峰值只剩解码后的字节和当前一块。Base64OutputStream 能处理任意切块边界。
+            val decoded = java.io.ByteArrayOutputStream()
+            var encodedLength = 0
+            android.util.Base64OutputStream(decoded, Base64.DEFAULT, false).use { sink ->
+                repeat(count) { index ->
+                    val chunk = store.getData("$key.$index") ?: error("Image chunk is missing")
+                    encodedLength += chunk.length
+                    require(chunk.length <= 24000 && encodedLength <= 16000000)
+                    sink.write(chunk.toByteArray(Charsets.ISO_8859_1))
+                }
             }
-            var bytes = Base64.decode(encoded.toString(), Base64.DEFAULT)
+            var bytes = decoded.toByteArray()
             require(bytes.isNotEmpty() && bytes.size <= 12000000)
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
