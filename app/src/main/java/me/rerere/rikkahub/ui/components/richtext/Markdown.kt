@@ -34,13 +34,10 @@ import androidx.compose.material3.ProvideTextStyle
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberUpdatedState
-import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -72,11 +69,6 @@ import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.util.fastForEach
 import androidx.core.net.toUri
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.catch
-import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.flowOn
-import kotlinx.coroutines.flow.mapLatest
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.Tick01
 import me.rerere.rikkahub.ui.components.table.DataTable
@@ -160,10 +152,10 @@ private fun ASTNode.containsHtml(): Boolean {
 
 private val markdownParseCache = MarkdownParseCache<MarkdownParseResult>()
 
-private fun parseMarkdown(content: String): MarkdownParseResult = markdownParseCache.getOrParse(content) {
-    val preprocessed = preprocessMarkdown(it)
+private fun parseMarkdown(content: String): MarkdownParseResult {
+    val preprocessed = preprocessMarkdown(content)
     val astTree = parserByThread.get()!!.buildMarkdownTreeFromString(preprocessed)
-    MarkdownParseResult(preprocessed, astTree, astTree.containsHtml())
+    return MarkdownParseResult(preprocessed, astTree, astTree.containsHtml())
 }
 
 @Composable
@@ -173,21 +165,12 @@ fun MarkdownBlock(
     style: TextStyle = LocalTextStyle.current,
     onClickCitation: (String) -> Unit = {}
 ) {
-    var (data, setData) = remember { mutableStateOf(parseMarkdown(content)) }
+    val data by rememberMarkdownParse(content, markdownParseCache, ::parseMarkdown)
+    val parsed = data
 
-    // 监听内容变化，重新解析AST树
-    // 这里在后台线程解析AST树, 防止频繁更新的时候掉帧
-    val updatedContent by rememberUpdatedState(content)
-    LaunchedEffect(Unit) {
-        snapshotFlow { updatedContent }
-            .distinctUntilChanged()
-            .mapLatest { parseMarkdown(it) }
-            .catch { exception -> exception.printStackTrace() }
-            .flowOn(Dispatchers.Default)
-            .collect { setData(it) }
-    }
-
-    if (data.hasHtml) {
+    if (parsed == null) {
+        Box(modifier = modifier.heightIn(min = 24.dp))
+    } else if (parsed.hasHtml) {
         MarkdownNew(
             content = content,
             modifier = modifier,
@@ -199,9 +182,9 @@ fun MarkdownBlock(
             Column(
                 modifier = modifier.padding(horizontal = 4.dp)
             ) {
-                data.astTree.children.fastForEach { child ->
+                parsed.astTree.children.fastForEach { child ->
                     MarkdownNode(
-                        node = child, content = data.preprocessed, onClickCitation = onClickCitation
+                        node = child, content = parsed.preprocessed, onClickCitation = onClickCitation
                     )
                 }
             }

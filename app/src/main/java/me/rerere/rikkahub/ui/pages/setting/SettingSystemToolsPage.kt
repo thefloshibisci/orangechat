@@ -122,11 +122,12 @@ fun SettingSystemToolsPage(vm: SettingVM = koinViewModel()) {
     )
 
     // 保活开关状态
+    val keepAliveSupported = KeepAliveService.isSupported()
     var keepAliveEnabled by remember(settings) {
-        mutableStateOf(settings.keepAliveEnabled)
+        mutableStateOf(settings.keepAliveEnabled && keepAliveSupported)
     }
     LaunchedEffect(settings) {
-        keepAliveEnabled = settings.keepAliveEnabled
+        keepAliveEnabled = settings.keepAliveEnabled && keepAliveSupported
     }
 
     val cameraPermissionState = rememberPermissionState(permissions = setOf(PermissionCamera))
@@ -196,10 +197,14 @@ fun SettingSystemToolsPage(vm: SettingVM = koinViewModel()) {
                 item(
                     leadingContent = { Icon(imageVector = HugeIcons.Pulse01, contentDescription = null) },
                     headlineContent = { Text(stringResource(R.string.setting_system_tools_keep_alive)) },
-                    supportingContent = { Text(stringResource(R.string.setting_system_tools_keep_alive_desc)) },
+                    supportingContent = {
+                        Text(if (keepAliveSupported) stringResource(R.string.setting_system_tools_keep_alive_desc)
+                        else "此系统版本已停用通用保活，避免后台超时闪退。定时任务与工作流仍按各自设置运行，执行受系统后台限制。")
+                    },
                     trailingContent = {
                         Switch(
                             checked = keepAliveEnabled,
+                            enabled = keepAliveSupported,
                             onCheckedChange = { enabled ->
                                 keepAliveEnabled = enabled
                                 vm.updateSettings(settings.copy(keepAliveEnabled = enabled))
@@ -210,7 +215,7 @@ fun SettingSystemToolsPage(vm: SettingVM = koinViewModel()) {
                                     ) {
                                         notificationPermissionState.requestPermissions()
                                     } else {
-                                        KeepAliveService.start(context)
+                                        KeepAliveService.start(context, fromUserForeground = true)
                                     }
                                 } else {
                                     KeepAliveService.stop(context)

@@ -6,23 +6,36 @@ import me.rerere.rikkahub.data.db.dao.MessageNodeHeader
 import me.rerere.rikkahub.data.db.entity.MessageNodeEntity
 
 /** Caller holds a read transaction. Return every row, or fail without publishing a partial history. */
-internal suspend fun MessageNodeDAO.loadCompleteNodes(conversationId: String): List<MessageNodeEntity> {
+internal suspend fun MessageNodeDAO.loadCompleteNodes(conversationId: String): List<MessageNodeEntity> =
+    mapCompleteNodes(conversationId) { it }
+
+/** Decode each page before reading the next, so raw JSON for the whole chat is not retained too. */
+internal suspend fun <T> MessageNodeDAO.mapCompleteNodes(
+    conversationId: String,
+    transform: suspend (MessageNodeEntity) -> T,
+): List<T> {
     val total = getNodeCountOfConversation(conversationId)
-    val result = ArrayList<MessageNodeEntity>(total)
+    val result = ArrayList<T>(total)
     val pageSize = 64
     for (offset in 0 until total step pageSize) {
         val expected = minOf(pageSize, total - offset)
         val page = try {
             getNodesOfConversationPaged(conversationId, pageSize, offset)
         } catch (_: SQLiteBlobTooBigException) {
+            null
+        }
+        if (page != null) {
+            check(page.size == expected) { "消息读取不完整，请重新打开会话。原有记录未被修改。" }
+            for (entity in page) result.add(transform(entity))
+        } else {
             // SQLite slices by Unicode code point, not UTF-16 offset. A 64K slice stays
             // comfortably below CursorWindow's limit even with four-byte characters.
-            getNodeHeaders(conversationId, pageSize, offset).map { header ->
-                readSlicedNode(header)
+            val headers = getNodeHeaders(conversationId, pageSize, offset)
+            check(headers.size == expected) { "消息读取不完整，请重新打开会话。原有记录未被修改。" }
+            for (header in headers) {
+                result.add(transform(readSlicedNode(header)))
             }
         }
-        check(page.size == expected) { "消息读取不完整，请重新打开会话。原有记录未被修改。" }
-        result.addAll(page)
     }
     return result
 }

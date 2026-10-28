@@ -7,6 +7,17 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 class MarkdownParseCacheTest {
+    @Test fun uiLookupOnlyReturnsPreviouslyParsedValues() {
+        val cache = MarkdownParseCache<Any>(maxEntries = 2)
+        assertNull(cache.get("missing"))
+        val a = cache.getOrParse("a") { Any() }
+        cache.getOrParse("b") { Any() }
+        assertSame(a, cache.get("a"))
+        cache.getOrParse("c") { Any() }
+        assertNull(cache.get("b"))
+        assertSame(a, cache.get("a"))
+    }
+
     @Test fun repeatedViewportEntryParsesCompletedTextOnce() {
         val cache = MarkdownParseCache<Any>()
         var parses = 0

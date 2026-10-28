@@ -9,7 +9,6 @@ package me.rerere.rikkahub.service
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.os.Build
 import android.util.Log
 
 /**
@@ -31,16 +30,7 @@ class KeepAliveRestartReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent?) {
         if (intent?.action == KeepAliveService.ACTION_RESTART_KEEP_ALIVE) {
             Log.d(TAG, "收到保活重启广播")
-            try {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    context.startForegroundService(Intent(context, KeepAliveService::class.java))
-                } else {
-                    context.startService(Intent(context, KeepAliveService::class.java))
-                }
-                Log.d(TAG, "保活服务已通过广播重新启动")
-            } catch (e: Exception) {
-                Log.e(TAG, "广播重启保活服务失败", e)
-            }
+            KeepAliveService.start(context)
         }
     }
 }

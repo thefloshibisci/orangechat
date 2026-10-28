@@ -23,6 +23,71 @@ import org.robolectric.annotation.Config
 @Config(sdk = [28], manifest = Config.NONE, application = Application::class)
 class MessageNodeStorageTest {
     @Test
+    fun `history is decoded before the next raw page is loaded`() = runBlocking {
+        withDatabase { db ->
+            val dao = db.messageNodeDao()
+            val nodes = (0 until 130).map { node(it, "message-$it") }
+            dao.insertAll(nodes)
+            var decoded = 0
+            val checked = object : MessageNodeDAO by dao {
+                override suspend fun getNodesOfConversationPaged(
+                    conversationId: String, limit: Int, offset: Int,
+                ): List<MessageNodeEntity> {
+                    assertEquals("Earlier raw pages must already be decoded", offset, decoded)
+                    return dao.getNodesOfConversationPaged(conversationId, limit, offset)
+                }
+            }
+            val result = db.withTransaction {
+                checked.mapCompleteNodes(CONVERSATION) { decoded++; it.messages }
+            }
+            assertEquals(nodes.map { it.messages }, result)
+        }
+    }
+
+    @Test
+    fun `overflow fallback decodes each complete node before reconstructing the next`() = runBlocking {
+        withDatabase { db ->
+            val dao = db.messageNodeDao()
+            val nodes = (0 until 3).map { node(it, "橘😀".repeat(40000)) }
+            dao.insertAll(nodes)
+            var decoded = 0
+            val checked = object : MessageNodeDAO by forceOverflow(dao) {
+                override suspend fun getMessageSlice(id: String, start: Int, length: Int): String? {
+                    assertEquals("node-$decoded", id)
+                    return dao.getMessageSlice(id, start, length)
+                }
+            }
+            val result = db.withTransaction {
+                checked.mapCompleteNodes(CONVERSATION) { decoded++; it.messages }
+            }
+            assertEquals(nodes.map { it.messages }, result)
+        }
+    }
+
+    @Test
+    fun `later incomplete page rolls back repairs made while decoding earlier pages`() = runBlocking {
+        withDatabase { db ->
+            val dao = db.messageNodeDao()
+            val nodes = (0 until 65).map { node(it, "original") }
+            dao.insertAll(nodes)
+            val partial = object : MessageNodeDAO by dao {
+                override suspend fun getNodesOfConversationPaged(
+                    conversationId: String, limit: Int, offset: Int,
+                ) = if (offset == 0) dao.getNodesOfConversationPaged(conversationId, limit, offset) else emptyList()
+            }
+            assertIncomplete {
+                db.withTransaction {
+                    partial.mapCompleteNodes(CONVERSATION) {
+                        dao.repairAttachments(it.id, it.messages, "repaired")
+                        it.id
+                    }
+                }
+            }
+            assertEquals(nodes, dao.getNodesOfConversation(CONVERSATION))
+        }
+    }
+
+    @Test
     fun `normal pages return every node in stored order`() = runBlocking {
         withDatabase { db ->
             val dao = db.messageNodeDao()

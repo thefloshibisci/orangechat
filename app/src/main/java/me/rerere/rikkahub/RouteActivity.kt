@@ -51,6 +51,8 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.core.net.toUri
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.viewmodel.navigation3.rememberViewModelStoreNavEntryDecorator
 import androidx.navigation3.runtime.NavKey
 import androidx.navigation3.runtime.entryProvider
@@ -226,9 +228,11 @@ class RouteActivity : ComponentActivity() {
                 me.rerere.rikkahub.ui.pages.backup.StartupRecoveryScreen(recovery)
                 return@setContent
             }
-            LaunchedEffect(Unit) {
+            LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
                 runCatching {
-                    if (settingsStore.settingsFlow.value.keepAliveEnabled) KeepAliveService.start(this@RouteActivity)
+                    if (KeepAliveService.isSupported() && settingsStore.settingsFlow.value.keepAliveEnabled) {
+                        KeepAliveService.start(this@RouteActivity, fromUserForeground = true)
+                    }
                 }.onFailure { Log.e(TAG, "自动启动保活服务失败", it) }
             }
             RikkahubTheme {

@@ -36,14 +36,13 @@ import me.rerere.ai.ui.MessageChunk
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessageChoice
 import me.rerere.ai.ui.UIMessagePart
+import me.rerere.ai.util.toJsonRequestBody
 import me.rerere.ai.util.encodeBase64
 import me.rerere.ai.util.json
 import me.rerere.common.http.jsonObjectOrNull
 import me.rerere.common.http.jsonPrimitiveOrNull
-import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import okhttp3.sse.EventSource
 import okhttp3.sse.EventSourceListener
@@ -73,7 +72,7 @@ class CodexResponseAPI(private val client: OkHttpClient) {
             .header("User-Agent", USER_AGENT)
             .header("Accept", "text/event-stream")
             .apply { codexCacheKey(params)?.let { header("session_id", it) } }
-            .post(buildRequestBody(messages, params).toString().toRequestBody("application/json".toMediaType()))
+            .post(buildRequestBody(messages, params).toJsonRequestBody())
             .build()
         var completed = false
         val callIds = mutableMapOf<String, String>()
