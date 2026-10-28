@@ -210,7 +210,7 @@ fun SettingSystemToolsPage(vm: SettingVM = koinViewModel()) {
                                     ) {
                                         notificationPermissionState.requestPermissions()
                                     } else {
-                                        KeepAliveService.start(context)
+                                        KeepAliveService.start(context, fromUserForeground = true)
                                     }
                                 } else {
                                     KeepAliveService.stop(context)

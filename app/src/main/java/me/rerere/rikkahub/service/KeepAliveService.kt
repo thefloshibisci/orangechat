@@ -30,6 +30,7 @@ import me.rerere.rikkahub.RouteActivity
  * - 国产 ROM 兼容：划掉任务后通过发送广播尝试自启动
  */
 class KeepAliveService : Service() {
+    private var stopping = false
 
     companion object {
         private const val TAG = "KeepAliveService"
@@ -38,6 +39,8 @@ class KeepAliveService : Service() {
         private const val CHANNEL_ID = "keep_alive_channel"
         // 前台服务通知 ID
         private const val NOTIFICATION_ID = 30001
+        private const val LIFECYCLE_PREFS = "keep_alive_lifecycle"
+        private const val RESTART_BLOCKED = "restart_blocked"
         // 自启动广播 Action
         const val ACTION_RESTART_KEEP_ALIVE = "me.rerere.orangechat.RESTART_KEEP_ALIVE"
 
@@ -58,7 +61,14 @@ class KeepAliveService : Service() {
         /**
          * 启动保活服务（若未运行）
          */
-        fun start(context: Context) {
+        fun start(context: Context, fromUserForeground: Boolean = false) {
+            // Android resets the dataSync budget when the user returns to the foreground.
+            // A task-removal broadcast or sticky restart must never clear this guard.
+            if (fromUserForeground) setRestartBlocked(context, false)
+            if (isRestartBlocked(context)) {
+                Log.d(TAG, "保活已暂停，等待用户回到前台后再启动")
+                return
+            }
             if (isRunning(context)) {
                 Log.d(TAG, "服务已在运行，跳过启动")
                 return
@@ -80,9 +90,20 @@ class KeepAliveService : Service() {
          * 停止保活服务
          */
         fun stop(context: Context) {
+            // Also reject any restart broadcast that was queued before the user switched it off.
+            setRestartBlocked(context, true)
             val intent = Intent(context, KeepAliveService::class.java)
             context.stopService(intent)
             Log.d(TAG, "保活服务停止请求已发送")
+        }
+
+        private fun isRestartBlocked(context: Context): Boolean =
+            context.getSharedPreferences(LIFECYCLE_PREFS, Context.MODE_PRIVATE)
+                .getBoolean(RESTART_BLOCKED, false)
+
+        private fun setRestartBlocked(context: Context, blocked: Boolean) {
+            context.getSharedPreferences(LIFECYCLE_PREFS, Context.MODE_PRIVATE)
+                .edit().putBoolean(RESTART_BLOCKED, blocked).apply()
         }
     }
 
@@ -94,6 +115,10 @@ class KeepAliveService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.d(TAG, "onStartCommand")
+        if (stopping || isRestartBlocked(this)) {
+            stopImmediately()
+            return START_NOT_STICKY
+        }
 
         // 构建点击通知后打开应用的 PendingIntent
         val pendingIntent = PendingIntent.getActivity(
@@ -118,7 +143,7 @@ class KeepAliveService : Service() {
             .build()
 
         // 启动前台服务
-        // Android 14+ 对 dataSync 类型前台服务有每 24 小时 6 小时的累计配额限制，
+        // Android 15+ 对 dataSync 类型前台服务有后台累计运行时长限制，
         // 配额耗尽时 startForeground 会抛 ForegroundServiceStartNotAllowedException。
         // 这里捕获异常并优雅降级，避免崩溃整个 App。
         try {
@@ -137,11 +162,29 @@ class KeepAliveService : Service() {
                 "startForeground 失败（可能是 dataSync 前台服务时长配额耗尽），停止保活服务避免崩溃",
                 e
             )
-            stopSelf()
+            setRestartBlocked(this, true)
+            stopImmediately()
             return START_NOT_STICKY
         }
 
         return START_STICKY
+    }
+
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        Log.w(TAG, "前台保活超时，立即停止: startId=$startId type=$fgsType")
+        // The framework grants only a few seconds here. Stop synchronously, without waiting for
+        // coroutine work, database writes, or the timeout's possibly obsolete startId.
+        stopImmediately()
+        setRestartBlocked(this, true)
+    }
+
+    private fun stopImmediately() {
+        stopping = true
+        try {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+        } finally {
+            stopSelf()
+        }
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -158,6 +201,7 @@ class KeepAliveService : Service() {
      */
     override fun onTaskRemoved(rootIntent: Intent?) {
         super.onTaskRemoved(rootIntent)
+        if (stopping || isRestartBlocked(this)) return
         Log.d(TAG, "onTaskRemoved")
         try {
             sendBroadcast(Intent(ACTION_RESTART_KEEP_ALIVE).apply {

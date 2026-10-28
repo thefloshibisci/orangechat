@@ -80,7 +80,7 @@ import org.jsoup.nodes.Element
 import org.jsoup.nodes.Node
 import org.jsoup.nodes.TextNode
 
-private val htmlParseCache = MarkdownParseCache<Document>()
+private val htmlParseCache = MarkdownParseCache<Document>(maxEntries = 32, maxSourceChars = 128 * 1024)
 
 // HTML generation and DOM parsing both run in the background. Renderers only read the cached DOM.
 private fun parseMarkdownDocument(content: String): Document = Jsoup.parse(generateMarkdownHtml(content))

@@ -17,11 +17,11 @@ import okio.BufferedSink
  */
 @OptIn(ExperimentalSerializationApi::class)
 internal fun JsonElement.toJsonRequestBody(format: Json = json): RequestBody = object : RequestBody() {
-    private val length: Long by lazy {
-        val counter = CountingOutputStream()
-        format.encodeToStream(JsonElement.serializer(), this@toJsonRequestBody, counter)
-        counter.count
-    }
+    // Validate while constructing the request, as the old encodeToString path did. Invalid
+    // values must reach the caller instead of first throwing on OkHttp's asynchronous thread.
+    private val length = CountingOutputStream().also {
+        format.encodeToStream(JsonElement.serializer(), this@toJsonRequestBody, it)
+    }.count
 
     override fun contentType() = JSON_MEDIA_TYPE
 

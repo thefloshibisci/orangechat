@@ -10,6 +10,11 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class JsonRequestBodyTest {
+    @Test fun invalidJsonFailsBeforeEnqueuingANetworkRequest() {
+        val payload = buildJsonObject { put("temperature", Double.NaN) }
+        assertThrows(IllegalArgumentException::class.java) { payload.toJsonRequestBody() }
+    }
+
     @Test fun unicodeEscapesAndNestedValuesMatchThePreviousWireFormat() {
         val payload = buildJsonObject {
             put("text", "橘瓣🍊\n\t\r\b\u0000\"\\ / \u2028")
