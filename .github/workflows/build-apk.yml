@@ -12,6 +12,7 @@ on:
       - fix/attachments-sliders-backup
       - codex/latest-review-optimization-20261019
       - codex/audio-workspace-search-20261019
+      - codex/long-chat-memory-20261028
 
 jobs:
   build:

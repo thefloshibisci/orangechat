@@ -17,12 +17,11 @@ import me.rerere.ai.provider.*
 import me.rerere.ai.provider.providers.PartGroup
 import me.rerere.ai.provider.providers.groupPartsByToolBoundary
 import me.rerere.ai.ui.*
+import me.rerere.ai.util.toJsonRequestBody
 import me.rerere.ai.util.*
 import me.rerere.common.http.await
-import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import okhttp3.sse.EventSource
 import okhttp3.sse.EventSourceListener
@@ -83,7 +82,7 @@ internal class InteractionsAPI(
         return Request.Builder().url("${provider.baseUrl.trimEnd('/')}/interactions")
             .headers(params.customHeaders.toHeaders())
             .header("x-goog-api-key", key)
-            .post(body.toString().toRequestBody("application/json".toMediaType()))
+            .post(body.toJsonRequestBody())
             .configureReferHeaders(provider.baseUrl).build()
     }
 

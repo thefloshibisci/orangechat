@@ -11,6 +11,9 @@ internal class MarkdownParseCache<T : Any>(
 
     init { require(maxEntries > 0 && maxSourceChars > 0) }
 
+    /** A UI cache miss must never start parsing on the caller's thread. */
+    fun get(source: String): T? = synchronized(lock) { entries[source] }
+
     fun getOrParse(source: String, parse: (String) -> T): T {
         synchronized(lock) { entries[source]?.let { return it } }
         // Parsing must not hold the shared lock: a large background parse must not block cached UI reads.

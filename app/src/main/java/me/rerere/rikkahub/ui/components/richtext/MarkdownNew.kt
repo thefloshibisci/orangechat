@@ -33,13 +33,10 @@ import androidx.compose.material3.ProvideTextStyle
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -71,11 +68,6 @@ import androidx.compose.ui.unit.isSpecified
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.util.fastForEach
 import androidx.core.graphics.toColorInt
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.catch
-import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.flowOn
-import kotlinx.coroutines.flow.mapLatest
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.Tick01
 import me.rerere.rikkahub.ui.components.table.DataTable
@@ -83,9 +75,15 @@ import me.rerere.rikkahub.ui.context.LocalSettings
 import me.rerere.rikkahub.ui.theme.JetbrainsMono
 import me.rerere.rikkahub.utils.toDp
 import org.jsoup.Jsoup
+import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import org.jsoup.nodes.Node
 import org.jsoup.nodes.TextNode
+
+private val htmlParseCache = MarkdownParseCache<Document>(maxEntries = 32, maxSourceChars = 128 * 1024)
+
+// HTML generation and DOM parsing both run in the background. Renderers only read the cached DOM.
+private fun parseMarkdownDocument(content: String): Document = Jsoup.parse(generateMarkdownHtml(content))
 
 // ---- Main composable ----
 
@@ -96,29 +94,16 @@ fun MarkdownNew(
     style: TextStyle = LocalTextStyle.current,
     onClickCitation: (String) -> Unit = {},
 ) {
-    var html by remember {
-        mutableStateOf(
-            value = generateMarkdownHtml(content),
-        )
-    }
-
-    val updatedContent by rememberUpdatedState(content)
-    LaunchedEffect(Unit) {
-        snapshotFlow { updatedContent }
-            .distinctUntilChanged()
-            .mapLatest { generateMarkdownHtml(it) }
-            .catch { it.printStackTrace() }
-            .flowOn(Dispatchers.Default)
-            .collect { html = it }
-    }
-
-    val document = remember(html) {
-        runCatching { Jsoup.parse(html) }.getOrElse { Jsoup.parse("") }
+    val document by rememberMarkdownParse(content, htmlParseCache, parse = ::parseMarkdownDocument)
+    val parsed = document
+    if (parsed == null) {
+        Box(modifier = modifier.heightIn(min = 24.dp))
+        return
     }
 
     ProvideTextStyle(style) {
         Column(modifier = modifier.padding(start = 4.dp)) {
-            document.body().childNodes().fastForEach { node ->
+            parsed.body().childNodes().fastForEach { node ->
                 HtmlBodyNode(node = node, onClickCitation = onClickCitation)
             }
         }

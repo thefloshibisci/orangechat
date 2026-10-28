@@ -999,7 +999,7 @@ class ConversationRepository(
             .toSet()
 
         return database.withTransaction {
-            messageNodeDAO.loadCompleteNodes(conversationId).map { entity ->
+            messageNodeDAO.mapCompleteNodes(conversationId) { entity ->
                 val original = JsonInstant.decodeFromString<List<UIMessage>>(entity.messages)
                 val messages = filesManager.validAttachments(original)
                 if (messages !== original) {

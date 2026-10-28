@@ -15,6 +15,7 @@ import okio.Buffer
 class RequestLoggingInterceptor : Interceptor {
     companion object {
         private const val MAX_RESPONSE_BODY_LOG_BYTES = 64 * 1024L // 64KB
+        private const val MAX_REQUEST_BODY_LOG_BYTES = 64 * 1024L // 64KB
         // Matches common API key patterns (Bearer tokens, sk- prefixed keys)
         private val API_KEY_PATTERN = Regex(
             "(sk-[A-Za-z0-9_\\-]+|Bearer\\s[A-Za-z0-9_\\-]+)",
@@ -27,10 +28,17 @@ class RequestLoggingInterceptor : Interceptor {
         val startTime = System.currentTimeMillis()
 
         val requestHeaders = request.headers.toMap()
+        // 聊天请求体常有 1MB 以上（带图更大），日志里最多保留 100 条，全文常驻会吃掉几百 MB。
+        // 大请求只记大小和开头一段；不读取全文，也就不会多序列化一遍。
         val requestBody = request.body?.let { body ->
-            val buffer = Buffer()
-            body.writeTo(buffer)
-            buffer.readUtf8()
+            val length = body.contentLength()
+            if (length > MAX_REQUEST_BODY_LOG_BYTES || length < 0) {
+                "[request body ${if (length < 0) "unknown size" else "${length / 1024} KB"}, omitted]"
+            } else {
+                val buffer = Buffer()
+                body.writeTo(buffer)
+                buffer.readUtf8()
+            }
         }
 
         val response: Response
