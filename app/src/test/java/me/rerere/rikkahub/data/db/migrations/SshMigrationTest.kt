@@ -65,7 +65,7 @@ class SshMigrationTest {
                 val room = open(targetName)
                 try {
                     val db = room.openHelper.writableDatabase
-                    assertEquals(42, db.version)
+                    assertEquals(43, db.version)
                     val local = room.workspaceDao().getById("local")!!
                     assertEquals("LOCAL", local.type); assertNull(local.sshConfig)
                     assertEquals("keep local", local.name); assertEquals("local-root", local.root)

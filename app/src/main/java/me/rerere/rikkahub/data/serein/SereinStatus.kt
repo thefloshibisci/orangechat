@@ -2,6 +2,7 @@ package me.rerere.rikkahub.data.serein
 
 /** Only allowlisted labels are displayed; never show HTTP bodies, exception text or credentials. */
 internal fun sereinFailureLabel(status: String): String = when (status) {
+    "observation_upgrade_required" -> "塞壬服务需升级以保存观察详情，记录已保留等待重试"
     "timeout", "http_408", "http_504" -> "等待超时，可选 5 秒后再试"
     "network_error" -> "网络连接失败，请检查网络和实例地址"
     "http_401", "http_403" -> "鉴权失败，请检查 Gateway Key 与实例地址"

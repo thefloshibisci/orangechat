@@ -52,7 +52,7 @@ class TranslationHistoryBackupTest {
                 preflightBackupDatabase(context, restored, FrameworkSQLiteOpenHelperFactory())
                 val db = open(restoredName)
                 try {
-                    assertEquals(42, db.openHelper.writableDatabase.version)
+                    assertEquals(43, db.openHelper.writableDatabase.version)
                     assertEquals(history, rows(db))
                     assertEquals(1L, db.usageRecordDao().getTotals().requestCount)
                     db.openHelper.writableDatabase.query("SELECT conversation_config FROM ConversationEntity WHERE id='keep'").use {

@@ -81,18 +81,33 @@ jobs:
         run: node --test plugins/image-atelier/tests/references.test.cjs
 
       - name: Build APK
-        run: ./gradlew :app:assembleRelease -PorangechatAbis=arm64-v8a -PorangechatUniversalApk=false
+        run: ./gradlew :app:assembleRelease :app:assemblePerformance -PorangechatAbis=arm64-v8a -PorangechatUniversalApk=false
 
       - name: Verify bundled OCR in release APK
         run: |
           python3 -m unittest discover -s tools -p 'test_verify_bundled_ocr.py'
           python3 tools/verify_bundled_ocr.py app/build/outputs/apk/release/*arm64-v8a*.apk
+          python3 tools/verify_bundled_ocr.py app/build/outputs/apk/performance/*arm64-v8a*.apk
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: OrangeChat-personal
           path: app/build/outputs/apk/release/*arm64-v8a*.apk
+          if-no-files-found: error
+
+      - name: Upload liquidglass update APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: OrangeChat-liquidglass
+          path: app/build/outputs/apk/performance/*arm64-v8a*.apk
+          if-no-files-found: error
+
+      - name: Upload liquidglass stack trace mapping
+        uses: actions/upload-artifact@v4
+        with:
+          name: OrangeChat-liquidglass-mapping
+          path: app/build/outputs/mapping/performance/mapping.txt
           if-no-files-found: error
 
       - name: Upload release stack trace mapping

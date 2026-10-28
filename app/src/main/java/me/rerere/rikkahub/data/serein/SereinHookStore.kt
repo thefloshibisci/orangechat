@@ -15,6 +15,7 @@ data class SereinHookSnapshot(
     val memoryIds: String,
     val status: String,
     val createdAt: Long,
+    @ColumnInfo(defaultValue = "'{}'") val diagnostics: String = "{}",
 )
 
 @Entity(tableName = "serein_hook_delivery", primaryKeys = ["conversationId", "receiptId"],
@@ -33,7 +34,7 @@ interface SereinHookDAO {
     // Only status/IDs reach the settings UI; do not load recalled text or user queries.
     @Query("""SELECT s.status,s.memoryIds,s.createdAt FROM serein_hook_snapshot s
         JOIN ConversationEntity c ON c.id=s.conversationId
-        WHERE c.assistant_id=:assistant AND s.fingerprint=:fingerprint
+        WHERE c.assistant_id=:assistant AND s.fingerprint LIKE :fingerprint || ':%'
         ORDER BY s.createdAt DESC,s.rowid DESC LIMIT 1""")
     fun latestStatus(assistant: String, fingerprint: String): Flow<SereinRecallStatus?>
     @Query("SELECT assistant_id FROM ConversationEntity WHERE id=:conversation")

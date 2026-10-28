@@ -38,7 +38,7 @@ class SereinHookMigrationTest {
             preflightBackupDatabase(context, context.getDatabasePath(name), FrameworkSQLiteOpenHelperFactory())
             db = open()
             try {
-                assertEquals(42, db.openHelper.writableDatabase.version)
+                assertEquals(43, db.openHelper.writableDatabase.version)
                 assertEquals(scene, LocalSceneRepository(db).read("a", scene.id))
                 db.sereinHookDao().put(SereinHookSnapshot("chat", "user", "fp", "reference", "[\"scene:x\"]", "ready", 1))
                 db.sereinHookDao().record(SereinHookDelivery("chat", "reply", "config", "[]", 2))

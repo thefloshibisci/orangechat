@@ -48,7 +48,11 @@ fun AppUpdateHost(checker: UpdateChecker = koinInject()) {
                 )
                 when (val state = currentDownload) {
                     is UpdateDownloadState.Downloading -> {
-                        Text(state.download.name, style = MaterialTheme.typography.bodySmall)
+                        Text(if (state.waitingForNetwork) "等待网络连接，恢复后继续下载"
+                            else "正在通过${state.routeLabel}下载", style = MaterialTheme.typography.bodySmall)
+                        if (state.switchedRoute) {
+                            Text("上一条线路未能完成，已自动切换", style = MaterialTheme.typography.bodySmall)
+                        }
                         if (state.total > 0) {
                             LinearProgressIndicator(
                                 progress = { (state.received.toFloat() / state.total).coerceIn(0f, 1f) },
@@ -70,8 +74,13 @@ fun AppUpdateHost(checker: UpdateChecker = koinInject()) {
                         Button(
                             onClick = { checker.downloadUpdate(context, item) },
                             modifier = Modifier.fillMaxWidth(),
-                        ) { Text("下载更新 · ${item.size}") }
+                        ) { Text("加速下载更新 · ${item.size}") }
+                        TextButton(onClick = { checker.downloadUpdate(context, item, preferDirect = true) }) {
+                            Text("改用 GitHub 直连")
+                        }
                     }
+                    Text("加速下载经过第三方镜像，安装包仍会校验摘要和原签名。",
+                        style = MaterialTheme.typography.bodySmall)
                 }
             }
         },

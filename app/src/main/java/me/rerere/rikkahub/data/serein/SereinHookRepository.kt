@@ -31,13 +31,22 @@ class SereinHookRepository(private val db: AppDatabase, private val client: Sere
                                      fetch: suspend (String, List<String>) -> HookRecall): HookRecall? {
         if (!config.usableBy(owner) || !isCurrent() || user.role != MessageRole.USER) return null
         val query = user.rawArchiveText()?.takeIf { it.length <= 20000 } ?: return null
-        val fingerprint = hookHash("${config.fingerprint()}\u0000$query")
+        val configFingerprint = config.fingerprint()
+        val legacyFingerprint = hookHash("$configFingerprint\u0000$query")
+        // Keep the configuration prefix queryable without exposing the query or recalled body.
+        val fingerprint = "$configFingerprint:$legacyFingerprint"
         return try {
             withTimeoutOrNull(config.waitMs) {
                 locks[(conversation.hashCode() and Int.MAX_VALUE) % locks.size].withLock {
                     if (dao.owner(conversation) != owner) return@withLock null
-                    dao.snapshot(conversation, user.id.toString())?.takeIf { it.fingerprint == fingerprint }?.let {
-                        return@withLock if (isCurrent()) HookRecall(it.context, decodeIds(it.memoryIds), it.status) else null
+                    dao.snapshot(conversation, user.id.toString())?.takeIf {
+                        it.fingerprint == fingerprint || it.fingerprint == legacyFingerprint
+                    }?.let {
+                        if (!isCurrent()) return@withLock null
+                        // Upgrade a matching old cache entry without re-fetching or changing its age.
+                        if (it.fingerprint == legacyFingerprint) dao.put(it.copy(fingerprint = fingerprint))
+                        return@withLock if (isCurrent()) HookRecall(it.context, decodeIds(it.memoryIds), it.status,
+                            runCatching { Json.parseToJsonElement(it.diagnostics).jsonObject }.getOrDefault(JsonObject(emptyMap()))) else null
                     }
                     if (!allowNetwork || !isCurrent()) return@withLock null
                     val delivered = dao.recent(conversation, config.fingerprint()).flatMap { decodeIds(it.memoryIds) }.distinct()
@@ -52,7 +61,7 @@ class SereinHookRepository(private val db: AppDatabase, private val client: Sere
                     if (!isCurrent()) return@withLock null
                     db.withTransaction {
                         dao.put(SereinHookSnapshot(conversation, user.id.toString(), fingerprint, result.context,
-                            encodeIds(result.ids), result.status, System.currentTimeMillis()))
+                            encodeIds(result.ids), result.status, System.currentTimeMillis(), result.diagnostics.toString()))
                         dao.pruneSnapshots(conversation)
                     }
                     result
@@ -74,6 +83,18 @@ class SereinHookRepository(private val db: AppDatabase, private val client: Sere
     }
 
     suspend fun clearLocalRecallState() = db.withTransaction { dao.clearSnapshots(); dao.clearDeliveries() }
+
+    suspend fun report(config: SereinHookConfig, conversation: String, receipt: String, user: UIMessage,
+        recall: HookRecall?, delivered: List<String>, requestStatus: String, elapsedMs: Long, createdAt: Long) {
+        if (!config.usableBy(config.assistantId)) return
+        val query = user.rawArchiveText() ?: return
+        db.withTransaction {
+            if (dao.owner(conversation) != config.assistantId) return@withTransaction
+            db.sereinObservationDao().enqueue(SereinObservation(receipt, config.assistantId, conversation,
+                config.uploadDestination(), observationPayload(receipt, config, conversation, query,
+                    recall ?: HookRecall(status = "unavailable"), delivered, requestStatus, elapsedMs, createdAt), createdAt))
+        }
+    }
 }
 
 internal fun encodeIds(ids: List<String>) = JsonArray(ids.map(::JsonPrimitive)).toString()

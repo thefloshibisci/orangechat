@@ -53,7 +53,7 @@ class UsageLedgerBackupTest {
                 preflightBackupDatabase(context, restored, FrameworkSQLiteOpenHelperFactory())
                 val db = open(restoredName)
                 try {
-                    assertEquals(42, db.openHelper.writableDatabase.version)
+                    assertEquals(43, db.openHelper.writableDatabase.version)
                     assertEquals(originalRows, ledgerRows(db))
                     assertEquals(UsageTotals(2, 20, 7, 8, 29, 1, 1), db.usageRecordDao().getTotals())
                     assertEquals(1001L, db.usageRecordDao().getFirstRecordTimestamp())

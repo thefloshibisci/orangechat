@@ -42,7 +42,7 @@ class SereinHookUiTest {
             } }
         }
         compose.onNodeWithText("最近召回：等待超时，可选 5 秒后再试").performScrollTo().assertIsDisplayed()
-        compose.onNodeWithText("APP 直连召回的记录保存在本机，不显示在网页的 Hook 注入列表。").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("新聊天的召回结果会后台同步到塞壬网页「召回观察 → Hook 注入」，包含触发原句（最多 2000 字）、候选信息和交付状态。").performScrollTo().assertIsDisplayed()
         compose.onNodeWithText("上传原因：接口不可用，请检查 gateway 地址和服务版本").performScrollTo().assertIsDisplayed()
     }
     @get:Rule val compose = createAndroidComposeRule<ComponentActivity>()

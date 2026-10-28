@@ -12,11 +12,13 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Environment
+import android.os.SystemClock
 import android.provider.Settings
 import android.widget.Toast
 import androidx.core.content.FileProvider
 import androidx.core.net.toUri
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
@@ -40,6 +42,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
 import java.security.MessageDigest
+import java.util.UUID
 
 class UpdateChecker(
     private val client: OkHttpClient,
@@ -56,13 +59,19 @@ class UpdateChecker(
     private val _downloadState = MutableStateFlow<UpdateDownloadState>(UpdateDownloadState.Idle)
     val downloadState = _downloadState.asStateFlow()
     private val preferences = context.getSharedPreferences("app_update_download", Context.MODE_PRIVATE)
+    private val downloadLock = Any()
+    private var downloadJob: Job? = null
 
     init {
         val downloadId = preferences.getLong("id", -1L)
         val item = preferences.getString("item", null)?.let {
             runCatching { json.decodeFromString<UpdateDownload>(it) }.getOrNull()
         }
-        if (downloadId >= 0 && item != null) observeDownload(downloadId, item)
+        if (downloadId >= 0 && item != null && acceptsDownload(item)) {
+            observeDownload(downloadId, item, preferences.getString("route", "direct") ?: "direct",
+                preferences.getBoolean("directOnly", false),
+                preferences.getStringSet("attempted", emptySet()).orEmpty().toSet())
+        }
     }
 
     fun checkUpdate(force: Boolean = false): Flow<UiState<UpdateInfo>> = flow {
@@ -102,77 +111,149 @@ class UpdateChecker(
         _prompt.value = null
     }
 
-    fun downloadUpdate(context: Context, download: UpdateDownload) {
-        if (_downloadState.value is UpdateDownloadState.Downloading) return
-        if (!isTrustedProjectDownload(download.url, download.name) ||
-            !projectUpdateAssetMatchesChannel(download.name, context.packageName) ||
-            !projectUpdateAssetMatchesAbi(download.name, Build.SUPPORTED_ABIS.toList())) {
+    private fun acceptsDownload(download: UpdateDownload): Boolean =
+        isTrustedProjectDownload(download.url, download.name) &&
+            projectUpdateAssetMatchesChannel(download.name, context.packageName) &&
+            projectUpdateAssetMatchesAbi(download.name, Build.SUPPORTED_ABIS.toList())
+
+    fun downloadUpdate(context: Context, download: UpdateDownload, preferDirect: Boolean = false): Unit = synchronized(downloadLock) {
+        if (_downloadState.value is UpdateDownloadState.Downloading || downloadJob?.isActive == true) return@synchronized
+        if (context.packageName != this.context.packageName || !acceptsDownload(download)) {
             _downloadState.value = UpdateDownloadState.Failed("此安装包不适用于当前安装渠道或设备")
-            return
+            return@synchronized
         }
         runCatching {
-            val directory = File(checkNotNull(context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)) {
-                "更新下载目录暂不可用，请稍后重试"
-            }, "updates")
-            check(directory.isDirectory || directory.mkdirs()) { "无法创建更新下载目录" }
-            val request = DownloadManager.Request(download.url.toUri()).apply {
-                // 设置下载时通知栏的标题和描述
-                setTitle(download.name)
-                setDescription("正在下载更新包...")
-                // 下载完成后通知栏可见
-                setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-                // 允许在移动网络和WiFi下下载
-                setAllowedNetworkTypes(DownloadManager.Request.NETWORK_WIFI or DownloadManager.Request.NETWORK_MOBILE)
-                // 设置文件保存路径
-                setDestinationInExternalFilesDir(context, Environment.DIRECTORY_DOWNLOADS,
-                    "updates/${System.currentTimeMillis()}-${download.name}")
-                // 允许下载的文件类型
-                setMimeType("application/vnd.android.package-archive")
-            }
-            // 获取系统的DownloadManager
-            val dm = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
-            val id = dm.enqueue(request)
-            preferences.edit().putLong("id", id).putString("item", json.encodeToString(download)).apply()
-            observeDownload(id, download)
+            val route = downloadRoutes(download, preferDirect).first()
+            _downloadState.value = UpdateDownloadState.Downloading(download, 0, download.sizeBytes, route.label)
+            val id = enqueueDownload(download, route, preferDirect, setOf(route.id))
+            observeDownload(id, download, route.id, preferDirect, setOf(route.id))
         }.onFailure {
             _downloadState.value = UpdateDownloadState.Failed(it.message ?: "无法开始下载，请稍后重试")
         }
     }
 
-    private fun observeDownload(id: Long, download: UpdateDownload) {
-        _downloadState.value = UpdateDownloadState.Downloading(download, 0, download.sizeBytes)
-        appScope.launch(Dispatchers.IO) {
+    private fun downloadRoutes(download: UpdateDownload, directOnly: Boolean): List<UpdateDownloadRoute> =
+        updateDownloadRoutes(download).filter { !directOnly || it.id == "direct" }
+
+    private fun updateDirectory(): File = File(checkNotNull(context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)) {
+        "更新下载目录暂不可用，请稍后重试"
+    }, "updates").also { check(it.isDirectory || it.mkdirs()) { "无法创建更新下载目录" } }
+
+    private fun enqueueDownload(download: UpdateDownload, route: UpdateDownloadRoute, directOnly: Boolean, attempted: Set<String>): Long {
+        val target = File(updateDirectory(), "${UUID.randomUUID()}-${download.name}")
+        val request = DownloadManager.Request(route.url.toUri()).apply {
+            setTitle(download.name)
+            setDescription("正在通过${route.label}下载更新包")
+            setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+            setAllowedNetworkTypes(DownloadManager.Request.NETWORK_WIFI or DownloadManager.Request.NETWORK_MOBILE)
+            setDestinationUri(target.toURI().toString().toUri())
+            setMimeType("application/vnd.android.package-archive")
+        }
+        val manager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+        val id = manager.enqueue(request)
+        preferences.edit().putLong("id", id).putString("item", json.encodeToString(download))
+            .putString("route", route.id).putBoolean("directOnly", directOnly)
+            .putStringSet("attempted", attempted.toSet()).putString("path", target.absolutePath).apply()
+        return id
+    }
+
+    private fun observeDownload(id: Long, download: UpdateDownload, routeId: String, directOnly: Boolean, previouslyAttempted: Set<String>) {
+        val routes = downloadRoutes(download, directOnly)
+        val initialRoute = routes.firstOrNull { it.id == routeId }
+        if (initialRoute == null) {
+            preferences.edit().clear().apply()
+            _downloadState.value = UpdateDownloadState.Failed("下载线路已失效，请重新下载")
+            return
+        }
+        _downloadState.value = UpdateDownloadState.Downloading(download, 0, download.sizeBytes, initialRoute.label)
+        downloadJob = appScope.launch(Dispatchers.IO) {
+            val manager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+            var currentId = id
+            var route: UpdateDownloadRoute = initialRoute
+            val attempted = (previouslyAttempted + route.id).toMutableSet()
             try {
-                val manager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
                 while (true) {
-                    val finished = manager.query(DownloadManager.Query().setFilterById(id)).use { cursor ->
-                        check(cursor.moveToFirst()) { "下载记录已被移除，请重试" }
-                        val status = cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS))
-                        val received = cursor.getLong(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR))
-                        val total = cursor.getLong(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES)).coerceAtLeast(0)
-                        _downloadState.value = UpdateDownloadState.Downloading(download, received, total)
-                        when (status) {
-                            DownloadManager.STATUS_SUCCESSFUL -> {
-                                val local = cursor.getString(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_LOCAL_URI)).toUri()
-                                check(local.scheme == "file") { "无法读取已下载的安装包" }
-                                val file = File(checkNotNull(local.path))
-                                try {
+                    var ownsRecord = false
+                    var attemptFile: File? = null
+                    var lastReceived = -1L
+                    var lastProgressAt = SystemClock.elapsedRealtime()
+                    try {
+                        while (true) {
+                            val snapshot = manager.query(DownloadManager.Query().setFilterById(currentId)).use { cursor ->
+                                check(cursor.moveToFirst()) { "下载记录已被移除，请重试" }
+                                check(cursor.getString(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_URI)) == route.url) {
+                                    "下载记录与当前更新不匹配，请重新下载"
+                                }
+                                val localUri = cursor.getString(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_LOCAL_URI))
+                                val localFile = localUri?.toUri()?.takeIf { it.scheme == "file" }?.path?.let(::File)?.canonicalFile
+                                val expectedFile = preferences.getString("path", null)?.let(::File)?.canonicalFile
+                                check(localFile == null || expectedFile == null || localFile == expectedFile) {
+                                    "下载记录与保存位置不匹配，请重新下载"
+                                }
+                                ownsRecord = true
+                                attemptFile = localFile?.takeIf { it.parentFile == updateDirectory().canonicalFile }
+                                DownloadSnapshot(
+                                    cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS)),
+                                    cursor.getLong(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR)),
+                                    cursor.getLong(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES)),
+                                    cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_REASON)),
+                                    localUri,
+                                )
+                            }
+                            val now = SystemClock.elapsedRealtime()
+                            val waitingForNetwork = isUpdateDownloadWaitingForNetwork(snapshot.status, snapshot.reason)
+                            _downloadState.value = UpdateDownloadState.Downloading(download, snapshot.received.coerceAtLeast(0),
+                                snapshot.total.takeIf { it > 0 } ?: download.sizeBytes, route.label, waitingForNetwork, attempted.size > 1)
+                            when (snapshot.status) {
+                                DownloadManager.STATUS_SUCCESSFUL -> {
+                                    val local = checkNotNull(snapshot.localUri) { "无法读取已下载的安装包" }.toUri()
+                                    check(local.scheme == "file") { "无法读取已下载的安装包" }
+                                    val file = File(checkNotNull(local.path)).canonicalFile
+                                    check(file.parentFile == updateDirectory().canonicalFile) { "安装包不在更新目录，请重新下载" }
                                     verifyDownloadedUpdate(file, download)
                                     _downloadState.value = UpdateDownloadState.Ready(download, file.absolutePath)
-                                } catch (error: Exception) {
-                                    file.delete()
-                                    throw error
+                                    return@launch // Keep the persisted ID for recovery and installation.
                                 }
-                                true
+                                DownloadManager.STATUS_FAILED -> {
+                                    val message = downloadFailureMessage(snapshot.reason)
+                                    if (snapshot.reason in setOf(DownloadManager.ERROR_INSUFFICIENT_SPACE,
+                                            DownloadManager.ERROR_DEVICE_NOT_FOUND, DownloadManager.ERROR_FILE_ERROR)) {
+                                        throw DownloadStorageException(message)
+                                    }
+                                    error(message)
+                                }
                             }
-                            DownloadManager.STATUS_FAILED -> error("下载失败（${cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_REASON))}），请重试")
-                            else -> false
+                            val progressStatus = if (snapshot.status == DownloadManager.STATUS_PAUSED && !waitingForNetwork)
+                                DownloadManager.STATUS_PENDING else snapshot.status
+                            if (isUpdateDownloadStalled(progressStatus, snapshot.received, lastReceived, now, lastProgressAt)) {
+                                error("当前下载线路长时间未响应")
+                            }
+                            if (snapshot.received > lastReceived || waitingForNetwork) lastProgressAt = now
+                            lastReceived = snapshot.received
+                            delay(700)
                         }
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled // The system download continues across process recreation.
+                    } catch (error: Exception) {
+                        // Remove only the verified record for this attempt, never another task.
+                        if (ownsRecord) {
+                            manager.remove(currentId)
+                            attemptFile?.delete()
+                        }
+                        if (error is ObsoleteUpdateException) {
+                            preferences.edit().clear().apply()
+                            _downloadState.value = UpdateDownloadState.Idle
+                            return@launch
+                        }
+                        val next = routes.firstOrNull { it.id !in attempted }
+                        if (!ownsRecord || error is DownloadStorageException || next == null) throw error
+                        attempted.add(next.id)
+                        route = next
+                        currentId = enqueueDownload(download, route, directOnly, attempted)
+                        _downloadState.value = UpdateDownloadState.Downloading(download, 0, download.sizeBytes,
+                            route.label, switchedRoute = true)
                     }
-                    if (finished) break
-                    delay(700)
                 }
-                // Retain the system download ID so a process restart can restore the verified install action.
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Exception) {
@@ -203,6 +284,7 @@ class UpdateChecker(
         val installed = context.packageManager.getPackageInfo(context.packageName, flags)
         val candidateCode = if (Build.VERSION.SDK_INT >= 28) candidate.longVersionCode else candidate.versionCode.toLong()
         val installedCode = if (Build.VERSION.SDK_INT >= 28) installed.longVersionCode else installed.versionCode.toLong()
+        if (candidateCode <= installedCode) throw ObsoleteUpdateException()
         fun signatures(info: android.content.pm.PackageInfo): Set<String> =
             (if (Build.VERSION.SDK_INT >= 28) info.signingInfo?.apkContentsSigners else info.signatures)
                 .orEmpty().map { signature ->
@@ -257,10 +339,21 @@ internal fun verifyUpdateIdentity(
 
 sealed interface UpdateDownloadState {
     data object Idle : UpdateDownloadState
-    data class Downloading(val download: UpdateDownload, val received: Long, val total: Long) : UpdateDownloadState
+    data class Downloading(
+        val download: UpdateDownload,
+        val received: Long,
+        val total: Long,
+        val routeLabel: String = "GitHub直连",
+        val waitingForNetwork: Boolean = false,
+        val switchedRoute: Boolean = false,
+    ) : UpdateDownloadState
     data class Ready(val download: UpdateDownload, val path: String) : UpdateDownloadState
     data class Failed(val message: String) : UpdateDownloadState
 }
+
+private data class DownloadSnapshot(val status: Int, val received: Long, val total: Long, val reason: Int, val localUri: String?)
+private class DownloadStorageException(message: String) : IllegalStateException(message)
+private class ObsoleteUpdateException : IllegalStateException("当前已安装此版本或更新版本")
 
 /** An older finished download must never masquerade as the package offered by a newer release. */
 internal fun updateDownloadForPrompt(info: UpdateInfo, state: UpdateDownloadState): UpdateDownloadState =

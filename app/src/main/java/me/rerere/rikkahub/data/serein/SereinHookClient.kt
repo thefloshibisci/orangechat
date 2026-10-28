@@ -10,7 +10,8 @@ import java.io.InterruptedIOException
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 
-data class HookRecall(val context: String = "", val ids: List<String> = emptyList(), val status: String = "empty")
+data class HookRecall(val context: String = "", val ids: List<String> = emptyList(), val status: String = "empty",
+    val diagnostics: JsonObject = JsonObject(emptyMap()))
 
 /** Dedicated client: no chat logging interceptors, no redirects carrying the instance-wide key. */
 class SereinHookClient internal constructor(private val client: OkHttpClient) {
@@ -69,5 +70,28 @@ internal fun parseHookRecall(raw: String): HookRecall = try {
     }
     require(context.length <= 12000 && ids.size <= 2 && ids.distinct().size == ids.size)
     require(ids.all { it.length in 7..250 && (it.startsWith("scene:") || it.startsWith("event:")) })
-    if (context.isBlank() || ids.isEmpty()) HookRecall() else HookRecall(context, ids, "ready")
+    val diagnostics = buildJsonObject {
+        val semantic = (obj["debug"] as? JsonObject)?.get("semantic_recall_debug") as? JsonObject
+        val router = semantic?.get("semantic_recall_router") as? JsonObject
+        fun field(value: JsonElement?, key: String, limit: Int) {
+            (value as? JsonPrimitive)?.contentOrNull?.takeIf { it.isNotBlank() }?.let { put(key, it.take(limit)) }
+        }
+        field(router?.get("route") ?: semantic?.get("route"), "route", 120)
+        field(router?.get("reason"), "reason", 240)
+        val cards = (obj["cards"] as? JsonArray).orEmpty().filterIsInstance<JsonObject>()
+        if (cards.isNotEmpty()) put("candidates", buildJsonArray {
+            ids.forEach { id -> cards.firstOrNull { (it["id"] as? JsonPrimitive)?.contentOrNull == id }?.let { card ->
+                add(buildJsonObject {
+                    put("id", id)
+                    put("title", (card["title"] as? JsonPrimitive)?.contentOrNull.orEmpty().take(240))
+                    put("source_kind", (card["source_kind"] as? JsonPrimitive)?.contentOrNull.orEmpty().take(16))
+                    val score = card["score"]
+                    val number = ((score as? JsonObject)?.let { it["final"] ?: it["semantic"] } ?: score) as? JsonPrimitive
+                    number?.doubleOrNull?.takeIf { it.isFinite() }?.let { put("score", it) }
+                })
+            } }
+        })
+    }
+    if (context.isBlank() || ids.isEmpty()) HookRecall(diagnostics = diagnostics)
+    else HookRecall(context, ids, "ready", diagnostics)
 } catch (_: Exception) { HookRecall(status = "invalid_response") }

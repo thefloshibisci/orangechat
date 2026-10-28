@@ -209,7 +209,7 @@ class SereinUploadTest {
             preflightBackupDatabase(context, context.getDatabasePath(name), FrameworkSQLiteOpenHelperFactory())
             db = open(name)
             try {
-                assertEquals(42, db.openHelper.writableDatabase.version)
+                assertEquals(43, db.openHelper.writableDatabase.version)
                 assertEquals("new original", db.rawArchiveDao().search("a", "%", 5).single().text)
                 assertEquals(0, counts(db).pending)
                 save(db, node)

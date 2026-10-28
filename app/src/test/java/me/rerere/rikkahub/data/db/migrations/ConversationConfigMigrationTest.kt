@@ -72,7 +72,7 @@ class ConversationConfigMigrationTest {
                     .addMigrations(*APP_DATABASE_MIGRATIONS).allowMainThreadQueries().build()
                 try {
                     val db = room.openHelper.writableDatabase
-                    assertEquals(42, db.version)
+                    assertEquals(43, db.version)
                     db.query("SELECT title,compression_summaries,compression_revision,send_compressed_summary,compression_history,conversation_config FROM ConversationEntity WHERE id='chat'").use {
                         assertTrue(it.moveToFirst())
                         assertEquals("keep title", it.getString(0))

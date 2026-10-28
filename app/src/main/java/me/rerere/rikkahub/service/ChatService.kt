@@ -615,7 +615,15 @@ class ChatService(
         // 避免 AI 正在聊天时主动器到点，也避免长回复吃掉休眠间隔。
         val currentProactiveSetting = settingsStore.settingsFlow.value.proactiveMessageSetting
         if (currentProactiveSetting.enabled) {
-            me.rerere.rikkahub.data.service.ProactiveMessageService.cancel(context)
+            if (currentProactiveSetting.allowAiScheduledWakeup &&
+                me.rerere.rikkahub.data.service.ProactiveWakeupStore(context).all().isNotEmpty()
+            ) {
+                // Other conversations keep their appointments while this one is chatting.
+                // A busy target retains its appointment and retries after ownership is released.
+                me.rerere.rikkahub.data.service.ProactiveMessageService.scheduleNext(context, currentProactiveSetting)
+            } else {
+                me.rerere.rikkahub.data.service.ProactiveMessageService.cancel(context)
+            }
         }
 
         val trace = LoadingDiagnostics.begin(context, "chat.send", timeoutMillis = 0)
@@ -1284,6 +1292,20 @@ class ChatService(
         }
         var hookTransformer: me.rerere.rikkahub.data.serein.SereinRecallTransformer? = null
         var hookParticipating = false
+        var hookUser: UIMessage? = null
+        var hookRecall: me.rerere.rikkahub.data.serein.HookRecall? = null
+        var hookElapsedMs = 0L
+        val hookObservedAt = System.currentTimeMillis()
+        val hookReceipt = "orangechat:${Uuid.random()}"
+        suspend fun reportHook(status: String, delivered: List<String> = emptyList()) {
+            val user = hookUser ?: return
+            if (!hookParticipating || !hookIsCurrent()) return
+            try {
+                sereinHookRepository.report(hookConfig, conversationId.toString(), hookReceipt, user,
+                    hookRecall, delivered, status, hookElapsedMs, hookObservedAt)
+            } catch (e: CancellationException) { throw e }
+            catch (_: Exception) { Log.w(TAG, "Could not queue Serein observation") }
+        }
 
         val generationResult = runCatching {
 
@@ -1311,13 +1333,22 @@ class ChatService(
             var regenerationMessageId: Uuid? = null
             val latestUserMessage = messagesForGeneration.lastOrNull { it.role == MessageRole.USER }
             diagnosticTrace?.stage("collecting extra information")
-            val extraInfoContext = kotlinx.coroutines.coroutineScope {
+            val (extraInfoContext, externalMemoryContext) = kotlinx.coroutines.coroutineScope {
+                // Independent read-only recall overlaps device context/Hook preparation.
+                val externalMemoryPending = async {
+                    generationHandler.recallExternalMemories(settings, assistant, messagesForGeneration)
+                }
                 val hookPending = async {
                     if (latestUserMessage == null || messageRange != null || transientSystemPrompt != null || !hookIsCurrent()) null
                     else {
                         hookParticipating = true
-                        sereinHookRepository.prepare(hookConfig, assistant.id.toString(), conversationId.toString(),
-                            latestUserMessage, messagesForGeneration.lastOrNull()?.role == MessageRole.USER, ::hookIsCurrent)
+                        hookUser = latestUserMessage
+                        val started = System.nanoTime()
+                        try {
+                            sereinHookRepository.prepare(hookConfig, assistant.id.toString(), conversationId.toString(),
+                                latestUserMessage, messagesForGeneration.lastOrNull()?.role == MessageRole.USER, ::hookIsCurrent)
+                                .also { hookRecall = it }
+                        } finally { hookElapsedMs = (System.nanoTime() - started) / 1_000_000 }
                     }
                 }
                 val extra = if (latestUserMessage != null && messageRange == null) {
@@ -1347,7 +1378,7 @@ class ChatService(
                         hookTransformer = me.rerere.rikkahub.data.serein.SereinRecallTransformer(it.id, recalled, ::hookIsCurrent)
                     }
                 }
-                extra
+                extra to externalMemoryPending.await()
             }
             // Every historical user message keeps the snapshot it was first sent with, so the
             // request prefix stays byte-identical across turns and the provider cache survives.
@@ -1384,6 +1415,7 @@ class ChatService(
                 model = model,
                 processingStatus = session.processingStatus,
                 messages = messagesForGeneration,
+                preparedExternalMemory = externalMemoryContext,
                 conversationContextSummary = conversation.summaryForGeneration(),
                 assistant = assistant,
                 conversationSystemPrompt = listOfNotNull(
@@ -1483,6 +1515,7 @@ class ChatService(
                 }
             }
         }.onFailure {
+            withContext(NonCancellable) { reportHook(if (it is CancellationException) "interrupted" else "failed") }
             // 取消 Live Update 通知
             cancelLiveUpdateNotification(conversationId)
 
@@ -1532,6 +1565,9 @@ class ChatService(
                 try {
                     sereinHookRepository.acknowledge(hookConfig, conversationId.toString(), completedReply,
                         hookTransformer?.deliveredIds.orEmpty())
+                    val valid = completedReply.role == MessageRole.ASSISTANT && completedReply.finishedAt != null &&
+                        completedReply.getTools().isEmpty() && completedReply.toText().isNotBlank() && completedReply.toText().trim() != "[SKIP]"
+                    reportHook(if (valid) "completed" else "interrupted", if (valid) hookTransformer?.deliveredIds.orEmpty() else emptyList())
                 } catch (e: CancellationException) { throw e }
                 catch (_: Exception) { Log.w(TAG, "Could not record Serein recall delivery") }
             }
@@ -1669,6 +1705,47 @@ class ChatService(
         return generationResult.isSuccess
     }
 
+    internal fun buildProactiveWakeupTools(
+        settings: me.rerere.rikkahub.data.datastore.Settings,
+        assistant: Assistant,
+        conversation: Conversation,
+    ): List<Tool> {
+        val setting = settings.proactiveMessageSetting
+        if (!setting.enabled || !setting.allowAiScheduledWakeup) return emptyList()
+        val anchor = conversation.currentMessages.lastOrNull { it.role == MessageRole.USER }?.id
+        return listOf(me.rerere.rikkahub.data.ai.tools.buildProactiveWakeupTool { time, reason ->
+            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+            val current = settingsStore.settingsFlow.first()
+            check(current.proactiveMessageSetting.enabled && current.proactiveMessageSetting.allowAiScheduledWakeup) {
+                "AI scheduled wakeup is disabled"
+            }
+            check(current.assistants.any { it.id == assistant.id }) { "Assistant no longer exists" }
+            val session = getOrCreateSession(conversation.id)
+            session.withStateLock {
+                val latest = session.state.value
+                check(latest.assistantId == assistant.id &&
+                    latest.currentMessages.lastOrNull { it.role == MessageRole.USER }?.id == anchor) {
+                    "Conversation changed; use its latest chat before making an appointment"
+                }
+                check(conversationRepo.existsConversationById(conversation.id)) { "Conversation no longer exists" }
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                val store = me.rerere.rikkahub.data.service.ProactiveWakeupStore(context)
+                if (time == null) store.cancel(conversation.id.toString()) else store.put(
+                    me.rerere.rikkahub.data.service.ProactiveWakeup(
+                        assistantId = assistant.id.toString(),
+                        conversationId = conversation.id.toString(),
+                        timeMillis = time,
+                        reason = reason,
+                    ),
+                )
+                me.rerere.rikkahub.data.service.ProactiveMessageService.scheduleNext(context, current.proactiveMessageSetting)
+                if (time == null) "已取消当前会话的待执行约定。无约定时恢复按原间隔检查。" else
+                    "已保存当前会话的唯一待执行约定：${java.time.Instant.ofEpochMilli(time).atZone(java.time.ZoneId.systemDefault())}。" +
+                        "到点读取最新聊天再生成回复，受活跃时段和连续追问上限约束；系统后台限制可能导致延后。"
+            }
+        })
+    }
+
     internal suspend fun buildProactiveMemoryTools(assistant: Assistant): List<Tool> = buildList {
         if (assistant.enableMemory) {
             add(me.rerere.rikkahub.data.ai.tools.buildProactiveMemorySearchTool {
@@ -1704,6 +1781,7 @@ class ChatService(
         conversation: Conversation,
         allowAppUsage: Boolean,
     ): List<Tool> = buildList {
+        addAll(buildProactiveWakeupTools(settings, assistant, conversation))
         if (settings.enableWebSearch) {
             addAll(createSearchTools(settings))
         }

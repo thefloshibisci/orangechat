@@ -61,12 +61,14 @@ class SettingVM(
     }
 
     fun updateProactiveSetting(
+        onUpdated: (me.rerere.rikkahub.data.datastore.ProactiveMessageSetting) -> Unit = {},
         update: (me.rerere.rikkahub.data.datastore.ProactiveMessageSetting) -> me.rerere.rikkahub.data.datastore.ProactiveMessageSetting,
     ) {
         viewModelScope.launch {
             settingsStore.update { current ->
                 current.copy(proactiveMessageSetting = update(current.proactiveMessageSetting))
             }
+            onUpdated(settingsStore.settingsFlow.value.proactiveMessageSetting)
         }
     }
 

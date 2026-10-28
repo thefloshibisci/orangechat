@@ -11,6 +11,8 @@ import kotlinx.serialization.Serializable
 @Serializable
 data class ProactiveMessageSetting(
     val enabled: Boolean = false,
+    // Separate opt-in for AI-created, conversation-scoped appointments.
+    val allowAiScheduledWakeup: Boolean = false,
     val minIntervalMinutes: Int = 30,
     val maxIntervalMinutes: Int = 90,
     val activeHoursEnabled: Boolean = true,

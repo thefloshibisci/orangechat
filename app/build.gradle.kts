@@ -26,8 +26,8 @@ android {
         applicationId = "me.rerere.orangechat"
         minSdk = 26
         targetSdk = 37
-        versionCode = 162
-        versionName = "2.2.6"
+        versionCode = 163
+        versionName = "2.2.7"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -124,7 +124,8 @@ android {
             initWith(getByName("release"))
             matchingFallbacks.add("release")
             applicationIdSuffix = ".liquidglass"
-            signingConfig = getByName("debug").signingConfig
+            // Keep this installed channel's original identity even when CI restores the production key.
+            signingConfig = signingConfigs.getByName("debug")
             isDebuggable = false
             isProfileable = true
         }

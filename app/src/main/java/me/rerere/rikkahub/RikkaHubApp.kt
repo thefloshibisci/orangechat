@@ -75,6 +75,7 @@ class RikkaHubApp : Application() {
     override fun onCreate() {
         super.onCreate()
         INSTANCE = this
+        me.rerere.ai.util.RequestImageEncoding.configure(java.io.File(cacheDir, "request-images-v1"))
         me.rerere.rikkahub.data.sync.StartupRecoveryDiagnostics.beginLaunch(this)
         // Must precede Room and DataStore creation. Failed recovery must not open mixed app data.
         BackupRestoreTransaction.recoverBeforeStartup(dataDir)?.let {
@@ -151,6 +152,7 @@ class RikkaHubApp : Application() {
         syncManagedFiles()
         get<me.rerere.rikkahub.data.model.ModelCapabilitySync>().start(get<AppScope>())
         me.rerere.rikkahub.data.serein.SereinUploadScheduler.start(this)
+        me.rerere.rikkahub.data.serein.SereinObservationScheduler.start(this)
         get<AppScope>().launch {
             get<SettingsStore>().settingsFlowRaw
                 .map { it.autoBackupConfig.scheduleConfig() }

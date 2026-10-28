@@ -72,10 +72,11 @@ import me.rerere.rikkahub.utils.JsonInstant
         me.rerere.rikkahub.data.serein.SereinHookSnapshot::class,
         me.rerere.rikkahub.data.serein.SereinHookDelivery::class,
         me.rerere.rikkahub.data.serein.SereinUpload::class,
+        me.rerere.rikkahub.data.serein.SereinObservation::class,
         UsageRecordEntity::class,
         TranslationHistoryEntity::class,
     ],
-    version = 42,
+    version = 43,
     autoMigrations = [
         AutoMigration(from = 1, to = 2),
         AutoMigration(from = 2, to = 3),
@@ -135,6 +136,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun localSceneDao(): me.rerere.rikkahub.data.serein.LocalSceneDAO
     abstract fun sereinHookDao(): me.rerere.rikkahub.data.serein.SereinHookDAO
     abstract fun sereinUploadDao(): me.rerere.rikkahub.data.serein.SereinUploadDAO
+    abstract fun sereinObservationDao(): me.rerere.rikkahub.data.serein.SereinObservationDAO
 }
 
 object TokenUsageConverter {

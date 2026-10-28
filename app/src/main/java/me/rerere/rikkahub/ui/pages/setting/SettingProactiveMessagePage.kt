@@ -217,6 +217,30 @@ fun SettingProactiveMessagePage(vm: SettingVM = koinInject()) {
                         }
                     )
                     item(
+                        headlineContent = { Text("允许 AI 约定主动唤醒") },
+                        supportingContent = {
+                            Text("开启后，各角色可为当前会话约定下次几点几分来找你；到点读取最新聊天生成回复。" +
+                                "每个会话保留一个待执行约定，遵守总开关和免打扰；有约定时等待约定时间，无约定时按原间隔检查。")
+                        },
+                        trailingContent = {
+                            Switch(
+                                checked = settings.proactiveMessageSetting.allowAiScheduledWakeup,
+                                enabled = !settings.init,
+                                onCheckedChange = { enabled ->
+                                    vm.updateProactiveSetting(
+                                        update = { it.copy(allowAiScheduledWakeup = enabled) },
+                                        onUpdated = { updated ->
+                                            if (!updated.allowAiScheduledWakeup) {
+                                                me.rerere.rikkahub.data.service.ProactiveWakeupStore(context).clear()
+                                            }
+                                            ProactiveMessageService.scheduleNext(context, updated)
+                                        },
+                                    )
+                                },
+                            )
+                        },
+                    )
+                    item(
                         headlineContent = { Text("手动触发一次") },
                         supportingContent = {
                             Text("本次忽略活跃时段，仍遵守连续追问上限。")
@@ -271,6 +295,11 @@ fun SettingProactiveMessagePage(vm: SettingVM = koinInject()) {
                             }
                         )
                     }
+                }
+            }
+            item {
+                ProactiveWakeupSettingsCard(settings.proactiveMessageSetting, settings.assistants) {
+                    ProactiveMessageService.scheduleNext(context, vm.settings.value.proactiveMessageSetting)
                 }
             }
             item {

@@ -38,13 +38,16 @@ class LocationService(
     private val amapService: AmapService
 ) {
     suspend fun getCurrentLocation(amapApiKey: String): Result<LocationInfo> = withContext(Dispatchers.IO) {
-        runCatching {
-            val fetched = DeviceLocationFetcher.fetch(context)
-                ?: throw IllegalStateException("无法获取位置信息")
-            val location = fetched.location
+        getCoordinatesOnly().mapCatching { coordinates ->
+            resolveAddress(coordinates).getOrThrow()
+        }
+    }
 
+    /** Reuse the caller's location snapshot instead of starting a second device lookup. */
+    suspend fun resolveAddress(coordinates: LocationInfo): Result<LocationInfo> = withContext(Dispatchers.IO) {
+        runCatching {
             // GPS坐标(WGS84)需要先转换为高德坐标(GCJ02)才能正确逆地理编码
-            val amapCoord = amapService.convertToAmapCoord(location.latitude, location.longitude)
+            val amapCoord = amapService.convertToAmapCoord(coordinates.latitude, coordinates.longitude)
             val lat = amapCoord?.first ?: error("坐标转换失败")
             val lng = amapCoord.second
 
@@ -52,9 +55,7 @@ class LocationService(
             if (!address.success) {
                 android.util.Log.w("LocationService", "Reverse geocode failed: ${address.error}")
             }
-            LocationInfo(
-                latitude = location.latitude,
-                longitude = location.longitude,
+            coordinates.copy(
                 address = address.formattedAddress ?: "",
                 city = address.city ?: address.province ?: "",
                 district = address.district ?: "",
@@ -64,8 +65,6 @@ class LocationService(
                         append(address.streetNumber)
                     }
                 },
-                isFresh = fetched.isFresh,
-                ageMs = fetched.ageMs
             )
         }
     }

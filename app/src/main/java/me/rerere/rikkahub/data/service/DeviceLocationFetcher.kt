@@ -12,12 +12,14 @@ import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
 import android.os.Bundle
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.selects.select
 import kotlin.coroutines.resume
 
 /**
@@ -102,26 +104,9 @@ internal object DeviceLocationFetcher {
 
         if (candidateProviders.isEmpty()) return@coroutineScope null
 
-        val deferredResults = candidateProviders.map { provider ->
-            async { requestSingleProviderLocation(lm, provider) }
-        }
-
-        // 谁先返回非空结果就用谁；全部超时/失败则返回 null
-        var result: Location? = null
-        for (deferred in deferredResults) {
-            val loc = try {
-                deferred.await()
-            } catch (e: Exception) {
-                android.util.Log.e("DeviceLocationFetcher", "provider request failed", e)
-                null
-            }
-            if (loc != null && result == null) {
-                result = loc
-            }
-        }
-        // 取消还没完成的其余请求，避免残留的 LocationListener 一直挂着
-        deferredResults.forEach { if (it.isActive) it.cancel() }
-        result
+        firstNonNullResult(candidateProviders.map { provider ->
+            suspend { requestSingleProviderLocation(lm, provider) }
+        })
     }
 
     @SuppressLint("MissingPermission")
@@ -162,9 +147,29 @@ internal object DeviceLocationFetcher {
                     }
                 }
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             android.util.Log.e("DeviceLocationFetcher", "requestSingleProviderLocation failed, provider=$provider", e)
             null
         }
+    }
+}
+
+/** Return the first usable result, cancelling and joining all remaining requests. */
+internal suspend fun <T : Any> firstNonNullResult(requests: List<suspend () -> T?>): T? = coroutineScope {
+    val tasks = requests.map { request -> async { request() } }
+    val pending = tasks.toMutableList()
+    try {
+        while (pending.isNotEmpty()) {
+            val (completed, result) = select {
+                pending.forEach { task -> task.onAwait { task to it } }
+            }
+            pending.remove(completed)
+            if (result != null) return@coroutineScope result
+        }
+        null
+    } finally {
+        tasks.forEach { it.cancel() }
     }
 }

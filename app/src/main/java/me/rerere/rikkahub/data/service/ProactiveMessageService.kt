@@ -121,10 +121,16 @@ class ProactiveMessageService {
             val maxMinutes = setting.maxIntervalMinutes.coerceIn(minMinutes, Int.MAX_VALUE - 1)
             val delayMinutes = delayMinutesOverride?.coerceAtLeast(1)
                 ?: Random.nextInt(minMinutes, maxMinutes + 1)
-            val triggerTime = nextProactiveActiveTime(
-                setting,
-                System.currentTimeMillis() + TimeUnit.MINUTES.toMillis(delayMinutes.toLong()),
-                java.time.ZoneId.systemDefault(),
+            val now = System.currentTimeMillis()
+            val wakeupStore = ProactiveWakeupStore(context)
+            if (!setting.allowAiScheduledWakeup) wakeupStore.clear()
+            val appointment = nextProactiveWakeup(wakeupStore.all(), setting, now, java.time.ZoneId.systemDefault())
+            val triggerTime = proactiveTriggerTime(
+                appointment = appointment,
+                fallbackTime = now + TimeUnit.MINUTES.toMillis(delayMinutes.toLong()),
+                setting = setting,
+                now = now,
+                zone = java.time.ZoneId.systemDefault(),
             )
 
             // 保存下次触发时间到SharedPreferences
@@ -412,6 +418,8 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
             var nextDelayOverrideMinutes: Int? = null
             var outcome = "completed"
             var failure: Throwable? = null
+            var selectedAppointment: ProactiveWakeup? = null
+            var appointmentMessageSaved = false
             val runAssistantMessageIds = linkedSetOf<Uuid>()
             val protectedMessageIds = linkedSetOf<Uuid>()
             try {
@@ -433,13 +441,28 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                     return@launch
                 }
 
+                val wakeupStore = ProactiveWakeupStore(this@ProactiveMessageTriggerService)
+                fun consumeAppointment(value: ProactiveWakeup): Boolean = wakeupStore.consume(value).also {
+                    if (it) selectedAppointment = value
+                }
+                val appointment = if (triggerSource == "manual") null else nextProactiveWakeup(
+                    wakeupStore.all(), proactiveSetting, System.currentTimeMillis(), java.time.ZoneId.systemDefault(),
+                )
+                if (!canRunProactiveWakeup(
+                        appointment, proactiveSetting, System.currentTimeMillis(), java.time.ZoneId.systemDefault(),
+                        manual = triggerSource == "manual",
+                    )
+                ) {
+                    outcome = "waiting_for_appointment"
+                    return@launch
+                }
                 val prefs = getSharedPreferences(ProactiveMessageService.PREFS_NAME, Context.MODE_PRIVATE)
 
                 // 去重判断：防止 AlarmManager 和 WorkManager 在同一窗口内重复触发。
                 // 外部触发（网关轮询/激进模式设备事件）跳过此检查，因为这是独立信号源，不受内部闹钟链约束。
                 // 注意：isForceTrigger 跳过的是"时间间隔节流"（两回事），不跳过后面 tryClaimGeneration 的并发安全检查。
                 // 把"读取 last_triggered_time -> 判断 -> 写入"整段放在同步块里，修复 check-then-act 竞态。
-                if (!isForceTrigger) {
+                if (!isForceTrigger && appointment == null) {
                     val skipDueToInterval = synchronized(prefsLock) {
                         val lastTriggeredTime = prefs.getLong("last_triggered_time", 0L)
                         val minIntervalMs = proactiveSetting.minIntervalMinutes.coerceAtLeast(1) * 60 * 1000L
@@ -465,22 +488,37 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 }
 
                 // 先按共享设置定位目标会话，再读取该会话自己的请求配置。
-                val targetAssistant = baseSettings.assistants.find {
+                val scheduledAssistant = appointment?.let { pending ->
+                    baseSettings.assistants.find { it.id.toString() == pending.assistantId }
+                }
+                if (appointment != null && scheduledAssistant == null) {
+                    consumeAppointment(appointment)
+                    outcome = "appointment_assistant_removed"
+                    return@launch
+                }
+                val targetAssistant = scheduledAssistant ?: baseSettings.assistants.find {
                     it.id.toString() == proactiveSetting.assistantId
                 } ?: baseSettings.getCurrentAssistant()
                 val assistantUuid = targetAssistant.id
 
                 // 找到最近的对话。分段记录可以区分鸿蒙究竟冻结在列表查询还是正文读取。
                 trace.event("database_recent_start")
-                val recentConversationId = conversationRepository.getMostRecentConversationId(assistantUuid)
+                val recentConversationId = appointment?.let { Uuid.parse(it.conversationId) }
+                    ?: conversationRepository.getMostRecentConversationId(assistantUuid)
                 trace.event("database_recent_end", "found=${recentConversationId != null}")
                 trace.event("database_load_start")
                 val conversation = recentConversationId?.let { conversationRepository.getConversationById(it) }
                 trace.conversation("database_load_end", conversation)
+                if (appointment != null && (conversation == null || conversation.assistantId != assistantUuid)) {
+                    consumeAppointment(appointment)
+                    outcome = "appointment_conversation_removed"
+                    return@launch
+                }
 
                 val latestUserMessage = conversation?.currentMessages
                     ?.lastOrNull { it.role == MessageRole.USER }
                 if (latestUserMessage == null) {
+                    appointment?.let { consumeAppointment(it) }
                     outcome = "no_user_message"
                     Log.d(TAG, "No real user message found; skipping proactive generation")
                     nextDelayOverrideMinutes = 240
@@ -509,6 +547,7 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                     proactiveState.followUpCount >= maxFollowUps
                 ) {
                     outcome = "follow_up_limit"
+                    appointment?.let { consumeAppointment(it) }
                     Log.d(TAG, "No proactive generation: waiting for a new real user message")
                     nextDelayOverrideMinutes = 240
                     return@launch
@@ -560,7 +599,7 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 val idleMinutes = latestUserMessage.createdAt
                     .toInstant(TimeZone.currentSystemDefault())
                     .let { ((kotlin.time.Clock.System.now() - it).inWholeMinutes).toInt().coerceAtLeast(0) }
-                if (!isForceTrigger && idleMinutes < proactiveSetting.minIntervalMinutes.coerceAtLeast(1)) {
+                if (!isForceTrigger && appointment == null && idleMinutes < proactiveSetting.minIntervalMinutes.coerceAtLeast(1)) {
                     outcome = "user_not_idle"
                     trace.event(
                         "idle_guard",
@@ -573,6 +612,11 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 if (settingsStore.settingsFlow.first().getChatModelOf(session.state.value) == null) {
                     outcome = "no_model"
                     Log.e(ProactiveMessageService.TAG, "No model found for proactive message")
+                    return@launch
+                }
+                // Consume after generation ownership is acquired; a newer replacement wins.
+                if (appointment != null && !consumeAppointment(appointment)) {
+                    outcome = "appointment_changed"
                     return@launch
                 }
                 val activeConversation = chatService.bindConversationConfig(conversationId)
@@ -635,7 +679,8 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                     conversation = activeConversation,
                     allowAppUsage = appUsageToolAllowed,
                 ) else if (me.rerere.ai.provider.ModelAbility.TOOL in model.abilities) {
-                    chatService.buildProactiveMemoryTools(assistant)
+                    chatService.buildProactiveMemoryTools(assistant) +
+                        chatService.buildProactiveWakeupTools(settings, assistant, activeConversation)
                 } else emptyList()
                 val timeline = if (appUsageToolAllowed && proactiveSetting.includeAppTimeline) {
                     AppUsageService(this@ProactiveMessageTriggerService).getRecentProactiveTimeline()
@@ -700,10 +745,15 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 // 构建系统提示词（包含记忆 + 上下文，都放在最后面避免被网关淹没）
                 val systemPrompt = buildSystemPrompt(
                     assistant = assistant,
-                    context = contextStr + "\n" + timeline + if (fullTools) {
+                    context = contextStr + "\n" + timeline + (appointment?.let {
+                        "\n## 本次约定唤醒\n你此前为这个会话约定了联系时间：" +
+                            java.time.Instant.ofEpochMilli(it.timeMillis).atZone(java.time.ZoneId.systemDefault()) +
+                            "\n约定缘由：${it.reason}\n请先依据最新聊天判断缘由是否仍适用，再决定如何联系；" +
+                            "这不是用户的新消息，也不是预写的待发送正文。\n"
+                    } ?: "") + if (fullTools) {
                         "\n这次可按需使用已配置的工具。"
                     } else {
-                        "\n这次是轻量判断，只能使用列出的只读记忆搜索工具；若没有工具，就依据现有上下文判断。" +
+                        "\n这次是轻量判断，可使用列出的记忆搜索与联系时间约定工具；若没有工具，就依据现有上下文判断。" +
                             "不能声称完成未实际执行的外部行动。"
                     },
                     state = proactiveState,
@@ -881,8 +931,13 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                     ?.toString()
                 val anchorUnchanged = latestPersistedUserId == latestUserMessage.id.toString()
                 trace.event("anchor_recheck_end", "unchanged=$anchorUnchanged")
-                if (!anchorUnchanged) {
-                    outcome = "user_returned"
+                val latestProactiveSetting = settingsStore.settingsFlow.first().proactiveMessageSetting
+                val stillAllowed = canRunProactiveWakeup(
+                    appointment, latestProactiveSetting, System.currentTimeMillis(), java.time.ZoneId.systemDefault(),
+                    manual = triggerSource == "manual",
+                )
+                if (!anchorUnchanged || !stillAllowed) {
+                    outcome = if (!anchorUnchanged) "user_returned" else "disabled_or_quiet_hours"
                     removeProactiveRunMessages(
                         conversationId = conversationId,
                         messageIds = runAssistantMessageIds + aiMessage.id,
@@ -907,6 +962,7 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 val shouldJump = decision.shouldJump
                 nextDelayOverrideMinutes = decision.waitMinutes
                 if (decision.stopUntilUserReturns) {
+                    wakeupStore.cancel(conversationId.toString())
                     stateStore.stopUntilUserReturns(proactiveState)
                     nextDelayOverrideMinutes = 240
                 }
@@ -978,6 +1034,7 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                     saveProactiveMessage(
                         assistant, conversationId, conversation, trace
                     )
+                    appointmentMessageSaved = true
                     outcome = "sent"
                     val persistedRunIds = chatService.getConversationFlow(conversationId).value.currentMessages
                         .asSequence()
@@ -1088,6 +1145,15 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 // (settingsFlow.first()) 会立刻抛 CancellationException，导致 scheduleNext 被跳过、
                 // 定时链断裂。NonCancellable 保证这段收尾逻辑跑完。
                 withContext(NonCancellable) {
+                    selectedAppointment?.let { appointment ->
+                        runCatching {
+                            withContext(Dispatchers.IO) {
+                                ProactiveWakeupStore(this@ProactiveMessageTriggerService).finish(
+                                    appointment, if (appointmentMessageSaved) "sent" else outcome,
+                                )
+                            }
+                        }.onFailure { Log.w(TAG, "Failed to record appointment outcome", it) }
+                    }
                     if ((outcome == "failed" || outcome == "cancelled") &&
                         conversationId != null && runAssistantMessageIds.isNotEmpty()
                     ) {
@@ -1112,7 +1178,8 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                         "generation_busy",
                         "user_not_idle",
                     )
-                    if (!normalConversationOwnsTimer) {
+                    val hasPendingAppointment = ProactiveWakeupStore(this@ProactiveMessageTriggerService).all().isNotEmpty()
+                    if (!normalConversationOwnsTimer || hasPendingAppointment) {
                         try {
                             val currentSettings = settingsStore.settingsFlow.first()
                             ProactiveMessageService.scheduleNext(

@@ -20,6 +20,10 @@ import java.util.Date
 import java.util.Locale
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.async
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -36,6 +40,7 @@ import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.service.AmapService
 import me.rerere.rikkahub.data.service.AppUsageService
 import me.rerere.rikkahub.data.service.LocationService
+import me.rerere.rikkahub.data.service.LocationInfo
 import me.rerere.rikkahub.data.service.MemoryBankService
 import me.rerere.rikkahub.data.service.RikkaNotificationListenerService
 import me.rerere.rikkahub.data.service.hasNotificationListenerAccess
@@ -88,19 +93,33 @@ class ExtraInfoInjectionCollector(
         if (!option.extraInfoInjectionEnabled) return@coroutineScope null
 
         val timeoutMillis = option.extraInfoInjectionTimeoutSeconds.coerceIn(1, 120) * 1_000L
+        // One bounded lookup per collection; individual source timeouts do not cancel it.
+        // Keep this local so another message always rechecks location and permissions.
+        val coordinates = async(Dispatchers.IO, start = CoroutineStart.LAZY) {
+            withTimeoutOrNull(timeoutMillis) {
+                runCatching {
+                    requireLocationPermission()
+                    LocationService(context, AmapService("")).getCoordinatesOnly().getOrThrow()
+                }.also { currentCoroutineContext().ensureActive() }
+            } ?: Result.failure(IllegalStateException("Location lookup timed out"))
+        }
+        val readCoordinates: suspend () -> LocationInfo = {
+            requireLocationPermission()
+            coordinates.await().getOrThrow()
+        }
         val items = buildList {
             fun source(name: String, collect: suspend () -> String) {
                 add(Item(name) { collectExtraInfoItem(timeoutMillis, collect) })
             }
             if (option.shouldInjectTimeContext(proactive)) source("当前时间", ::currentTime)
             if (option.batteryContextInjectionEnabled) source("电池信息", ::battery)
-            if (option.weatherContextInjectionEnabled) source("当前天气", ::weather)
+            if (option.weatherContextInjectionEnabled) source("当前天气") { weather(readCoordinates()) }
             if (option.locationContextInjectionEnabled) {
                 source("当前位置") {
-                    location(settings, false)
+                    location(settings, false, readCoordinates())
                 }
                 if (option.preciseLocationContextInjectionEnabled) source("详细地址") {
-                    location(settings, true)
+                    location(settings, true, readCoordinates())
                 }
             }
             if (option.currentScreenAppContextInjectionEnabled) {
@@ -126,12 +145,20 @@ class ExtraInfoInjectionCollector(
                 }
             }
         }
-        if (items.isEmpty()) return@coroutineScope null
+        if (items.isEmpty()) {
+            coordinates.cancel()
+            return@coroutineScope null
+        }
+        if (!option.weatherContextInjectionEnabled && !option.locationContextInjectionEnabled) coordinates.cancel()
 
-        val results = supervisorScope {
-            items.map { item ->
-                async(Dispatchers.IO) { item.name to item.collect() }
-            }.awaitAll()
+        val results = try {
+            supervisorScope {
+                items.map { item ->
+                    async(Dispatchers.IO) { item.name to item.collect() }
+                }.awaitAll()
+            }
+        } finally {
+            coordinates.cancel()
         }
         ExtraInfoDiagnostics.publish(proactive, results)
         val blocks = results.map { (name, result) ->
@@ -178,9 +205,8 @@ class ExtraInfoInjectionCollector(
         }
     }
 
-    private suspend fun weather(): String {
+    private suspend fun weather(location: LocationInfo): String {
         requireLocationPermission()
-        val location = LocationService(context, AmapService("")).getCoordinatesOnly().getOrThrow()
         val coordinates = "%.2f,%.2f".format(Locale.US, location.latitude, location.longitude)
         val payload = JSONObject(fetchWeather("https://wttr.in/$coordinates?format=j1&lang=zh"))
         val current = payload.optJSONArray("current_condition")?.optJSONObject(0)
@@ -193,7 +219,8 @@ class ExtraInfoInjectionCollector(
             appendLine("温度：${current.optString("temp_C", "未知")}°C")
             appendLine("体感：${current.optString("FeelsLikeC", "未知")}°C")
             appendLine("湿度：${current.optString("humidity", "未知")}%")
-            append("风速：${current.optString("windspeedKmph", "未知")} km/h")
+            appendLine("风速：${current.optString("windspeedKmph", "未知")} km/h")
+            append("查询时间：${currentTime()}")
         }
     }
 
@@ -219,17 +246,17 @@ class ExtraInfoInjectionCollector(
         })
     }
 
-    private suspend fun location(settings: Settings, precise: Boolean): String {
+    private suspend fun location(settings: Settings, precise: Boolean, coordinates: LocationInfo): String {
         requireLocationPermission()
         val locationService = LocationService(context, AmapService(settings.systemToolsSetting.amapApiKey))
         val result = if (precise) {
             if (settings.systemToolsSetting.amapApiKey.isBlank()) {
                 throw ExtraInfoUnavailable(ExtraInfoIssue.AMAP_KEY)
             }
-            locationService.getCurrentLocation(settings.systemToolsSetting.amapApiKey)
+            locationService.resolveAddress(coordinates).getOrThrow()
         } else {
-            locationService.getCoordinatesOnly()
-        }.getOrThrow()
+            coordinates
+        }
         if (precise && result.address.isBlank()) throw ExtraInfoUnavailable(ExtraInfoIssue.ADDRESS)
         return buildString {
             if (result.address.isNotBlank()) appendLine("地址：${result.address}")

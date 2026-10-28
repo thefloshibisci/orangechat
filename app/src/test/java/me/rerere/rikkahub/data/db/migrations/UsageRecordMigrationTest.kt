@@ -79,7 +79,7 @@ class UsageRecordMigrationTest {
                 val room = open(name)
                 try {
                     val db = room.openHelper.writableDatabase
-                    assertEquals(42, db.version)
+                    assertEquals(43, db.version)
                     db.query("SELECT title,conversation_config,compression_summaries,compression_revision,compression_history FROM ConversationEntity").use { row ->
                         assertTrue(row.moveToFirst())
                         assertEquals("keep title", row.getString(0))

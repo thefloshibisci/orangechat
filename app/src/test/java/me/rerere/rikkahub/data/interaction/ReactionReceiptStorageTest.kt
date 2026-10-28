@@ -77,7 +77,7 @@ class ReactionReceiptStorageTest {
             assertEquals(loaded.messageNodes, backup.messageNodes)
             assertTrue(interactions.prepareContext(loaded.currentMessages, original.id.toString(), assistant).events.isEmpty())
             assertEquals(events, db.messageReactionDao().list(original.id.toString()))
-            assertEquals(42, db.openHelper.writableDatabase.version)
+            assertEquals(43, db.openHelper.writableDatabase.version)
             assertEquals("收到啦", backup.currentMessages.last().toText())
         }
     }

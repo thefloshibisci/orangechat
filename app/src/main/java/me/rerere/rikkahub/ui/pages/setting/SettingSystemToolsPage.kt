@@ -188,56 +188,56 @@ fun SettingSystemToolsPage(vm: SettingVM = koinViewModel()) {
                 }
             }
 
-            // 后台保活
-            item {
-            CardGroup(
-                title = { Text("后台保活") },
-                modifier = Modifier.padding(horizontal = 8.dp)
-            ) {
-                item(
-                    leadingContent = { Icon(imageVector = HugeIcons.Pulse01, contentDescription = null) },
-                    headlineContent = { Text(stringResource(R.string.setting_system_tools_keep_alive)) },
-                    supportingContent = {
-                        Text(if (keepAliveSupported) stringResource(R.string.setting_system_tools_keep_alive_desc)
-                        else "此系统版本已停用通用保活，避免后台超时闪退。定时任务与工作流仍按各自设置运行，执行受系统后台限制。")
-                    },
-                    trailingContent = {
-                        Switch(
-                            checked = keepAliveEnabled,
-                            enabled = keepAliveSupported,
-                            onCheckedChange = { enabled ->
-                                keepAliveEnabled = enabled
-                                vm.updateSettings(settings.copy(keepAliveEnabled = enabled))
-                                if (enabled) {
-                                    // Android 13+ 需要先请求 POST_NOTIFICATIONS 权限
-                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
-                                        && !notificationPermissionState.allPermissionsGranted
-                                    ) {
-                                        notificationPermissionState.requestPermissions()
-                                    } else {
-                                        KeepAliveService.start(context, fromUserForeground = true)
+            // 仅在仍支持通用保活的系统上显示此设置。
+            if (keepAliveSupported) {
+                item {
+                    CardGroup(
+                        title = { Text("后台保活") },
+                        modifier = Modifier.padding(horizontal = 8.dp)
+                    ) {
+                        item(
+                            leadingContent = { Icon(imageVector = HugeIcons.Pulse01, contentDescription = null) },
+                            headlineContent = { Text(stringResource(R.string.setting_system_tools_keep_alive)) },
+                            supportingContent = {
+                                Text(stringResource(R.string.setting_system_tools_keep_alive_desc))
+                            },
+                            trailingContent = {
+                                Switch(
+                                    checked = keepAliveEnabled,
+                                    onCheckedChange = { enabled ->
+                                        keepAliveEnabled = enabled
+                                        vm.updateSettings(settings.copy(keepAliveEnabled = enabled))
+                                        if (enabled) {
+                                            // Android 13+ 需要先请求 POST_NOTIFICATIONS 权限
+                                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+                                                && !notificationPermissionState.allPermissionsGranted
+                                            ) {
+                                                notificationPermissionState.requestPermissions()
+                                            } else {
+                                                KeepAliveService.start(context, fromUserForeground = true)
+                                            }
+                                        } else {
+                                            KeepAliveService.stop(context)
+                                        }
                                     }
-                                } else {
-                                    KeepAliveService.stop(context)
-                                }
+                                )
                             }
                         )
-                    }
-                )
-                if (keepAliveEnabled && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
-                    && !notificationPermissionState.allPermissionsGranted
-                ) {
-                    item(
-                        headlineContent = { Text("⚠ 通知权限未授予") },
-                        supportingContent = { Text("开启保活需要通知权限以显示常驻通知") },
-                        trailingContent = {
-                            FilledTonalButton(onClick = { notificationPermissionState.requestPermissions() }) {
-                                Text("授权")
-                            }
+                        if (keepAliveEnabled && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+                            && !notificationPermissionState.allPermissionsGranted
+                        ) {
+                            item(
+                                headlineContent = { Text("⚠ 通知权限未授予") },
+                                supportingContent = { Text("开启保活需要通知权限以显示常驻通知") },
+                                trailingContent = {
+                                    FilledTonalButton(onClick = { notificationPermissionState.requestPermissions() }) {
+                                        Text("授权")
+                                    }
+                                }
+                            )
                         }
-                    )
+                    }
                 }
-            }
             }
 
 

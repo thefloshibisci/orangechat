@@ -56,7 +56,7 @@ class BackupDatabasePreflightTest {
         val reopened = Room.databaseBuilder(context, AppDatabase::class.java, file.absolutePath).build()
         try {
             val db = reopened.openHelper.writableDatabase
-            assertEquals(42, db.version)
+            assertEquals(43, db.version)
             db.query("SELECT COUNT(*) FROM usage_record").use {
                 assertTrue(it.moveToFirst()); assertEquals(0, it.getInt(0))
             }

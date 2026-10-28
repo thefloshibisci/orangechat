@@ -52,7 +52,7 @@ class LocalSceneMigrationTest {
             var sceneId = ""
             db = room(file.absolutePath)
             try {
-                assertEquals(42, db.openHelper.writableDatabase.version)
+                assertEquals(43, db.openHelper.writableDatabase.version)
                 assertEquals(1, db.messageNodeDao().getNodesOfConversation("chat").size)
                 assertEquals("保留原话", db.rawArchiveDao().search("assistant", "%", 50).single().text)
                 val repo = LocalSceneRepository(db)

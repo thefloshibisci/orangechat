@@ -16,6 +16,7 @@ import androidx.core.net.toUri
 import me.rerere.ai.ui.UIMessagePart
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.OutputStream
 import java.net.URI
 
 private val supportedTypes = setOf(
@@ -64,12 +65,7 @@ fun UIMessagePart.Image.encodeBase64(withPrefix: Boolean = true): Result<Encoded
                 throw IllegalArgumentException("File does not exist: ${this.url}")
             }
             val mimeType = file.guessMimeType().getOrThrow()
-            // 统一进行压缩处理
-            val (encoded, outputMimeType) = file.compressAndEncode(mimeType)
-            EncodedImage(
-                base64 = if (withPrefix) "data:$outputMimeType;base64,$encoded" else encoded,
-                mimeType = outputMimeType
-            )
+            file.compressAndEncode(mimeType, withPrefix)
         }
 
         this.url.startsWith("data:") -> {
@@ -134,51 +130,50 @@ fun UIMessagePart.Audio.encodeBase64(withPrefix: Boolean = true): Result<String>
 internal const val IMAGE_MAX_DIMENSION = 10_000
 internal const val IMAGE_MAX_PIXELS = 6_000_000L
 
-private fun File.compressAndEncode(
-    mimeType: String,
-    maxDimension: Int = IMAGE_MAX_DIMENSION,
-    maxPixels: Long = IMAGE_MAX_PIXELS,
-    quality: Int = 85
-): Pair<String, String> {
-    // Bound input before reading or invoking the native GIF decoder.
+private fun File.compressAndEncode(mimeType: String, withPrefix: Boolean): EncodedImage =
+    RequestImageEncoding.withCache { cache ->
+        val outputType = if (mimeType == "image/gif") "image/png" else "image/jpeg"
+        val prefix = if (withPrefix) "data:$outputType;base64," else ""
+        val policy = "image-v1:$mimeType:$IMAGE_MAX_DIMENSION:$IMAGE_MAX_PIXELS:jpeg85:exif:gif-sheet-v1"
+        if (cache != null) {
+            cache.useEncoded(this, policy, { compressForRequest(mimeType, it) }) {
+                EncodedImage(it.encodeToBase64Streaming(prefix), outputType)
+            }
+        } else {
+            // Library callers without an Application still get bounded decoding. Release the
+            // bitmap before allocating the Base64 buffers, even on this in-memory fallback.
+            val compressed = ByteArrayOutputStream()
+            compressForRequest(mimeType, compressed)
+            val encoded = ByteArrayOutputStream()
+            encoded.write(prefix.toByteArray(Charsets.US_ASCII))
+            Base64OutputStream(encoded, Base64.NO_WRAP).use { compressed.writeTo(it) }
+            EncodedImage(encoded.toString(Charsets.ISO_8859_1.name()), outputType)
+        }
+    }
+
+private fun File.compressForRequest(mimeType: String, output: OutputStream) {
     if (mimeType == "image/gif") {
         require(length() in 1..GifContactSheet.MAX_INPUT_BYTES.toLong()) { "GIF is too large" }
-        val sheet = GifContactSheet.render(readBytes())
-        return Pair(Base64.encodeToString(sheet.png, Base64.NO_WRAP), "image/png")
+        output.write(GifContactSheet.render(readBytes()).png)
+        return
     }
-
-    // 读取图片尺寸
-    val options = BitmapFactory.Options().apply {
-        inJustDecodeBounds = true
-    }
+    val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
     BitmapFactory.decodeFile(absolutePath, options)
-
     options.inSampleSize = calculateImageInSampleSize(
-        width = options.outWidth,
-        height = options.outHeight,
-        maxDimension = maxDimension,
-        maxPixels = maxPixels
+        options.outWidth, options.outHeight, IMAGE_MAX_DIMENSION, IMAGE_MAX_PIXELS,
     )
     options.inJustDecodeBounds = false
-
     val bitmap = BitmapFactory.decodeFile(absolutePath, options)
         ?: throw IllegalArgumentException("Failed to decode image: $absolutePath")
-    val normalizedBitmap = normalizeByExif(bitmap)
-
-    return try {
-        val byteArrayOutputStream = ByteArrayOutputStream()
-        // 强制使用 JPEG 格式，因为很多提供商不支持 webp
-        Base64OutputStream(byteArrayOutputStream, Base64.NO_WRAP).use { base64Stream ->
-            check(normalizedBitmap.compress(Bitmap.CompressFormat.JPEG, quality, base64Stream)) {
-                "Failed to encode image"
-            }
-        }
-        Pair(byteArrayOutputStream.toString(Charsets.ISO_8859_1.name()), "image/jpeg")
+    var normalized = bitmap
+    try {
+        normalized = normalizeByExif(bitmap)
+        // Rotation/mirroring can allocate another bitmap; do not keep both during compression.
+        if (normalized !== bitmap) bitmap.recycle()
+        check(normalized.compress(Bitmap.CompressFormat.JPEG, 85, output)) { "Failed to encode image" }
     } finally {
-        if (normalizedBitmap !== bitmap) {
-            normalizedBitmap.recycle()
-        }
-        bitmap.recycle()
+        if (normalized !== bitmap) normalized.recycle()
+        if (!bitmap.isRecycled) bitmap.recycle()
     }
 }
 
@@ -219,8 +214,11 @@ private fun applyExifTransform(bitmap: Bitmap, transform: ExifTransformType): Bi
     }.getOrElse { bitmap }
 }
 
-private fun File.encodeToBase64Streaming(): String {
-    val byteArrayOutputStream = ByteArrayOutputStream()
+private fun File.encodeToBase64Streaming(prefix: String = ""): String {
+    val expectedSize = ((length() + 2) / 3 * 4 + prefix.length)
+        .coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+    val byteArrayOutputStream = ByteArrayOutputStream(expectedSize)
+    byteArrayOutputStream.write(prefix.toByteArray(Charsets.US_ASCII))
     Base64OutputStream(byteArrayOutputStream, Base64.NO_WRAP).use { base64Stream ->
         inputStream().use { input ->
             input.copyTo(base64Stream, bufferSize = 8 * 1024)

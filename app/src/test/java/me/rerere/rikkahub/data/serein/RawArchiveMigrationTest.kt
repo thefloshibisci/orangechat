@@ -39,7 +39,7 @@ class RawArchiveMigrationTest {
                 db.version = 34
             }
             room(name).useDatabase { db ->
-                assertEquals(42, db.openHelper.writableDatabase.version)
+                assertEquals(43, db.openHelper.writableDatabase.version)
                 assertEquals("原话要保留", JsonInstant.decodeFromString<List<UIMessage>>(db.messageNodeDao().getNodesOfConversation("chat").single().messages).single().toText())
                 assertTrue(db.rawArchiveDao().search("assistant", "%", 50).isEmpty())
                 assertTrue(db.openHelper.writableDatabase.query("PRAGMA foreign_key_check").use { !it.moveToFirst() })

@@ -41,7 +41,7 @@ class ForeignBackupTest {
         }
         preflightBackupDatabase(context, file, factory)
         open(file) { db ->
-            assertEquals(42, db.version)
+            assertEquals(43, db.version)
             assertEquals("", value(db,"SELECT conversation_config FROM ConversationEntity WHERE id='c'"))
             assertEquals("0", value(db,"SELECT COUNT(*) FROM usage_record"))
             assertEquals("foreign summary", value(db,"SELECT context_compaction FROM orangechat_import_v38_ConversationEntity"))
@@ -87,7 +87,7 @@ class ForeignBackupTest {
         preflightBackupDatabase(context,file,factory)
         repeat(2) {
             open(file) { db ->
-                assertEquals(42,db.version)
+                assertEquals(43, db.version)
                 originals.forEach { (table,pair) ->
                     val archived = table in setOf("ConversationEntity","MemoryEntity")
                     val checkTable = if(archived) "orangechat_import_v38_$table" else table

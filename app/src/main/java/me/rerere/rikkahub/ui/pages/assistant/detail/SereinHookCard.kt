@@ -44,6 +44,12 @@ internal fun SereinHookCard(assistant: Assistant) {
     val recallStatus by remember(assistant.id, state.sereinHook.fingerprint()) {
         database.sereinHookDao().latestStatus(assistant.id.toString(), state.sereinHook.fingerprint())
     }.collectAsStateWithLifecycle(null)
+    val observationPending by remember(state.sereinHook.uploadDestination()) {
+        database.sereinObservationDao().pending(state.sereinHook.uploadDestination())
+    }.collectAsStateWithLifecycle(0)
+    val observationError by remember(state.sereinHook.uploadDestination()) {
+        database.sereinObservationDao().latestError(state.sereinHook.uploadDestination())
+    }.collectAsStateWithLifecycle(null)
     SereinHookControls(assistant, state.sereinHook, onSave = { next ->
         repository.clearLocalRecallState()
         settings.update { current ->
@@ -52,7 +58,8 @@ internal fun SereinHookCard(assistant: Assistant) {
                 if (next.enabled && it.id == assistant.id) it.copy(enableLocalSceneTools = false) else it
             })
         }
-    }, counts = counts, recallStatus = recallStatus, uploadError = uploadError, onRetry = {
+    }, counts = counts, recallStatus = recallStatus, uploadError = uploadError,
+        observationPending = observationPending, observationError = observationError, onRetry = {
         withContext(Dispatchers.IO) { database.sereinUploadDao().retry(state.sereinHook.uploadDestination()) }
         SereinUploadScheduler.runNow(context, restart = true)
     }, onTest = { config ->
@@ -73,6 +80,8 @@ internal fun SereinHookControls(
     counts: SereinUploadCounts = SereinUploadCounts(),
     recallStatus: SereinRecallStatus? = null,
     uploadError: String? = null,
+    observationPending: Int = 0,
+    observationError: String? = null,
     onRetry: suspend () -> Unit = {},
 ) {
     val scope = rememberCoroutineScope()
@@ -109,7 +118,11 @@ internal fun SereinHookControls(
                         style = MaterialTheme.typography.bodySmall)
                 }
             }
-            Text("APP 直连召回的记录保存在本机，不显示在网页的 Hook 注入列表。", style = MaterialTheme.typography.bodySmall)
+            Text("新聊天的召回结果会后台同步到塞壬网页「召回观察 → Hook 注入」，包含触发原句（最多 2000 字）、候选信息和交付状态。", style = MaterialTheme.typography.bodySmall)
+            if (mine) {
+                Text("Hook 观察待同步 $observationPending 条", style = MaterialTheme.typography.bodySmall)
+                observationError?.let { Text("观察同步：${sereinFailureLabel(it)}", style = MaterialTheme.typography.bodySmall) }
+            }
             HorizontalDivider()
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("上传新聊天", Modifier.weight(1f), style = MaterialTheme.typography.titleSmall)

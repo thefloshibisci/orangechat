@@ -33,23 +33,59 @@ class SereinHookTest {
         }
     private fun reply() = UIMessage.assistant("synthetic reply").copy(finishedAt = LocalDateTime(2026, 10, 24, 0, 0))
 
+    @Test fun `real recall snapshots are visible to settings for the matching configuration only`() = runBlocking {
+        val db = database()
+        try {
+            val repo = SereinHookRepository(db, SereinHookClient())
+            val dao = db.sereinHookDao()
+            for (result in listOf(recall, HookRecall(), HookRecall(status = "http_401"), HookRecall(status = "timeout"))) {
+                assertEquals(result, repo.prepareWith(config, "a", "chat", UIMessage.user("synthetic query"), true, { true }) { _, _ -> result })
+                val status = dao.latestStatus("a", config.fingerprint()).first()
+                assertNotNull("A real prepare result must appear in settings: ${result.status}", status)
+                assertEquals(result.status, status!!.status)
+                assertEquals(encodeIds(result.ids), status.memoryIds)
+                assertFalse(status.toString().contains("虚构记忆"))
+                assertNull(dao.latestStatus("b", config.fingerprint()).first())
+                assertNull(dao.latestStatus("a", config.copy(generation = "changed").fingerprint()).first())
+            }
+        } finally { db.close() }
+    }
+
     @Test fun `settings diagnostics filter assistant config and project no recalled body`() = runBlocking {
         val db = database()
         try {
             val dao = db.sereinHookDao()
             assertNull(dao.latestStatus("a", config.fingerprint()).first())
-            dao.put(SereinHookSnapshot("chat", "first", config.fingerprint(), "private memory body",
+            dao.put(SereinHookSnapshot("chat", "first", "${config.fingerprint()}:query-one", "private memory body",
                 encodeIds(recall.ids), "ready", 10))
-            dao.put(SereinHookSnapshot("other", "second", config.fingerprint(), "other assistant secret",
+            dao.put(SereinHookSnapshot("other", "second", "${config.fingerprint()}:query-two", "other assistant secret",
                 "[]", "http_401", 20))
             dao.put(SereinHookSnapshot("chat", "third", "old-config", "old secret", "[]", "timeout", 30))
             val status = dao.latestStatus("a", config.fingerprint()).first()!!
             assertEquals(SereinRecallStatus("ready", encodeIds(recall.ids), 10), status)
             assertFalse(status.toString().contains("private memory body"))
-            dao.put(SereinHookSnapshot("chat", "fourth", config.fingerprint(), "", "[]", "http_401", 40))
+            dao.put(SereinHookSnapshot("chat", "fourth", "${config.fingerprint()}:query-four", "", "[]", "http_401", 40))
             assertEquals("http_401", dao.latestStatus("a", config.fingerprint()).first()!!.status)
             dao.clearSnapshots()
             assertNull(dao.latestStatus("a", config.fingerprint()).first())
+        } finally { db.close() }
+    }
+
+    @Test fun `legacy cache upgrades only for the original query and configuration without another request`() = runBlocking {
+        val db = database()
+        try {
+            val dao = db.sereinHookDao()
+            val repo = SereinHookRepository(db, SereinHookClient())
+            val user = UIMessage.user("legacy synthetic query")
+            dao.put(SereinHookSnapshot("chat", user.id.toString(),
+                hookHash("${config.fingerprint()}\u0000legacy synthetic query"), recall.context,
+                encodeIds(recall.ids), "ready", 123))
+            assertNull(dao.latestStatus("a", config.fingerprint()).first())
+            assertNull(repo.prepareWith(config.copy(generation = "different"), "a", "chat", user, false, { true }) { _, _ -> error("no network") })
+            assertNull(repo.prepareWith(config, "a", "chat", user.copy(parts = listOf(UIMessagePart.Text("edited"))), false, { true }) { _, _ -> error("no network") })
+            assertEquals(recall, repo.prepareWith(config, "a", "chat", user, false, { true }) { _, _ -> error("cached result must not refetch") })
+            assertEquals(SereinRecallStatus("ready", encodeIds(recall.ids), 123), dao.latestStatus("a", config.fingerprint()).first())
+            assertEquals(recall, repo.prepareWith(config, "a", "chat", user, false, { true }) { _, _ -> error("upgraded result must remain cached") })
         } finally { db.close() }
     }
 

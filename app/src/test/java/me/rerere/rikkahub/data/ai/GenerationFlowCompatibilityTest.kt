@@ -23,6 +23,65 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class GenerationFlowCompatibilityTest {
+    @Test fun `burst updates merge before display processing and final tool arguments and usage flush`() = runBlocking {
+        val model = Model()
+        val history = listOf(UIMessage.user("question"))
+        val updates = mutableListOf<List<UIMessage>>()
+        val provider = FakeProvider {
+            for (part in listOf(UIMessagePart.Text("A"), UIMessagePart.Text("B"),
+                UIMessagePart.Tool("one", "example", "{\"value\":"),
+                UIMessagePart.Tool("one", "example", "1}"))) {
+                emit(MessageChunk("reply", "model", listOf(UIMessageChoice(0,
+                    delta = UIMessage.assistant("").copy(parts = listOf(part)), message = null, finishReason = null))))
+            }
+            emit(MessageChunk("usage", "model", emptyList(), me.rerere.ai.core.TokenUsage(completionTokens = 7)))
+        }
+        val result = generateModelTurn(provider, ProviderSetting.OpenAI(), history, history,
+            TextGenerationParams(model), model, true, true, { updates += it },
+            updateIntervalMillis = 50, nanoTime = { 0L })
+        assertEquals(2, updates.size)
+        assertEquals("A", updates.first().last().toText())
+        // toText joins the text and empty tool-output parts with a newline.
+        assertEquals("AB\n", updates.last().last().toText())
+        assertEquals("{\"value\":1}", updates.last().last().getTools().single().input)
+        assertEquals(7, updates.last().last().usage?.completionTokens)
+        assertEquals(result, updates.last())
+    }
+
+    @Test fun `provider failure and cancellation flush the buffered partial answer`() = runBlocking {
+        for (error in listOf(IllegalStateException("network"), CancellationException("stop"))) {
+            val model = Model()
+            val history = listOf(UIMessage.user("question"))
+            val updates = mutableListOf<List<UIMessage>>()
+            val provider = FakeProvider {
+                for (text in listOf("first", "last")) emit(MessageChunk("reply", "model", listOf(
+                    UIMessageChoice(0, delta = UIMessage.assistant(text), message = null, finishReason = null))))
+                throw error
+            }
+            try {
+                generateModelTurn(provider, ProviderSetting.OpenAI(), history, history, TextGenerationParams(model),
+                    model, true, true, { updates += it }, updateIntervalMillis = 50, nanoTime = { 0L })
+                fail("failure expected")
+            } catch (actual: Exception) { assertSame(error, actual) }
+            assertEquals("firstlast", updates.last().last().toText())
+        }
+    }
+
+    @Test fun `failed downstream processing is not invoked again`() = runBlocking {
+        val model = Model()
+        val history = listOf(UIMessage.user("question"))
+        var calls = 0
+        val failure = IllegalStateException("consumer")
+        val provider = FakeProvider { emit(MessageChunk("reply", "model", listOf(
+            UIMessageChoice(0, delta = UIMessage.assistant("answer"), message = null, finishReason = null)))) }
+        try {
+            generateModelTurn(provider, ProviderSetting.OpenAI(), history, history, TextGenerationParams(model),
+                model, true, true, { calls++; throw failure }, updateIntervalMillis = 50)
+            fail("failure expected")
+        } catch (actual: Exception) { assertSame(failure, actual) }
+        assertEquals(1, calls)
+    }
+
     @Test
     fun `provider starts before local updates without adding a placeholder or phase timing`() = runBlocking {
         val model = Model()
