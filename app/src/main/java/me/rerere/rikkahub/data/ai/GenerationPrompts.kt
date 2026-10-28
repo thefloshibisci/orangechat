@@ -38,7 +38,7 @@ internal suspend fun buildRecentChatsPrompt(
     assistant: Assistant,
     conversationRepo: ConversationRepository
 ): String {
-    val recentConversations = conversationRepo.getRecentConversations(
+    val recentConversations = conversationRepo.getRecentConversationHeaders(
         assistantId = assistant.id,
         limit = 10,
     )
@@ -53,7 +53,7 @@ internal suspend fun buildRecentChatsPrompt(
                 recentConversations.forEach { conversation ->
                     add(buildJsonObject {
                         put("title", conversation.title)
-                        put("last_chat", conversation.updateAt.toLocalDate())
+                        put("last_chat", java.time.Instant.ofEpochMilli(conversation.updateAt).toLocalDate())
                     })
                 }
             }

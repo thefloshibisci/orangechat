@@ -117,4 +117,28 @@ class RecentMediaLimitTest {
         limitRecentAudio(messages, 5)
         assertEquals(snapshot, messages)
     }
+
+    private fun toolImage(i: Int) = UIMessagePart.Tool(
+        toolCallId = "call$i", toolName = "nai_draw", input = "{}",
+        output = listOf(UIMessagePart.Text("{\"image_attached\":true}"), image(i)),
+    )
+
+    @Test
+    fun `tool images are counted separately and oldest become placeholders`() {
+        val messages = (1..12).map { UIMessage(role = MessageRole.ASSISTANT, parts = listOf(toolImage(it))) } +
+            user(image(100))
+        val result = limitRecentUploadImages(messages, 5)
+        val kept = result.sumOf { m -> m.parts.sumOf { p -> (p as? UIMessagePart.Tool)?.output?.count(::isHistoryUploadImage) ?: 0 } }
+        assertTrue(kept in 3..5)
+        val first = result.first().parts.single() as UIMessagePart.Tool
+        assertEquals(OLD_TOOL_IMAGE_PLACEHOLDER, (first.output[1] as UIMessagePart.Text).text)
+        assertEquals("{\"image_attached\":true}", (first.output[0] as UIMessagePart.Text).text)
+        assertSame(messages.last(), result.last())
+    }
+
+    @Test
+    fun `tool images untouched when limit is zero`() {
+        val messages = (1..30).map { UIMessage(role = MessageRole.ASSISTANT, parts = listOf(toolImage(it))) }
+        assertSame(messages, limitRecentUploadImages(messages, 0))
+    }
 }

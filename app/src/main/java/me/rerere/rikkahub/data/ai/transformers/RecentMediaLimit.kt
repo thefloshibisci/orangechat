@@ -33,7 +33,7 @@ internal fun mediaToDowngrade(total: Int, limit: Int): Int {
 }
 
 /**
- * 只处理消息的顶层 parts；工具结果里的图片属于工具观察，不计数也不替换。
+ * 只处理消息的顶层 parts；工具结果里的图片由 limitToolImages 单独计数。
  * 只影响本次请求，存储的消息不变。
  */
 fun limitRecentParts(
@@ -80,4 +80,31 @@ fun limitRecentAudio(messages: List<UIMessage>, limit: Int): List<UIMessage> =
     limitRecentParts(messages, limit, ::isHistoryAudio, ::downgradeOldAudio)
 
 fun limitRecentUploadImages(messages: List<UIMessage>, limit: Int): List<UIMessage> =
-    limitRecentParts(messages, limit, ::isHistoryUploadImage, ::downgradeOldImage)
+    limitToolImages(limitRecentParts(messages, limit, ::isHistoryUploadImage, ::downgradeOldImage), limit)
+
+const val OLD_TOOL_IMAGE_PLACEHOLDER = "[较早的工具生成图，为节省内存未附带原图]"
+
+/**
+ * 插件/工具返回的本地图片（如绘图工坊原生通道）和上传图片共用同一个上限，单独计数。
+ * 生图多的会话里，每次请求都重新编码全部历史生成图，是 OOM 的主要来源。
+ * 只影响本次请求；按批裁剪的规则与上传图片一致，保持缓存前缀稳定。
+ */
+fun limitToolImages(messages: List<UIMessage>, limit: Int): List<UIMessage> {
+    fun UIMessagePart.toolImageCount(): Int =
+        if (this is UIMessagePart.Tool) output.count(::isHistoryUploadImage) else 0
+    val total = messages.sumOf { m -> m.parts.sumOf { it.toolImageCount() } }
+    var remaining = mediaToDowngrade(total, limit)
+    if (remaining == 0) return messages
+    return messages.map { message ->
+        if (remaining == 0 || message.parts.none { it.toolImageCount() > 0 }) return@map message
+        message.copy(parts = message.parts.map { part ->
+            if (remaining == 0 || part !is UIMessagePart.Tool || part.toolImageCount() == 0) return@map part
+            part.copy(output = part.output.map { out ->
+                if (remaining > 0 && isHistoryUploadImage(out)) {
+                    remaining--
+                    UIMessagePart.Text(OLD_TOOL_IMAGE_PLACEHOLDER)
+                } else out
+            })
+        })
+    }
+}
