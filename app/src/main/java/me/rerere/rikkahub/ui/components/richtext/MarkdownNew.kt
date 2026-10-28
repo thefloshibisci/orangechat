@@ -94,7 +94,7 @@ fun MarkdownNew(
     style: TextStyle = LocalTextStyle.current,
     onClickCitation: (String) -> Unit = {},
 ) {
-    val document by rememberMarkdownParse(content, htmlParseCache, ::parseMarkdownDocument)
+    val document by rememberMarkdownParse(content, htmlParseCache, parse = ::parseMarkdownDocument)
     val parsed = document
     if (parsed == null) {
         Box(modifier = modifier.heightIn(min = 24.dp))

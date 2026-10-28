@@ -35,7 +35,7 @@ class RememberMarkdownParseTest {
         val cache = MarkdownParseCache<String>()
         try {
             compose.setContent {
-                val value by rememberMarkdownParse(source.value, cache) {
+                val value by rememberMarkdownParse(source.value, cache, inlineMaxChars = 0) {
                     if (Looper.myLooper() == Looper.getMainLooper()) parsedOnMain.set(true)
                     if (it == "old") {
                         started.countDown()
@@ -63,5 +63,16 @@ class RememberMarkdownParseTest {
         } finally {
             release.countDown()
         }
+    }
+
+    @Test fun shortUncachedMessageIsShownOnFirstFrame() {
+        val displayed = CopyOnWriteArrayList<String?>()
+        compose.setContent {
+            val value by rememberMarkdownParse("hi", MarkdownParseCache<String>()) { "parsed:$it" }
+            SideEffect { displayed += value }
+            Text(value ?: "pending")
+        }
+        compose.onNodeWithText("parsed:hi").assertExists()
+        assertEquals("parsed:hi", displayed.first())
     }
 }

@@ -165,7 +165,7 @@ fun MarkdownBlock(
     style: TextStyle = LocalTextStyle.current,
     onClickCitation: (String) -> Unit = {}
 ) {
-    val data by rememberMarkdownParse(content, markdownParseCache, ::parseMarkdown)
+    val data by rememberMarkdownParse(content, markdownParseCache, parse = ::parseMarkdown)
     val parsed = data
 
     if (parsed == null) {
