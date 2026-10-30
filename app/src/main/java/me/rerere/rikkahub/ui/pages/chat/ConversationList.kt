@@ -56,6 +56,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.material3.LocalMinimumInteractiveComponentSize
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.res.stringResource
@@ -164,6 +167,8 @@ fun ColumnScope.ConversationList(
                 is ConversationListItem.DateHeader -> {
                     DateHeaderItem(
                         label = item.label,
+                        drawerItemAlpha = drawerItemAlpha,
+                        materialMode = materialMode,
                         modifier = Modifier.animateItem()
                     )
                 }
@@ -207,22 +212,41 @@ fun ColumnScope.ConversationList(
 @Composable
 private fun DateHeaderItem(
     label: String,
+    drawerItemAlpha: Float,
+    materialMode: DisplayMaterialMode,
     modifier: Modifier = Modifier
 ) {
-    Row(
-        modifier = modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
+    ConversationListMaterialContainer(
+        modifier = modifier.fillMaxWidth(),
+        shape = ConversationRowShape,
+        color = Color.Transparent,
+        drawerItemAlpha = drawerItemAlpha,
+        materialMode = materialMode,
+        hasBackground = false,
+        showBackdrop = true,
     ) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelLarge,
-            fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.primary
-        )
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = ConversationRowHeight)
+                .padding(horizontal = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary
+            )
+        }
     }
 }
+
+/** Every row has the same height, whether or not the selected row shows its action icons. */
+private val ConversationRowHeight = 44.dp
+private val ConversationRowShape = RoundedCornerShape(percent = 50)
+private val ConversationRowActionSize = 32.dp
+private val ConversationRowIconSize = 18.dp
 
 @Composable
 private fun PinnedHeader(
@@ -278,7 +302,7 @@ private fun ConversationItem(
     onClick: (Conversation) -> Unit
 ) {
     val interactionSource = remember { MutableInteractionSource() }
-    val itemShape = RoundedCornerShape(50f)
+    val itemShape = ConversationRowShape
     val backgroundColor = if (selected) {
         MaterialTheme.colorScheme.surfaceColorAtElevation(8.dp)
     } else {
@@ -303,11 +327,13 @@ private fun ConversationItem(
         drawerItemAlpha = drawerItemAlpha,
         materialMode = materialMode,
         hasBackground = selected,
+        showBackdrop = true,
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 6.dp),
+                .heightIn(min = ConversationRowHeight)
+                .padding(start = 12.dp, end = 6.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
@@ -320,17 +346,17 @@ private fun ConversationItem(
             if (selected && conversation.activeCompressedMessageNodeIds.isNotEmpty() && conversation.compressedSummary.isNotBlank()) {
                 val action = stringResource(if (showCompressedHistory) R.string.compression_hide_original else R.string.compression_show_original)
                 Tooltip(tooltip = { Text(action) }) {
-                    IconButton(onClick = { onToggleHistory(conversation.id) }, modifier = Modifier.size(48.dp)) {
+                    CompactRowAction(onClick = { onToggleHistory(conversation.id) }) {
                         Icon(if (showCompressedHistory) HugeIcons.View else HugeIcons.ViewOff,
-                            action, modifier = Modifier.size(22.dp))
+                            action, modifier = Modifier.size(ConversationRowIconSize))
                     }
                 }
             }
             if (selected && conversation.hasCompressionState) {
                 val action = stringResource(R.string.compression_summary_title)
                 Tooltip(tooltip = { Text(action) }) {
-                    IconButton(onClick = { onOpenSummary(conversation.id) }, modifier = Modifier.size(48.dp)) {
-                        Icon(HugeIcons.File02, action, modifier = Modifier.size(22.dp))
+                    CompactRowAction(onClick = { onOpenSummary(conversation.id) }) {
+                        Icon(HugeIcons.File02, action, modifier = Modifier.size(ConversationRowIconSize))
                     }
                 }
             }
@@ -442,9 +468,11 @@ private fun ConversationListMaterialContainer(
     drawerItemAlpha: Float,
     materialMode: DisplayMaterialMode,
     hasBackground: Boolean = true,
+    showBackdrop: Boolean = false,
     content: @Composable () -> Unit,
 ) {
-    if (!hasBackground) {
+    val backdrop = if (showBackdrop) LocalDrawerBackdrop.current else null
+    if (!hasBackground && backdrop == null) {
         Box(modifier = modifier) {
             content()
         }
@@ -469,17 +497,19 @@ private fun ConversationListMaterialContainer(
         DisplayMaterialMode.FOLLOW_THEME -> Modifier
     }
 
-    val backgroundColor = when (materialMode) {
-        DisplayMaterialMode.FLAT,
-        DisplayMaterialMode.FOLLOW_THEME -> color
+    val backgroundColor = when {
+        // Over a background image every row is a pill; keep the tint light so the picture shows through.
+        backdrop != null -> color.copy(alpha = minOf(color.alpha, 0.5f) * drawerItemAlpha)
+        materialMode == DisplayMaterialMode.FLAT ||
+            materialMode == DisplayMaterialMode.FOLLOW_THEME -> color
 
-        DisplayMaterialMode.TRANSLUCENT,
-        DisplayMaterialMode.GLASS -> color.copy(alpha = drawerItemAlpha)
+        else -> color.copy(alpha = drawerItemAlpha)
     }
 
     Box(
         modifier = modifier
             .clip(shape)
+            .then(if (backdrop != null) Modifier.drawerBackdrop() else Modifier)
             .background(backgroundColor)
             .then(borderModifier),
     ) {
@@ -542,4 +572,12 @@ private fun BoxScope.ConversationListGlassLayers(
                 shape = shape,
             )
     )
+}
+
+/** A small icon button that does not reserve the 48dp touch frame, so it fits inside a 44dp row. */
+@Composable
+private fun CompactRowAction(onClick: () -> Unit, content: @Composable () -> Unit) {
+    CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides 0.dp) {
+        IconButton(onClick = onClick, modifier = Modifier.size(ConversationRowActionSize)) { content() }
+    }
 }

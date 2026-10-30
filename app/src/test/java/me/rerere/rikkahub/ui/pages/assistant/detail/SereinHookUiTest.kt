@@ -1,5 +1,7 @@
 package me.rerere.rikkahub.ui.pages.assistant.detail
 
+import me.rerere.rikkahub.ui.pages.extensions.MemoryTestTheme
+
 import android.app.Application
 import android.graphics.Bitmap
 import android.graphics.Canvas
@@ -32,7 +34,7 @@ class SereinHookUiTest {
     @Test fun `local recall and upload failures are visible with service guidance`() {
         val assistant = Assistant(name = "南枳")
         compose.setContent {
-            MaterialTheme { Column(Modifier.width(320.dp).verticalScroll(rememberScrollState())) {
+            MemoryTestTheme { Column(Modifier.width(320.dp).verticalScroll(rememberScrollState())) {
                 SereinHookControls(assistant,
                     SereinHookConfig(enabled = true, assistantId = assistant.id.toString(),
                         baseUrl = "https://memory.example", gatewayKey = "synthetic-key", uploadEnabled = true),
@@ -42,7 +44,7 @@ class SereinHookUiTest {
             } }
         }
         compose.onNodeWithText("最近召回：等待超时，可选 5 秒后再试").performScrollTo().assertIsDisplayed()
-        compose.onNodeWithText("新聊天的召回结果会后台同步到塞壬网页「召回观察 → Hook 注入」，包含触发原句（最多 2000 字）、候选信息和交付状态。").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("每次找到了什么，会同步到 Serein 网页的「召回观察」里，方便你回头看。").performScrollTo().assertIsDisplayed()
         compose.onNodeWithText("上传原因：接口不可用，请检查 gateway 地址和服务版本").performScrollTo().assertIsDisplayed()
     }
     @get:Rule val compose = createAndroidComposeRule<ComponentActivity>()
@@ -51,7 +53,7 @@ class SereinHookUiTest {
         var saved: SereinHookConfig? = null
         compose.setContent {
             var config by remember { mutableStateOf(SereinHookConfig()) }
-            MaterialTheme { Column(Modifier.width(320.dp).verticalScroll(rememberScrollState())) {
+            MemoryTestTheme { Column(Modifier.width(320.dp).verticalScroll(rememberScrollState())) {
                 SereinHookControls(assistant, config, { saved = it; config = it }, { "synthetic connection result" })
             } }
         }
@@ -86,7 +88,7 @@ class SereinHookUiTest {
         compose.setContent {
             var config by remember { mutableStateOf(SereinHookConfig(assistantId = assistant.id.toString(),
                 baseUrl = "https://memory.example", gatewayKey = "synthetic-key")) }
-            MaterialTheme { Column(Modifier.width(320.dp).verticalScroll(rememberScrollState())) {
+            MemoryTestTheme { Column(Modifier.width(320.dp).verticalScroll(rememberScrollState())) {
                 SereinHookControls(assistant, config, { saved = it; config = it }, { "synthetic" })
             } }
         }

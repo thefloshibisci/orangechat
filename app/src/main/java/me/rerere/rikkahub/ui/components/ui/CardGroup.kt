@@ -61,6 +61,7 @@ data class CardGroupItem(
     val leadingContent: (@Composable () -> Unit)?,
     val trailingContent: (@Composable () -> Unit)?,
     val colors: ListItemColors?,
+    val enabled: Boolean = true,
 )
 
 class CardGroupScope {
@@ -74,6 +75,7 @@ class CardGroupScope {
         leadingContent: (@Composable () -> Unit)? = null,
         trailingContent: (@Composable () -> Unit)? = null,
         colors: ListItemColors? = null,
+        enabled: Boolean = true,
         headlineContent: @Composable () -> Unit,
     ) {
         items.add(
@@ -86,6 +88,7 @@ class CardGroupScope {
                 leadingContent = leadingContent,
                 trailingContent = trailingContent,
                 colors = colors,
+                enabled = enabled,
             )
         )
     }
@@ -183,6 +186,7 @@ private fun CardGroupListItem(
                     Modifier.clickable(
                         interactionSource = interactionSource,
                         indication = LocalIndication.current,
+                        enabled = item.enabled,
                         onClick = item.onClick,
                     )
                 } else Modifier
@@ -191,7 +195,12 @@ private fun CardGroupListItem(
         supportingContent = item.supportingContent,
         leadingContent = item.leadingContent,
         trailingContent = item.trailingContent,
-        colors = colors,
+        colors = if (item.enabled) colors else colors.copy(
+            headlineColor = colors.disabledHeadlineColor,
+            supportingTextColor = colors.supportingTextColor.copy(alpha = 0.38f),
+            leadingIconColor = colors.disabledLeadingIconColor,
+            trailingIconColor = colors.disabledTrailingIconColor,
+        ),
     )
 }
 
