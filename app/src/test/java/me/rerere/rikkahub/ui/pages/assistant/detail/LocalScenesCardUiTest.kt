@@ -1,5 +1,7 @@
 package me.rerere.rikkahub.ui.pages.assistant.detail
 
+import me.rerere.rikkahub.ui.pages.extensions.MemoryTestTheme
+
 import android.app.Application
 import android.graphics.Bitmap
 import android.graphics.Canvas
@@ -44,7 +46,7 @@ class LocalScenesCardUiTest {
             runBlocking { repo.search(owner) }
             compose.setContent {
                 var assistant by remember { mutableStateOf(initial) }
-                MaterialTheme { Surface { Column(Modifier.width(320.dp)) {
+                MemoryTestTheme { Surface { Column(Modifier.width(320.dp)) {
                     LocalScenesCard(assistant, { assistant = it }, repo)
                 } } }
             }

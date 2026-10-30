@@ -33,7 +33,7 @@ class AdvancedMemoryUiTest {
         val first = Assistant(name = "助手甲")
         val bound = Assistant(name = "助手乙")
         compose.setContent {
-            MaterialTheme {
+            MemoryTestTheme {
                 AdvancedMemoryContent(listOf(first, bound), bound.id.toString(), Modifier.width(320.dp)) { assistant ->
                     SereinHookControls(assistant, SereinHookConfig(assistantId = bound.id.toString()), {}, { "synthetic" })
                 }
@@ -66,7 +66,7 @@ class AdvancedMemoryUiTest {
         val assistant = Assistant(name = "助手")
         var assistants by mutableStateOf(emptyList<Assistant>())
         compose.setContent {
-            MaterialTheme { AdvancedMemoryContent(assistants, assistant.id.toString()) { Text("controls:${it.name}") } }
+            MemoryTestTheme { AdvancedMemoryContent(assistants, assistant.id.toString()) { Text("controls:${it.name}") } }
         }
         compose.onNodeWithText("请先创建一位助手，再配置记忆。").assertIsDisplayed()
         compose.runOnIdle { assistants = listOf(assistant) }

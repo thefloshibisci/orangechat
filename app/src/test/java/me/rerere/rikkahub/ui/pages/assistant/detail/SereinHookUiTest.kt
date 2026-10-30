@@ -1,5 +1,7 @@
 package me.rerere.rikkahub.ui.pages.assistant.detail
 
+import me.rerere.rikkahub.ui.pages.extensions.MemoryTestTheme
+
 import android.app.Application
 import android.graphics.Bitmap
 import android.graphics.Canvas
@@ -32,7 +34,7 @@ class SereinHookUiTest {
     @Test fun `local recall and upload failures are visible with service guidance`() {
         val assistant = Assistant(name = "南枳")
         compose.setContent {
-            MaterialTheme { Column(Modifier.width(320.dp).verticalScroll(rememberScrollState())) {
+            MemoryTestTheme { Column(Modifier.width(320.dp).verticalScroll(rememberScrollState())) {
                 SereinHookControls(assistant,
                     SereinHookConfig(enabled = true, assistantId = assistant.id.toString(),
                         baseUrl = "https://memory.example", gatewayKey = "synthetic-key", uploadEnabled = true),
@@ -51,7 +53,7 @@ class SereinHookUiTest {
         var saved: SereinHookConfig? = null
         compose.setContent {
             var config by remember { mutableStateOf(SereinHookConfig()) }
-            MaterialTheme { Column(Modifier.width(320.dp).verticalScroll(rememberScrollState())) {
+            MemoryTestTheme { Column(Modifier.width(320.dp).verticalScroll(rememberScrollState())) {
                 SereinHookControls(assistant, config, { saved = it; config = it }, { "synthetic connection result" })
             } }
         }
@@ -86,7 +88,7 @@ class SereinHookUiTest {
         compose.setContent {
             var config by remember { mutableStateOf(SereinHookConfig(assistantId = assistant.id.toString(),
                 baseUrl = "https://memory.example", gatewayKey = "synthetic-key")) }
-            MaterialTheme { Column(Modifier.width(320.dp).verticalScroll(rememberScrollState())) {
+            MemoryTestTheme { Column(Modifier.width(320.dp).verticalScroll(rememberScrollState())) {
                 SereinHookControls(assistant, config, { saved = it; config = it }, { "synthetic" })
             } }
         }

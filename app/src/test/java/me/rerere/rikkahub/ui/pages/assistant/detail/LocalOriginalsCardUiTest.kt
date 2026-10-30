@@ -1,5 +1,7 @@
 package me.rerere.rikkahub.ui.pages.assistant.detail
 
+import me.rerere.rikkahub.ui.pages.extensions.MemoryTestTheme
+
 import android.app.Application
 import android.graphics.Bitmap
 import android.graphics.Canvas
@@ -62,7 +64,7 @@ class LocalOriginalsCardUiTest {
             runBlocking { repository.searchRawOriginals(Assistant().id) }
             compose.setContent {
                 var assistant by remember { mutableStateOf(Assistant(name = "南枳")) }
-                MaterialTheme {
+                MemoryTestTheme {
                     Surface {
                         Column(Modifier.width(320.dp)) {
                             LocalOriginalsCard(assistant, { assistant = it }, repository)
