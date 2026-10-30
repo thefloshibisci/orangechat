@@ -116,7 +116,7 @@ class ConversationConfigTest {
 
         assertTrue(assistant.mcpServers.isEmpty())
         assertTrue(assistant.enabledSkills.isEmpty())
-        assertTrue(assistant.localTools.isEmpty())
+        assertEquals(owner.localTools, assistant.localTools)
         assertFalse(view.enableWebSearch)
         assertFalse(BuiltInTools.Search in view.findModelById(first.id)!!.tools)
         assertTrue(BuiltInTools.UrlContext in view.findModelById(first.id)!!.tools)
@@ -225,7 +225,7 @@ class ConversationConfigTest {
 
         assertTrue(resolved.customHeaders.isEmpty())
         assertTrue(resolved.customBodies.isEmpty())
-        assertTrue(resolved.localTools.isEmpty())
+        assertEquals(previous.localTools, resolved.localTools)
         assertTrue(resolved.mcpServers.isEmpty())
         assertTrue(resolved.enabledSkills.isEmpty())
         assertNull(resolved.workspaceId)
@@ -283,5 +283,25 @@ class ConversationConfigTest {
         assertEquals(2048, original.config!!.maxTokens)
         assertFalse(changedFork.config!!.enableWebSearch)
         assertNull(changedFork.config!!.maxTokens)
+    }
+
+    @Test
+    fun localToolsAlwaysFollowTheAssistantInExistingConversations() {
+        val bound = chat().bindConfig(settings)
+        val enabled = owner.copy(localTools = owner.localTools + LocalToolOption.ChartDisplay)
+        val later = settings.copy(assistants = listOf(enabled))
+
+        assertTrue(LocalToolOption.ChartDisplay in later.getAssistantOf(bound).localTools)
+        assertTrue(LocalToolOption.ChartDisplay in later.withConversationConfig(bound).getAssistantOf(bound).localTools)
+    }
+
+    @Test
+    fun legacyConfigWithStoredLocalToolsStillDecodesAndIsIgnored() {
+        val legacy = """{"chatModelId":"${first.id}","localTools":[{"type":"time_info"}]}"""
+        val config = JsonInstant.decodeFromString<ConversationConfig>(legacy)
+        val resolved = settings.getAssistantOf(chat().copy(config = config))
+
+        assertEquals(first.id, config.chatModelId)
+        assertEquals(owner.localTools, resolved.localTools)
     }
 }
