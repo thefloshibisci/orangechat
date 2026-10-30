@@ -24,6 +24,7 @@ import me.rerere.rikkahub.data.db.AppDatabase
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.serein.*
+import me.rerere.rikkahub.ui.components.ui.CardGroup
 import org.koin.compose.koinInject
 import kotlin.uuid.Uuid
 
@@ -93,62 +94,67 @@ internal fun SereinHookControls(
     val owner = assistant.id.toString()
     val mine = config.assistantId == owner
     val available = mine || config.assistantId.isBlank()
-    Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Serein 自动召回", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
-                Switch(modifier = Modifier.testTag("serein-recall"), checked = mine && config.enabled, enabled = available && !busy, onCheckedChange = { enabled ->
-                    if (enabled) { enableRecallOnSave = true; editing = true }
-                    else scope.launch {
-                        busy = true
-                        try { onSave(config.copy(enabled = false, generation = Uuid.random().toString())) }
-                        catch (e: CancellationException) { throw e }
-                        catch (_: Exception) { error = "设置未保存，请重试。" }
-                        finally { busy = false }
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        CardGroup(title = { Text("Serein 云端记忆") }) {
+            item(
+                headlineContent = { Text("Serein 自动召回") },
+                supportingContent = { MemoryNotes(buildList {
+                    add(if (available) "助手回复前，先去 Serein 里找和你这句话有关的记忆，找到就一起带上。最多等 ${config.waitMs / 1000} 秒，找不到就照常回复。"
+                        else "这项已经给另一位助手用了，请在上面换到那位助手。")
+                    if (mine) {
+                        add("最近召回：${sereinRecallLabel(recallStatus)}")
+                        recallStatus?.let {
+                            add("检索时间：${java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.SHORT, java.text.DateFormat.MEDIUM).format(java.util.Date(it.createdAt))}")
+                        }
                     }
-                })
-            }
-            Text(if (available) "回复前查找相关记忆，最多等待 ${config.waitMs / 1000} 秒；超时照常聊天。"
-                else "已绑定另一位助手，请在上方切换到绑定的助手。", style = MaterialTheme.typography.bodySmall)
-            Text("OB 保留按需查询；本地档案与云端上传分别控制。", style = MaterialTheme.typography.bodySmall)
-            if (mine) {
-                Text("最近召回：${sereinRecallLabel(recallStatus)}", style = MaterialTheme.typography.bodySmall)
-                recallStatus?.let {
-                    Text("检索时间：${java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.SHORT, java.text.DateFormat.MEDIUM).format(java.util.Date(it.createdAt))}",
-                        style = MaterialTheme.typography.bodySmall)
-                }
-            }
-            Text("新聊天的召回结果会后台同步到塞壬网页「召回观察 → Hook 注入」，包含触发原句（最多 2000 字）、候选信息和交付状态。", style = MaterialTheme.typography.bodySmall)
-            if (mine) {
-                Text("Hook 观察待同步 $observationPending 条", style = MaterialTheme.typography.bodySmall)
-                observationError?.let { Text("观察同步：${sereinFailureLabel(it)}", style = MaterialTheme.typography.bodySmall) }
-            }
-            HorizontalDivider()
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("上传新聊天", Modifier.weight(1f), style = MaterialTheme.typography.titleSmall)
-                Switch(modifier = Modifier.testTag("serein-upload"), checked = mine && config.uploadEnabled,
-                    enabled = available && mine && config.rootUrl() != null && config.gatewayKey.isNotBlank() && !busy,
-                    onCheckedChange = { enabled ->
-                        if (enabled) confirmingUpload = true
+                    add("每次找到了什么，会同步到 Serein 网页的「召回观察」里，方便你回头看。")
+                    if (mine && observationPending > 0) add("还有 $observationPending 条没同步")
+                    if (mine) observationError?.let { add("同步出错：${sereinFailureLabel(it)}") }
+                }) },
+                trailingContent = {
+                    Switch(modifier = Modifier.testTag("serein-recall"), checked = mine && config.enabled, enabled = available && !busy, onCheckedChange = { enabled ->
+                        if (enabled) { enableRecallOnSave = true; editing = true }
                         else scope.launch {
                             busy = true
-                            try { onSave(config.copy(uploadEnabled = false)) }
+                            try { onSave(config.copy(enabled = false, generation = Uuid.random().toString())) }
                             catch (e: CancellationException) { throw e }
                             catch (_: Exception) { error = "设置未保存，请重试。" }
                             finally { busy = false }
                         }
                     })
-            }
-            Text("开启后，新产生且已完成的聊天文字会在后台上传，断网后自动重试；不影响回复等待时间。请先配置连接。",
-                style = MaterialTheme.typography.bodySmall)
-            Text("不补传历史，不上传思考过程、工具结果和召回内容。已上传内容的编辑、删除暂不同步到云端。",
-                style = MaterialTheme.typography.bodySmall)
-            if (mine) {
-                Text("待上传 ${counts.pending} · 已接收 ${counts.sent} · 未上传 ${counts.blocked}", style = MaterialTheme.typography.bodySmall)
-                if (counts.retrying > 0) Text("${counts.retrying} 条等待重试，请检查网络、密钥及服务版本。", style = MaterialTheme.typography.bodySmall)
-                uploadError?.let { Text("上传原因：${sereinFailureLabel(it)}", style = MaterialTheme.typography.bodySmall) }
-                if (!config.uploadEnabled && counts.pending > 0) Text("上传已暂停，待上传内容将在重新开启后继续。", style = MaterialTheme.typography.bodySmall)
-                TextButton(enabled = config.uploadEnabled && counts.pending > 0 && !busy, onClick = {
+                },
+            )
+            item(
+                headlineContent = { Text("上传新聊天") },
+                supportingContent = { MemoryNotes(buildList {
+                    add("把以后的聊天文字传到 Serein，让它慢慢整理成记忆。在后台传，不耽误回复；断网了会自己补传。")
+                    add("只传打开之后的新消息。思考过程、工具结果不传；已经传上去的消息，在这边改了或删了，云端不会跟着变。")
+                    add("要在 Serein 里打开「自动整理」并配好模型，传上去的聊天才会变成记忆。")
+                    if (mine) {
+                        add("待上传 ${counts.pending} · 已接收 ${counts.sent} · 未上传 ${counts.blocked}")
+                        if (counts.retrying > 0) add("${counts.retrying} 条在等重试，看看网络、密钥和服务版本。")
+                        uploadError?.let { add("上传原因：${sereinFailureLabel(it)}") }
+                        if (!config.uploadEnabled && counts.pending > 0) add("上传暂停了，重新打开后接着传。")
+                    }
+                }) },
+                trailingContent = {
+                    Switch(modifier = Modifier.testTag("serein-upload"), checked = mine && config.uploadEnabled,
+                        enabled = available && mine && config.rootUrl() != null && config.gatewayKey.isNotBlank() && !busy,
+                        onCheckedChange = { enabled ->
+                            if (enabled) confirmingUpload = true
+                            else scope.launch {
+                                busy = true
+                                try { onSave(config.copy(uploadEnabled = false)) }
+                                catch (e: CancellationException) { throw e }
+                                catch (_: Exception) { error = "设置未保存，请重试。" }
+                                finally { busy = false }
+                            }
+                        })
+                },
+            )
+            if (mine && counts.pending > 0) item(
+                enabled = config.uploadEnabled && !busy,
+                onClick = {
                     scope.launch {
                         busy = true
                         try { onRetry() }
@@ -156,12 +162,17 @@ internal fun SereinHookControls(
                         catch (_: Exception) { error = "重试未启动，请稍后再试。" }
                         finally { busy = false }
                     }
-                }) { Text("重试待上传") }
-            }
-            Text("已接收表示原话已保存；云端整理为记忆还需在 Serein 开启自动整理并配置模型。", style = MaterialTheme.typography.bodySmall)
-            error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-            TextButton(enabled = available && !busy, onClick = { enableRecallOnSave = false; editing = true }) { Text("配置连接") }
+                },
+                headlineContent = { Text("重试待上传") },
+            )
+            item(
+                enabled = available && !busy,
+                onClick = { enableRecallOnSave = false; editing = true },
+                headlineContent = { Text("配置连接") },
+                supportingContent = { Text("填 Serein 的地址和密钥。上面两项都要先连上才能用。") },
+            )
         }
+        error?.let { Text(it, Modifier.padding(horizontal = 4.dp), color = MaterialTheme.colorScheme.error) }
     }
     if (confirmingUpload) AlertDialog(
         onDismissRequest = { if (!busy) confirmingUpload = false },
@@ -231,5 +242,13 @@ internal fun SereinHookControls(
             }) { Text(if (enableRecallOnSave) "保存并开启" else "保存连接") } }, dismissButton = {
                 TextButton(enabled = !working, onClick = { editing = false }) { Text("取消") }
             })
+    }
+}
+
+/** Explanations under a memory setting, one short paragraph each. */
+@Composable
+internal fun MemoryNotes(lines: List<String>) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        lines.forEach { Text(it) }
     }
 }

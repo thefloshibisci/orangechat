@@ -18,6 +18,7 @@ import me.rerere.rikkahub.data.serein.LocalScene
 import me.rerere.rikkahub.data.serein.LocalSceneRepository
 import me.rerere.rikkahub.data.serein.LocalSceneRevision
 import me.rerere.rikkahub.data.serein.SceneConflict
+import me.rerere.rikkahub.ui.components.ui.CardGroup
 import org.koin.compose.koinInject
 import kotlin.uuid.Uuid
 
@@ -28,22 +29,19 @@ internal fun LocalScenesCard(
     repository: LocalSceneRepository = koinInject(),
 ) {
     var browsing by remember { mutableStateOf(false) }
-    Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text("本地记忆", style = MaterialTheme.typography.titleMedium)
-                    Text("让助手记下重要的事，按需查找。", style = MaterialTheme.typography.bodySmall)
-                }
+    CardGroup(Modifier.fillMaxWidth()) {
+        item(
+            headlineContent = { Text("本地记忆") },
+            supportingContent = { MemoryNotes(listOf(
+                "打开后，助手可以自己记下重要的事，之后需要时再翻出来；你也能在下面手动管理。",
+                "记忆存在手机里。助手翻出来的那几条会发给当前的聊天模型。这里存的是整理过的要点，不是聊天原文。",
+                "打开 Serein 自动召回时，助手暂时不能用这些工具，免得两边重复记；手动管理照常可用。",
+            )) },
+            trailingContent = {
                 Switch(assistant.enableLocalSceneTools, { onUpdateAssistant(assistant.copy(enableLocalSceneTools = it)) })
-            }
-            Text("开启后，助手可用工具记下、查找和修改自己的记忆。尚不自动召回；关闭后已有记忆保留。",
-                style = MaterialTheme.typography.bodySmall)
-            Text("记忆保存在本机；工具查到的内容会发给当前聊天模型。它是整理后的记忆，不是原话档案。",
-                style = MaterialTheme.typography.bodySmall)
-            Text("启用 Serein 自动召回时，此处的聊天工具暂停，手动管理仍可用。", style = MaterialTheme.typography.bodySmall)
-            TextButton(onClick = { browsing = true }) { Text("管理本地记忆") }
-        }
+            },
+        )
+        item(onClick = { browsing = true }, headlineContent = { Text("管理本地记忆") })
     }
     if (browsing) SceneBrowser(assistant, repository) { browsing = false }
 }

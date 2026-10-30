@@ -15,6 +15,7 @@ import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.datastore.withAssistantEdit
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.ui.components.nav.BackButton
+import me.rerere.rikkahub.ui.components.ui.CardGroup
 import me.rerere.rikkahub.ui.pages.assistant.detail.LocalOriginalsCard
 import me.rerere.rikkahub.ui.pages.assistant.detail.LocalScenesCard
 import me.rerere.rikkahub.ui.pages.assistant.detail.SereinHookCard
@@ -49,7 +50,7 @@ fun ExternalMemoriesPage() {
                 scope.launch { store.update { current -> current.withAssistantEdit(assistant, desired) } }
             }
             SereinHookCard(assistant)
-            Text("本地档案", style = MaterialTheme.typography.titleMedium)
+            MemorySectionTitle("本地档案")
             LocalOriginalsCard(assistant, update)
             LocalScenesCard(assistant, update)
         }
@@ -69,28 +70,47 @@ internal fun AdvancedMemoryContent(
         ?: assistants.firstOrNull { it.id.toString() == preferredAssistantId }
         ?: assistants.firstOrNull()
     Column(
-        modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+        modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Text("在这里配置 Serein，并管理当前助手的本地档案。", style = MaterialTheme.typography.bodyMedium)
         if (selected == null) {
-            Text("请先创建一位助手，再配置记忆。")
+            Text("请先创建一位助手，再配置记忆。", Modifier.padding(horizontal = 4.dp))
         } else {
-            Box {
-                OutlinedButton(onClick = { choosing = true }, modifier = Modifier.fillMaxWidth()) {
-                    Text("当前助手：${selected.name.ifBlank { "未命名助手" }}")
-                }
-                DropdownMenu(expanded = choosing, onDismissRequest = { choosing = false }) {
-                    assistants.forEach { assistant ->
-                        DropdownMenuItem(
-                            text = { Text(assistant.name.ifBlank { "未命名助手" }) },
-                            onClick = { selectedId = assistant.id.toString(); choosing = false },
-                        )
-                    }
-                }
+            CardGroup {
+                item(
+                    onClick = { choosing = true },
+                    headlineContent = {
+                        Box {
+                            Text("当前助手：${selected.name.ifBlank { "未命名助手" }}")
+                            DropdownMenu(expanded = choosing, onDismissRequest = { choosing = false }) {
+                                assistants.forEach { assistant ->
+                                    DropdownMenuItem(
+                                        text = { Text(assistant.name.ifBlank { "未命名助手" }) },
+                                        onClick = { selectedId = assistant.id.toString(); choosing = false },
+                                    )
+                                }
+                            }
+                        }
+                    },
+                    supportingContent = { Text("每位助手的记忆分开设置，点这里切换。") },
+                )
             }
             key(selected.id) { memoryContent(selected) }
         }
-        Text("旧 Supabase 连接已停用并从本机配置移除，云端原有数据保留。", style = MaterialTheme.typography.bodySmall)
+        Text("旧的 Supabase 连接已经停用，也从手机里删掉了；云端原来的数据还在。",
+            Modifier.padding(horizontal = 4.dp, vertical = 8.dp),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
+}
+
+/** Section heading styled like CardGroup titles, for sections built from several cards. */
+@Composable
+private fun MemorySectionTitle(text: String) {
+    Text(
+        text,
+        Modifier.padding(start = 4.dp, top = 8.dp),
+        style = MaterialTheme.typography.titleSmallEmphasized,
+        color = MaterialTheme.colorScheme.primary,
+    )
 }

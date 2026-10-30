@@ -35,6 +35,7 @@ import kotlinx.coroutines.withContext
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.repository.ConversationRepository
 import me.rerere.rikkahub.data.serein.RawArchiveRevision
+import me.rerere.rikkahub.ui.components.ui.CardGroup
 import org.koin.compose.koinInject
 
 /** Phase one intentionally offers archiving only. No model setup or promise of automatic recall. */
@@ -48,21 +49,23 @@ internal fun LocalOriginalsCard(
     var importing by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf<String?>(null) }
     var browsing by remember { mutableStateOf(false) }
-    Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text("保存聊天原话", style = MaterialTheme.typography.titleMedium)
-                    Text("仅在本机保存此助手的原话与修改历史。", style = MaterialTheme.typography.bodySmall)
-                }
-                Switch(checked = assistant.saveLocalRawMessages, onCheckedChange = {
-                    onUpdateAssistant(assistant.copy(saveLocalRawMessages = it))
-                })
-            }
-            Text("此处仅保存原话，不会自动整理或用于回复。关闭后停止记录，已有原话仍保留。",
-                style = MaterialTheme.typography.bodySmall)
-            Row {
-                TextButton(enabled = assistant.saveLocalRawMessages && !importing, onClick = {
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        CardGroup {
+            item(
+                headlineContent = { Text("保存聊天原话") },
+                supportingContent = { MemoryNotes(listOf(
+                    "把和这位助手的聊天原文，连同每次修改，都存一份在手机里。",
+                    "只是存档，方便你翻看；不会整理成记忆，也不会拿来回复。关掉后不再记新的，已经存的还在。",
+                )) },
+                trailingContent = {
+                    Switch(checked = assistant.saveLocalRawMessages, onCheckedChange = {
+                        onUpdateAssistant(assistant.copy(saveLocalRawMessages = it))
+                    })
+                },
+            )
+            item(
+                enabled = assistant.saveLocalRawMessages && !importing,
+                onClick = {
                     scope.launch {
                         importing = true
                         try {
@@ -78,11 +81,13 @@ internal fun LocalOriginalsCard(
                             importing = false
                         }
                     }
-                }) { Text(if (importing) "正在导入…" else "导入已有聊天") }
-                TextButton(onClick = { browsing = true }) { Text("查看原话") }
-            }
-            status?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+                },
+                headlineContent = { Text(if (importing) "正在导入…" else "导入已有聊天") },
+                supportingContent = { Text("把打开开关之前的聊天也存进来。") },
+            )
+            item(onClick = { browsing = true }, headlineContent = { Text("查看原话") })
         }
+        status?.let { Text(it, Modifier.padding(horizontal = 4.dp), style = MaterialTheme.typography.bodySmall) }
     }
     if (browsing) OriginalBrowser(assistant, repository) { browsing = false }
 }

@@ -48,6 +48,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.adaptive.currentWindowDpSize
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -240,9 +241,12 @@ fun ChatDrawerContent(
         },
         drawerContentColor = MaterialTheme.colorScheme.onSurface,
     ) {
-        Box(modifier = Modifier.fillMaxSize()) {
+        val drawerBgPath = settings.displaySetting.drawerBackgroundPath
+        // 聊天条目透出侧边栏背景图的对应位置（实时模糊时也透出，整张大图仍然跳过）
+        val drawerBackdrop = rememberDrawerBackdrop(drawerBgPath)
+        CompositionLocalProvider(LocalDrawerBackdrop provides drawerBackdrop) {
+        Box(modifier = Modifier.fillMaxSize().drawerBackdropRoot(drawerBackdrop)) {
             // 侧边栏背景图（最底层；实时模糊时跳过，避免遮挡 ChatPage 模糊层）
-            val drawerBgPath = settings.displaySetting.drawerBackgroundPath
             if (drawerBgPath.isNotEmpty() && !useLiveDrawerGlass) {
                 val request = remember(context, drawerBgPath) {
                     ImageRequest.Builder(context)
@@ -549,6 +553,7 @@ fun ChatDrawerContent(
             }
         }
         }
+        } // CompositionLocalProvider(LocalDrawerBackdrop)
     }
 
     if (showPluginShortcutSheet) {
