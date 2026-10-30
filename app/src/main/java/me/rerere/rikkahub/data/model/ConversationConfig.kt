@@ -6,7 +6,6 @@ import me.rerere.ai.provider.BuiltInTools
 import me.rerere.ai.provider.CustomHeader
 import me.rerere.ai.provider.CustomBody
 import me.rerere.ai.provider.Model
-import me.rerere.rikkahub.data.ai.tools.LocalToolOption
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.findModelById
 import me.rerere.rikkahub.data.datastore.getAssistantById
@@ -15,6 +14,12 @@ import kotlin.uuid.Uuid
 
 /** Frozen request controls; persona, memory and appearance continue to follow the assistant. */
 @Serializable
+/**
+ * Per-conversation request overrides.
+ * Local tools are intentionally not stored here: they always follow the assistant settings,
+ * so toggling a local tool takes effect in existing conversations immediately (same as upstream).
+ * Old rows that still contain a `localTools` key are read fine because JsonInstant ignores unknown keys.
+ */
 data class ConversationConfig(
     val enableWebSearch: Boolean = false,
     val searchServiceSelected: Int = 0,
@@ -32,7 +37,6 @@ data class ConversationConfig(
     val customBodies: List<CustomBody> = emptyList(),
     val mcpServers: Set<Uuid> = emptySet(),
     val enabledSkills: Set<String> = emptySet(),
-    val localTools: List<LocalToolOption> = emptyList(),
     val workspaceId: Uuid? = null,
     val modeInjectionIds: Set<Uuid> = emptySet(),
     val lorebookIds: Set<Uuid> = emptySet(),
@@ -51,7 +55,6 @@ data class ConversationConfig(
         customBodies = value.customBodies,
         mcpServers = value.mcpServers,
         enabledSkills = value.enabledSkills,
-        localTools = value.localTools,
         workspaceId = value.workspaceId,
         modeInjectionIds = value.modeInjectionIds,
         lorebookIds = value.lorebookIds,
@@ -72,7 +75,6 @@ data class ConversationConfig(
         customBodies = if (previous.customBodies != desired.customBodies) desired.customBodies else customBodies,
         mcpServers = if (previous.mcpServers != desired.mcpServers) desired.mcpServers else mcpServers,
         enabledSkills = if (previous.enabledSkills != desired.enabledSkills) desired.enabledSkills else enabledSkills,
-        localTools = if (previous.localTools != desired.localTools) desired.localTools else localTools,
         workspaceId = if (previous.workspaceId != desired.workspaceId) desired.workspaceId else workspaceId,
         modeInjectionIds = if (previous.modeInjectionIds != desired.modeInjectionIds) desired.modeInjectionIds else modeInjectionIds,
         lorebookIds = if (previous.lorebookIds != desired.lorebookIds) desired.lorebookIds else lorebookIds,
@@ -94,7 +96,6 @@ fun Assistant.withConversation(config: ConversationConfig?): Assistant = config?
         customBodies = it.customBodies,
         mcpServers = it.mcpServers,
         enabledSkills = it.enabledSkills,
-        localTools = it.localTools,
         workspaceId = it.workspaceId,
         modeInjectionIds = it.modeInjectionIds,
         lorebookIds = it.lorebookIds,
