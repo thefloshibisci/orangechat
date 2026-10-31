@@ -115,6 +115,7 @@ import me.rerere.rikkahub.data.interaction.avatarInteraction
 import me.rerere.rikkahub.service.ChatError
 import me.rerere.rikkahub.ui.components.message.ChatMessage
 import me.rerere.rikkahub.utils.repliedUserMessageIds
+import me.rerere.rikkahub.utils.readAssistantMessageIds
 import me.rerere.rikkahub.ui.context.LocalDisplaySettings
 import me.rerere.rikkahub.ui.theme.LocalMaterialMode
 import me.rerere.rikkahub.ui.components.ui.ErrorCardsDisplay
@@ -350,6 +351,9 @@ private fun ChatListNormal(
         val repliedUserIds = remember(conversation.messageNodes) {
             repliedUserMessageIds(conversation.messageNodes.map { it.currentMessage })
         }
+        val readAssistantIds = remember(conversation.messageNodes) {
+            readAssistantMessageIds(conversation.messageNodes.map { it.currentMessage })
+        }
         val avatarEvent = conversation.currentMessages.lastOrNull { it.avatarInteraction() != null }
         val avatarTargetRole = if (avatarEvent?.avatarInteraction()?.target == "user") {
             MessageRole.USER
@@ -410,6 +414,7 @@ private fun ChatListNormal(
                         ChatMessage(
                             node = node,
                             hasAssistantResponse = node.currentMessage.id in repliedUserIds,
+                            hasUserRead = node.currentMessage.id in readAssistantIds,
                             onQuote = onQuote,
                             reactions = reactionsByMessageId[node.currentMessage.id.toString()].orEmpty(),
                             reactionPresets = reactionPresets,

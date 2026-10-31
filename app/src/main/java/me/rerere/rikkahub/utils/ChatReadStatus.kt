@@ -40,3 +40,22 @@ internal fun repliedUserMessageIds(messages: List<UIMessage>): Set<Uuid> {
     }
     return replied
 }
+
+/** Mirror of [repliedUserMessageIds]: an assistant message counts as read once a real user turn follows it. */
+internal fun readAssistantMessageIds(messages: List<UIMessage>): Set<Uuid> {
+    val read = mutableSetOf<Uuid>()
+    val pending = mutableSetOf<Uuid>()
+    for (message in messages) {
+        if (message.avatarInteraction() != null) continue
+        when (message.role) {
+            MessageRole.ASSISTANT -> pending.add(message.id)
+            // A proactive trigger is written by the app, not by the person reading.
+            MessageRole.USER -> if (!message.toText().contains("[主动消息上下文]")) {
+                read.addAll(pending)
+                pending.clear()
+            }
+            else -> Unit
+        }
+    }
+    return read
+}
