@@ -73,6 +73,21 @@ internal class ProactiveActivityTransformer(
     }
 }
 
+/**
+ * Claimed records are re-attached to their user turn on every later request, so evicting one
+ * changes an old message and breaks the provider prefix cache from that point on. Trim pending
+ * records first; claimed ones only go when far more than any realistic history window.
+ */
+internal fun trimProactiveActivities(
+    records: List<ProactiveActivity>,
+    maxPending: Int = 64,
+    maxClaimed: Int = 1024,
+): List<ProactiveActivity> {
+    val keepPending = records.filter { it.claimedByUserId == null }.takeLast(maxPending).mapTo(HashSet()) { it.id }
+    val keepClaimed = records.filter { it.claimedByUserId != null }.takeLast(maxClaimed).mapTo(HashSet()) { it.id }
+    return records.filter { it.id in keepPending || it.id in keepClaimed }
+}
+
 /** Pending means durable but not yet acknowledged by a completed normal reply. */
 internal class ProactiveActivityStore(context: Context, assistantId: String, conversationId: String) {
     private val prefs = context.getSharedPreferences("proactive_activity_v1", Context.MODE_PRIVATE)
@@ -83,7 +98,7 @@ internal class ProactiveActivityStore(context: Context, assistantId: String, con
 
     fun append(record: ProactiveActivity) = synchronized(lock) {
         val records = read()
-        if (records.none { it.id == record.id }) write((records + record).takeLast(64))
+        if (records.none { it.id == record.id }) write(trimProactiveActivities(records + record))
     }
 
     fun claim(ids: Set<String>, userId: String) = synchronized(lock) {
