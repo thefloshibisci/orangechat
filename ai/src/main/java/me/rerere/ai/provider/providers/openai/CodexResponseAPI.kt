@@ -1,4 +1,4 @@
-﻿/*
+/*
  * 橘瓣 OrangeChat
  * 衍生自 RikkaHub (https://github.com/rikkahub/rikkahub)，原作者 RE
  * 本项目基于 GNU AGPL v3 开源，详见根目录 LICENSE 文件
@@ -239,7 +239,7 @@ class CodexResponseAPI(private val client: OkHttpClient) {
                             put("type", "function_call")
                             put("call_id", tool.toolCallId)
                             put("name", tool.toolName)
-                            put("arguments", tool.input.ifBlank { "{}" })
+                            put("arguments", tool.input.ifBlank { "{}" }) // no-arg calls stream "", which strict proxies reject
                         })
                         val textOutput = tool.output.filterIsInstance<UIMessagePart.Text>().joinToString("\n") { it.text }
                         val imageOutput = tool.output.filterIsInstance<UIMessagePart.Image>()
