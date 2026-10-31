@@ -229,6 +229,9 @@ class FilesManager(
             me.rerere.rikkahub.data.ai.transformers.extraInfoSnapshotDir(context), conversationId,
         )
 
+    fun deleteChatReadMark(conversationId: kotlin.uuid.Uuid) =
+        me.rerere.rikkahub.utils.ChatReadMarks.delete(context, conversationId)
+
     fun deleteChatFiles(uris: List<Uri>) {
         val relativePaths = mutableSetOf<String>()
         uris.filter { it.toString().startsWith("file:") }.forEach { uri ->
