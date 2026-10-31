@@ -155,4 +155,28 @@ class ProactiveWakeupTest {
         assertTrue(runCatching { tool.execute(buildJsonObject { put("action", "unknown") }) }.isFailure)
         assertEquals(0, writes)
     }
+
+
+    @Test fun `tool description stays byte stable across current time changes`() {
+        var clock = now
+        val build = {
+            buildProactiveWakeupTool(now = { clock }, zone = zone) { _, _ -> "saved" }
+        }
+        val first = build().description
+        clock += 60_000
+        val next = build().description
+        assertEquals(first, next)
+    }
+
+    @Test fun `past appointment feedback includes current time`() = runBlocking {
+        val tool = buildProactiveWakeupTool(now = { now }, zone = zone) { _, _ -> "saved" }
+        val error = runCatching {
+            tool.execute(buildJsonObject {
+                put("action", "schedule")
+                put("time", "2026-10-28T18:00:00+08:00")
+                put("reason", "检查")
+            })
+        }.exceptionOrNull()
+        assertTrue(error?.message.orEmpty().contains("2026-10-28T19:00+08:00"))
+    }
 }

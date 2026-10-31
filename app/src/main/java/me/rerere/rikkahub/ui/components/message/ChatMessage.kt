@@ -288,6 +288,7 @@ fun ChatMessage(
     avatarPulse: String? = null,
     onQuote: ((String) -> Unit)? = null,
     hasAssistantResponse: Boolean? = null,
+    hasUserRead: Boolean? = null,
 ) {
     val message = node.messages[node.selectIndex].let { original ->
         if (original.role == MessageRole.USER && original.parts.any {
@@ -320,11 +321,14 @@ fun ChatMessage(
     )
     val settings = LocalDisplaySettings.current
     val everyday = settings.chatDisplayMode == ChatDisplayMode.EVERYDAY
-    val timestamp = remember(message.createdAt, message.role, everyday, hasAssistantResponse) {
+    val timestamp = remember(message.createdAt, message.role, everyday, hasAssistantResponse, hasUserRead) {
         val time = message.createdAt.toJavaLocalDateTime().format(DateTimeFormatter.ofPattern("HH:mm"))
-        if (everyday && message.role == MessageRole.USER && hasAssistantResponse != null) {
-            "$time ${if (hasAssistantResponse) "已读" else "未读"}"
-        } else time
+        val read = when (message.role) {
+            MessageRole.USER -> hasAssistantResponse
+            MessageRole.ASSISTANT -> hasUserRead
+            else -> null
+        }
+        if (everyday && read != null) "$time ${if (read) "已读" else "未读"}" else time
     }
     val quoteAuthor = if (message.role == MessageRole.USER) settings.userNickname.ifBlank { "我" }
         else assistant?.name?.takeIf { it.isNotBlank() } ?: model?.displayName ?: "AI"

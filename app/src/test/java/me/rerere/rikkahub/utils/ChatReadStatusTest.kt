@@ -41,4 +41,13 @@ class ChatReadStatusTest {
         val trigger = user("[主动消息上下文]")
         assertTrue(repliedUserMessageIds(listOf(request, trigger, answer("scheduled greeting"))).isEmpty())
     }
+
+    @Test fun assistantMessagesBecomeReadOnlyAfterARealUserTurn() {
+        val first = answer("one")
+        val second = answer("two")
+        val reply = user("got it")
+        val latest = answer("three")
+        assertEquals(setOf(first.id, second.id), readAssistantMessageIds(listOf(first, second, reply, latest)))
+        assertTrue(readAssistantMessageIds(listOf(first, user("[主动消息上下文]"), latest)).isEmpty())
+    }
 }
