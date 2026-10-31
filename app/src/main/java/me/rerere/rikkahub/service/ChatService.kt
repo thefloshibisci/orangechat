@@ -1406,16 +1406,18 @@ class ChatService(
             }
             // Bind before sending. Tool continuations, cancellation, or empty tool outputs must not
             // move the same activity snapshot to a later user turn.
-            if (activityUserId != null && activityCutoff != null && messageRange == null) {
+            val bindingUserId = activityUserId
+            val bindingCutoff = activityCutoff
+            if (bindingUserId != null && bindingCutoff != null && messageRange == null) {
                 val pendingIds = activitySnapshot.asSequence()
-                    .filter { it.claimedByUserId == null && it.timestamp <= activityCutoff }
+                    .filter { it.claimedByUserId == null && it.timestamp <= bindingCutoff }
                     .map { it.id }
                     .toSet()
                 if (pendingIds.isNotEmpty()) {
-                    runCatching { activityStore.claim(pendingIds, activityUserId) }
+                    runCatching { activityStore.claim(pendingIds, bindingUserId) }
                         .onFailure { Log.w(TAG, "Could not bind proactive activity to user turn", it) }
                     activitySnapshot = runCatching { activityStore.snapshot() }.getOrDefault(activitySnapshot)
-                        .filter { it.claimedByUserId != null || it.timestamp <= activityCutoff }
+                        .filter { it.claimedByUserId != null || it.timestamp <= bindingCutoff }
                 }
             }
             activityTransformer = me.rerere.rikkahub.data.service.ProactiveActivityTransformer(
