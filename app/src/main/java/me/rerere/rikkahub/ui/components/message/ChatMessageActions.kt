@@ -6,6 +6,8 @@
 
 package me.rerere.rikkahub.ui.components.message
 
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -81,6 +83,7 @@ fun ColumnScope.ChatMessageActionButtons(
     onOpenActionSheet: () -> Unit,
     onTranslate: ((UIMessage, Locale) -> Unit)? = null,
     onClearTranslation: (UIMessage) -> Unit = {},
+    showMoreButton: Boolean = true,
 ) {
     val context = LocalContext.current
     var isPendingDelete by remember { mutableStateOf(false) }
@@ -180,21 +183,24 @@ fun ColumnScope.ChatMessageActionButtons(
             }
         }
 
-        Icon(
-            imageVector = HugeIcons.MoreVertical,
-            contentDescription = stringResource(R.string.more_options),
-            modifier = Modifier
-                .clip(CircleShape)
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = LocalIndication.current,
-                    onClick = {
-                        onOpenActionSheet()
-                    }
-                )
-                .padding(8.dp)
-                .size(16.dp)
-        )
+        if (showMoreButton) {
+            Icon(
+                imageVector = HugeIcons.MoreVertical,
+                contentDescription = stringResource(R.string.more_options),
+                modifier = Modifier
+                    .clip(CircleShape)
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = LocalIndication.current,
+                        onClick = {
+                            onOpenActionSheet()
+                        }
+                    )
+                    .padding(8.dp)
+                    .size(16.dp)
+            )
+
+        }
 
         if (!readOnly) {
         ChatMessageBranchSelector(
@@ -249,6 +255,8 @@ fun ChatMessageActionsSheet(
     isFavorite: Boolean = false,
     onToggleFavorite: (() -> Unit)? = null,
     onReact: (() -> Unit)? = null,
+    onShowProcess: (() -> Unit)? = null,
+    onMessageActions: (@Composable () -> Unit)? = null,
     onWebViewPreview: () -> Unit,
     onDismissRequest: () -> Unit
 ) {
@@ -259,10 +267,21 @@ fun ChatMessageActionsSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
+            onMessageActions?.invoke()
+            if (onShowProcess != null) {
+                Card(
+                    onClick = { onDismissRequest(); onShowProcess() },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = MaterialTheme.shapes.medium,
+                ) {
+                    Text("查看思考和工具记录", modifier = Modifier.padding(16.dp), style = MaterialTheme.typography.titleMedium)
+                }
+            }
             if (onReact != null) {
                 Card(
                     onClick = {

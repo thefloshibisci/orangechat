@@ -53,10 +53,7 @@ internal fun LocalOriginalsCard(
         CardGroup {
             item(
                 headlineContent = { Text("保存聊天原话") },
-                supportingContent = { MemoryNotes(listOf(
-                    "把和这位助手的聊天原文，连同每次修改，都存一份在手机里。",
-                    "只是存档，方便你翻看；不会整理成记忆，也不会拿来回复。关掉后不再记新的，已经存的还在。",
-                )) },
+                supportingContent = { Text("仅在本机存档，不参与回复") },
                 trailingContent = {
                     Switch(checked = assistant.saveLocalRawMessages, onCheckedChange = {
                         onUpdateAssistant(assistant.copy(saveLocalRawMessages = it))
@@ -83,9 +80,10 @@ internal fun LocalOriginalsCard(
                     }
                 },
                 headlineContent = { Text(if (importing) "正在导入…" else "导入已有聊天") },
-                supportingContent = { Text("把打开开关之前的聊天也存进来。") },
+                supportingContent = { Text("补存开启前的聊天记录") },
             )
-            item(onClick = { browsing = true }, headlineContent = { Text("查看原话") })
+            item(onClick = { browsing = true }, headlineContent = { Text("查看原话") },
+                supportingContent = { Text("浏览已保存的聊天原文") })
         }
         status?.let { Text(it, Modifier.padding(horizontal = 4.dp), style = MaterialTheme.typography.bodySmall) }
     }

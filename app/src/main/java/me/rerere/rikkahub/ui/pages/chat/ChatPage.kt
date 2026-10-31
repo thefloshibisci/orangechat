@@ -544,6 +544,7 @@ private fun ChatPageContent(
         ) {
         AssistantBackground(setting = setting)
         Scaffold(
+            modifier = Modifier.chatBottomFade(),
             topBar = {
                 TopBar(
                     settings = setting,
@@ -752,6 +753,11 @@ private fun ChatPageContent(
                             }
                         ))
                     vm.saveConversationAsync()
+                },
+                onQuote = { quote ->
+                    if (!inputState.quoteText(quote)) {
+                        toaster.show("请先完成当前消息的编辑", type = ToastType.Warning)
+                    }
                 },
                 onClickSuggestion = { suggestion ->
                     inputState.editingMessage = null

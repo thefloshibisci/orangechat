@@ -87,6 +87,82 @@ fun TextAvatar(
     }
 }
 
+/** Render-only avatars for repeated bubbles; no pickers or event collectors. */
+@Composable
+internal fun AvatarDisplay(
+    name: String,
+    value: Avatar,
+    modifier: Modifier = Modifier,
+    loading: Boolean = false,
+    interactive: Boolean = false,
+    onClick: () -> Unit = {},
+) {
+    val shape = rememberAvatarShape(loading)
+    val color = MaterialTheme.colorScheme.secondaryContainer
+    val content: @Composable () -> Unit = {
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier.fillMaxSize()
+        ) {
+            when (value) {
+                is Avatar.Image -> {
+                    AsyncImage(
+                        model = value.url,
+                        contentDescription = null,
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop,
+                    )
+                }
+
+                is Avatar.Emoji -> {
+                    Text(
+                        text = value.content,
+                        autoSize = TextAutoSize.StepBased(
+                            minFontSize = 15.sp,
+                            maxFontSize = 30.sp,
+                        ),
+                        lineHeight = 0.8.em,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(5.dp)
+                    )
+                }
+
+                is Avatar.Dummy -> {
+                    Text(
+                        text = name
+                            .ifBlank { stringResource(R.string.user_default_name) }
+                            .takeIf { it.isNotEmpty() }
+                            ?.firstOrNull()?.toString()?.uppercase() ?: "A",
+                        fontSize = 20.sp,
+                        lineHeight = 1.em
+                    )
+                }
+            }
+        }
+    }
+    if (interactive) {
+        Surface(
+            shape = shape,
+            modifier = modifier,
+            onClick = {
+                onClick()
+            },
+            tonalElevation = 4.dp,
+            color = color,
+            content = content,
+        )
+    } else {
+        Surface(
+            shape = shape,
+            modifier = modifier,
+            tonalElevation = 4.dp,
+            color = color,
+            content = content,
+        )
+    }
+
+}
+
 @Composable
 fun UIAvatar(
     name: String,
@@ -128,69 +204,9 @@ fun UIAvatar(
     }
 
     Box(modifier = modifier.size(32.dp)) {
-        val shape = rememberAvatarShape(loading)
-        val color = MaterialTheme.colorScheme.secondaryContainer
-        val content: @Composable () -> Unit = {
-            Box(
-                contentAlignment = Alignment.Center,
-                modifier = Modifier.fillMaxSize()
-            ) {
-                when (value) {
-                    is Avatar.Image -> {
-                        AsyncImage(
-                            model = value.url,
-                            contentDescription = null,
-                            modifier = Modifier.fillMaxSize(),
-                            contentScale = ContentScale.Crop,
-                        )
-                    }
-
-                    is Avatar.Emoji -> {
-                        Text(
-                            text = value.content,
-                            autoSize = TextAutoSize.StepBased(
-                                minFontSize = 15.sp,
-                                maxFontSize = 30.sp,
-                            ),
-                            lineHeight = 0.8.em,
-                            textAlign = TextAlign.Center,
-                            modifier = Modifier.padding(5.dp)
-                        )
-                    }
-
-                    is Avatar.Dummy -> {
-                        Text(
-                            text = name
-                                .ifBlank { stringResource(R.string.user_default_name) }
-                                .takeIf { it.isNotEmpty() }
-                                ?.firstOrNull()?.toString()?.uppercase() ?: "A",
-                            fontSize = 20.sp,
-                            lineHeight = 1.em
-                        )
-                    }
-                }
-            }
-        }
-        if (interactive) {
-            Surface(
-                shape = shape,
-                modifier = Modifier.fillMaxSize(),
-                onClick = {
-                    onClick?.invoke()
-                    if (onUpdate != null) showPickOption = true
-                },
-                tonalElevation = 4.dp,
-                color = color,
-                content = content,
-            )
-        } else {
-            Surface(
-                shape = shape,
-                modifier = Modifier.fillMaxSize(),
-                tonalElevation = 4.dp,
-                color = color,
-                content = content,
-            )
+        AvatarDisplay(name, value, Modifier.fillMaxSize(), loading, interactive) {
+            onClick?.invoke()
+            if (onUpdate != null) showPickOption = true
         }
 
         // Show edit icon when editable

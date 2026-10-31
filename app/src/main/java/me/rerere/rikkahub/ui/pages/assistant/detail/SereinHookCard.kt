@@ -98,19 +98,8 @@ internal fun SereinHookControls(
         CardGroup(title = { Text("Serein 云端记忆") }) {
             item(
                 headlineContent = { Text("Serein 自动召回") },
-                supportingContent = { MemoryNotes(buildList {
-                    add(if (available) "助手回复前，先去 Serein 里找和你这句话有关的记忆，找到就一起带上。最多等 ${config.waitMs / 1000} 秒，找不到就照常回复。"
-                        else "这项已经给另一位助手用了，请在上面换到那位助手。")
-                    if (mine) {
-                        add("最近召回：${sereinRecallLabel(recallStatus)}")
-                        recallStatus?.let {
-                            add("检索时间：${java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.SHORT, java.text.DateFormat.MEDIUM).format(java.util.Date(it.createdAt))}")
-                        }
-                    }
-                    add("每次找到了什么，会同步到 Serein 网页的「召回观察」里，方便你回头看。")
-                    if (mine && observationPending > 0) add("还有 $observationPending 条没同步")
-                    if (mine) observationError?.let { add("同步出错：${sereinFailureLabel(it)}") }
-                }) },
+                supportingContent = { Text(if (available) "回复前检索，最长 ${config.waitMs / 1000} 秒"
+                    else "已绑定其他助手，请切换后配置") },
                 trailingContent = {
                     Switch(modifier = Modifier.testTag("serein-recall"), checked = mine && config.enabled, enabled = available && !busy, onCheckedChange = { enabled ->
                         if (enabled) { enableRecallOnSave = true; editing = true }
@@ -126,17 +115,7 @@ internal fun SereinHookControls(
             )
             item(
                 headlineContent = { Text("上传新聊天") },
-                supportingContent = { MemoryNotes(buildList {
-                    add("把以后的聊天文字传到 Serein，让它慢慢整理成记忆。在后台传，不耽误回复；断网了会自己补传。")
-                    add("只传打开之后的新消息。思考过程、工具结果不传；已经传上去的消息，在这边改了或删了，云端不会跟着变。")
-                    add("要在 Serein 里打开「自动整理」并配好模型，传上去的聊天才会变成记忆。")
-                    if (mine) {
-                        add("待上传 ${counts.pending} · 已接收 ${counts.sent} · 未上传 ${counts.blocked}")
-                        if (counts.retrying > 0) add("${counts.retrying} 条在等重试，看看网络、密钥和服务版本。")
-                        uploadError?.let { add("上传原因：${sereinFailureLabel(it)}") }
-                        if (!config.uploadEnabled && counts.pending > 0) add("上传暂停了，重新打开后接着传。")
-                    }
-                }) },
+                supportingContent = { Text("后台上传，断网重试") },
                 trailingContent = {
                     Switch(modifier = Modifier.testTag("serein-upload"), checked = mine && config.uploadEnabled,
                         enabled = available && mine && config.rootUrl() != null && config.gatewayKey.isNotBlank() && !busy,
@@ -151,6 +130,21 @@ internal fun SereinHookControls(
                             }
                         })
                 },
+            )
+            if (mine) item(
+                headlineContent = { Text("运行状态") },
+                supportingContent = { MemoryNotes(buildList {
+                    add("最近召回：${if (recallStatus == null) "暂无记录" else sereinRecallLabel(recallStatus)}")
+                    recallStatus?.let {
+                        add("检索时间：${java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.SHORT, java.text.DateFormat.MEDIUM).format(java.util.Date(it.createdAt))}")
+                    }
+                    add("待上传 ${counts.pending} · 已接收 ${counts.sent} · 未上传 ${counts.blocked}")
+                    if (counts.retrying > 0) add("${counts.retrying} 条等待重试")
+                    uploadError?.let { add("上传原因：${sereinFailureLabel(it)}") }
+                    if (!config.uploadEnabled && counts.pending > 0) add("上传已暂停，开启后继续")
+                    if (observationPending > 0) add("召回记录待同步 $observationPending 条")
+                    observationError?.let { add("同步出错：${sereinFailureLabel(it)}") }
+                }) },
             )
             if (mine && counts.pending > 0) item(
                 enabled = config.uploadEnabled && !busy,
@@ -169,7 +163,7 @@ internal fun SereinHookControls(
                 enabled = available && !busy,
                 onClick = { enableRecallOnSave = false; editing = true },
                 headlineContent = { Text("配置连接") },
-                supportingContent = { Text("填 Serein 的地址和密钥。上面两项都要先连上才能用。") },
+                supportingContent = { Text("点击配置地址、密钥与等待时间") },
             )
         }
         error?.let { Text(it, Modifier.padding(horizontal = 4.dp), color = MaterialTheme.colorScheme.error) }

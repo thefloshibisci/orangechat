@@ -860,6 +860,7 @@ class SettingsStore(
 data class Settings(
     @Transient
     val init: Boolean = false,
+    // Legacy backup fields; no longer gate application startup.
     val disclaimerAccepted: Boolean = false,
     val disclaimerAcceptedAt: Int = 0,
     val dynamicColor: Boolean = true,
@@ -964,6 +965,7 @@ data class AnniversaryEntry(
 
 @Serializable
 data class DisplaySetting(
+    val chatDisplayMode: ChatDisplayMode = ChatDisplayMode.STANDARD,
     val userAvatar: Avatar = Avatar.Dummy,
     val userNickname: String = "",
     val useAppIconStyleLoadingIndicator: Boolean = true,
@@ -1050,6 +1052,8 @@ data class DisplaySetting(
     // 气泡背景图 & 圆角
     val userBubbleImagePath: String = "",
     val assistantBubbleImagePath: String = "",
+    val userBubbleFrame: BubbleFrameSetting = BubbleFrameSetting(),
+    val assistantBubbleFrame: BubbleFrameSetting = BubbleFrameSetting(),
     val bubbleCornerRadius: Float = 16f,
     val bubbleImageOverlayEnabled: Boolean = false, // 关=纯图片, 开=图片+主题色遮罩
 )

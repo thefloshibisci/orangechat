@@ -6,7 +6,7 @@
 
 package me.rerere.rikkahub.ui.components.richtext
 
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -36,6 +36,8 @@ fun ZoomableAsyncImage(
     alignment: Alignment = Alignment.Center,
     contentScale: ContentScale = ContentScale.Fit,
     alpha: Float = DefaultAlpha,
+    onLongClick: (() -> Unit)? = null,
+    onDoubleClick: (() -> Unit)? = null,
 ) {
     var showImageViewer by remember { mutableStateOf(false) }
     val context = LocalContext.current
@@ -53,9 +55,7 @@ fun ZoomableAsyncImage(
         contentDescription = contentDescription,
         modifier = modifier
             .shimmer(isLoading = loading)
-            .clickable {
-                showImageViewer = true
-            },
+            .combinedClickable(onClick = { showImageViewer = true }, onLongClick = onLongClick, onDoubleClick = onDoubleClick),
         contentScale = contentScale,
         alpha = alpha,
         alignment = alignment,

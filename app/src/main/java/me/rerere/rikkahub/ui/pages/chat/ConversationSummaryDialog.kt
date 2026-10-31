@@ -7,6 +7,11 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.selection.triStateToggleable
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -21,7 +26,10 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TriStateCheckbox
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.LocalMinimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -33,6 +41,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.CancellationException
@@ -124,16 +133,13 @@ fun ConversationSummaryDialog(
                     modifier = Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    SwitchRow(stringResource(R.string.compression_send_summary), enabled, !saving) { enabled = it }
-                    Text(
-                        stringResource(R.string.compression_send_hint_short),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    SwitchRow(stringResource(R.string.compression_split_mode), splitMode, !saving) {
-                        commitDrafts()
-                        splitMode = it
-                        context.writeBooleanPreference(SPLIT_MODE_KEY, it)
+                    Column {
+                        SwitchRow(stringResource(R.string.compression_send_summary), enabled, !saving) { enabled = it }
+                        SwitchRow(stringResource(R.string.compression_split_mode), splitMode, !saving) {
+                            commitDrafts()
+                            splitMode = it
+                            context.writeBooleanPreference(SPLIT_MODE_KEY, it)
+                        }
                     }
                     rounds.forEachIndexed { roundIndex, round ->
                         val group = round.first().group ?: return@forEachIndexed
@@ -159,10 +165,11 @@ fun ConversationSummaryDialog(
                             },
                         )
                     }
-                    TextButton(
+                    FilledTonalButton(
                         onClick = { commitDrafts(); showMergeOptions = true },
                         modifier = Modifier.align(Alignment.End),
                         enabled = !saving && enabled && canSave && preview.any { it.sendToModel },
+                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
                     ) {
                         Text(stringResource(R.string.compression_merge_existing))
                     }
@@ -208,9 +215,11 @@ fun ConversationSummaryDialog(
 
 @Composable
 private fun SwitchRow(label: String, checked: Boolean, enabled: Boolean, onChange: (Boolean) -> Unit) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Text(label, Modifier.weight(1f))
-        Switch(checked, onChange, enabled = enabled, modifier = Modifier.semantics { contentDescription = label })
+    CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides 0.dp) {
+        Row(Modifier.heightIn(min = 40.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(label, Modifier.weight(1f))
+            Switch(checked, onChange, enabled = enabled, modifier = Modifier.semantics { contentDescription = label })
+        }
     }
 }
 
@@ -235,12 +244,19 @@ private fun SummaryRoundCard(
     }
     val sendLabel = stringResource(R.string.compression_round_send, roundNumber)
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        Row(
+            Modifier.fillMaxWidth().heightIn(min = 32.dp)
+                .triStateToggleable(state, enabled = enabled, role = Role.Checkbox,
+                    onClick = { onRoundSelected(state != ToggleableState.On) })
+                .semantics { contentDescription = sendLabel },
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
             TriStateCheckbox(
                 state = state,
-                onClick = { onRoundSelected(state != ToggleableState.On) },
+                onClick = null,
                 enabled = enabled,
-                modifier = Modifier.semantics { contentDescription = sendLabel },
+                modifier = Modifier.size(20.dp),
             )
             Text(
                 if (showNumber) stringResource(R.string.compression_round, roundNumber)
@@ -262,13 +278,19 @@ private fun SummaryRoundCard(
         } else {
             round.forEachIndexed { index, part ->
                 val partLabel = stringResource(R.string.compression_round_part, index + 1)
-                Column(Modifier.padding(start = 12.dp)) {
+                Column {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Checkbox(
-                            part.sendToModel, { onPartSelected(part.id, it) }, enabled = enabled,
-                            modifier = Modifier.semantics { contentDescription = "$sendLabel · $partLabel" },
-                        )
-                        Text(partLabel, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                        Row(
+                            Modifier.weight(1f).heightIn(min = 32.dp)
+                                .toggleable(part.sendToModel, enabled = enabled, role = Role.Checkbox,
+                                    onValueChange = { onPartSelected(part.id, it) })
+                                .semantics { contentDescription = "$sendLabel · $partLabel" },
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Checkbox(part.sendToModel, null, enabled = enabled, modifier = Modifier.size(20.dp))
+                            Text(partLabel, style = MaterialTheme.typography.bodyMedium)
+                        }
                         if (part.text.lines().count { it.isNotBlank() } > 1) {
                             TextButton(onClick = { onSplitPart(part.id) }, enabled = enabled) {
                                 Text(stringResource(R.string.compression_split_lines))

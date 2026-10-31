@@ -32,16 +32,13 @@ internal fun LocalScenesCard(
     CardGroup(Modifier.fillMaxWidth()) {
         item(
             headlineContent = { Text("本地记忆") },
-            supportingContent = { MemoryNotes(listOf(
-                "打开后，助手可以自己记下重要的事，之后需要时再翻出来；你也能在下面手动管理。",
-                "记忆存在手机里。助手翻出来的那几条会发给当前的聊天模型。这里存的是整理过的要点，不是聊天原文。",
-                "打开 Serein 自动召回时，助手暂时不能用这些工具，免得两边重复记；手动管理照常可用。",
-            )) },
+            supportingContent = { Text("由助手按需记录、查找和更新") },
             trailingContent = {
                 Switch(assistant.enableLocalSceneTools, { onUpdateAssistant(assistant.copy(enableLocalSceneTools = it)) })
             },
         )
-        item(onClick = { browsing = true }, headlineContent = { Text("管理本地记忆") })
+        item(onClick = { browsing = true }, headlineContent = { Text("管理本地记忆") },
+            supportingContent = { Text("查看、编辑和删除记忆") })
     }
     if (browsing) SceneBrowser(assistant, repository) { browsing = false }
 }

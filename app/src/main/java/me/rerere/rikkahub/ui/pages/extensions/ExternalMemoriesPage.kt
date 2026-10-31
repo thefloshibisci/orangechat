@@ -66,12 +66,13 @@ internal fun AdvancedMemoryContent(
 ) {
     var selectedId by rememberSaveable { mutableStateOf<String?>(null) }
     var choosing by remember { mutableStateOf(false) }
+    var showHelp by remember { mutableStateOf(false) }
     val selected = assistants.firstOrNull { it.id.toString() == selectedId }
         ?: assistants.firstOrNull { it.id.toString() == preferredAssistantId }
         ?: assistants.firstOrNull()
     Column(
         modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         if (selected == null) {
             Text("请先创建一位助手，再配置记忆。", Modifier.padding(horizontal = 4.dp))
@@ -92,16 +93,32 @@ internal fun AdvancedMemoryContent(
                             }
                         }
                     },
-                    supportingContent = { Text("每位助手的记忆分开设置，点这里切换。") },
+                    supportingContent = { Text("切换要配置的助手") },
                 )
             }
             key(selected.id) { memoryContent(selected) }
         }
-        Text("旧的 Supabase 连接已经停用，也从手机里删掉了；云端原来的数据还在。",
-            Modifier.padding(horizontal = 4.dp, vertical = 8.dp),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant)
+        CardGroup {
+            item(onClick = { showHelp = true }, headlineContent = { Text("使用说明") },
+                supportingContent = { Text("记忆用途、数据范围与同步规则") })
+        }
     }
+    if (showHelp) AlertDialog(
+        onDismissRequest = { showHelp = false },
+        title = { Text("记忆使用说明") },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("Serein 云端记忆", style = MaterialTheme.typography.titleSmall)
+                Text("回复前检索相关记忆，超时照常回复。当前用户文字会发给 Serein，选中的记忆会发给聊天模型；召回记录会同步到网页的「召回观察」。")
+                Text("上传仅包含开启后已完成的新聊天文字，不含思考过程、工具结果和召回内容。历史不补传，编辑和删除不同步；断网自动重试。已接收不等于已整理，还需在 Serein 开启自动整理并配置模型。")
+                Text("本地档案", style = MaterialTheme.typography.titleSmall)
+                Text("原话与修改历史仅保存在手机中，不参与回复。关闭记录后，已有档案仍保留；可手动导入旧聊天。")
+                Text("本地记忆保存整理后的要点，查到的内容会发给聊天模型。Serein 自动召回开启时，本地记忆工具暂停，手动管理仍可用。")
+                Text("旧 Supabase 连接已停用，云端原有数据保留。")
+            }
+        },
+        confirmButton = { TextButton(onClick = { showHelp = false }) { Text("知道了") } },
+    )
 }
 
 /** Section heading styled like CardGroup titles, for sections built from several cards. */

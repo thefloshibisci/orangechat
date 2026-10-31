@@ -114,6 +114,7 @@ import me.rerere.rikkahub.data.interaction.MessageReaction
 import me.rerere.rikkahub.data.interaction.avatarInteraction
 import me.rerere.rikkahub.service.ChatError
 import me.rerere.rikkahub.ui.components.message.ChatMessage
+import me.rerere.rikkahub.utils.repliedUserMessageIds
 import me.rerere.rikkahub.ui.context.LocalDisplaySettings
 import me.rerere.rikkahub.ui.theme.LocalMaterialMode
 import me.rerere.rikkahub.ui.components.ui.ErrorCardsDisplay
@@ -148,6 +149,7 @@ fun ChatList(
     onClearAllErrors: () -> Unit = {},
     onRegenerate: (UIMessage) -> Unit = {},
     onEdit: (UIMessage) -> Unit = {},
+    onQuote: ((String) -> Unit)? = null,
     onForkMessage: (UIMessage) -> Unit = {},
     onDelete: (UIMessage) -> Unit = {},
     onUpdateMessage: (MessageNode) -> Unit = {},
@@ -196,6 +198,7 @@ fun ChatList(
                 onClearAllErrors = onClearAllErrors,
                 onRegenerate = onRegenerate,
                 onEdit = onEdit,
+                onQuote = onQuote,
                 onForkMessage = onForkMessage,
                 onDelete = onDelete,
                 onUpdateMessage = onUpdateMessage,
@@ -231,6 +234,7 @@ private fun ChatListNormal(
     onClearAllErrors: () -> Unit,
     onRegenerate: (UIMessage) -> Unit,
     onEdit: (UIMessage) -> Unit,
+    onQuote: ((String) -> Unit)? = null,
     onForkMessage: (UIMessage) -> Unit,
     onDelete: (UIMessage) -> Unit,
     onUpdateMessage: (MessageNode) -> Unit,
@@ -343,6 +347,9 @@ private fun ChatListNormal(
         val compressionDividers = remember(conversation, displayNodes, showCompressedHistory) {
             conversation.compressionDividerLabels(displayNodes, showCompressedHistory)
         }
+        val repliedUserIds = remember(conversation.messageNodes) {
+            repliedUserMessageIds(conversation.messageNodes.map { it.currentMessage })
+        }
         val avatarEvent = conversation.currentMessages.lastOrNull { it.avatarInteraction() != null }
         val avatarTargetRole = if (avatarEvent?.avatarInteraction()?.target == "user") {
             MessageRole.USER
@@ -402,6 +409,8 @@ private fun ChatListNormal(
                     ) {
                         ChatMessage(
                             node = node,
+                            hasAssistantResponse = node.currentMessage.id in repliedUserIds,
+                            onQuote = onQuote,
                             reactions = reactionsByMessageId[node.currentMessage.id.toString()].orEmpty(),
                             reactionPresets = reactionPresets,
                             onReact = if (interactionAssistant?.enableMessageReactions == true &&

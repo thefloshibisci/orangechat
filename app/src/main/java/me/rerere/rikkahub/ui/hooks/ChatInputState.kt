@@ -55,6 +55,13 @@ class ChatInputState {
         textContent.setTextAndPlaceCursorAtEnd(text)
     }
 
+    fun quoteText(text: String): Boolean {
+        if (isEditing() || text.isBlank()) return false
+        val quoted = text.lineSequence().joinToString("\n") { "> $it" }
+        setMessageText(quoted + "\n\n" + textContent.text)
+        return true
+    }
+
     fun appendText(content: String) {
         textContent.setTextAndPlaceCursorAtEnd(textContent.text.toString() + content)
     }

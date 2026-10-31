@@ -64,6 +64,7 @@ import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -210,7 +211,7 @@ fun ColumnScope.ConversationList(
 }
 
 @Composable
-private fun DateHeaderItem(
+internal fun DateHeaderItem(
     label: String,
     drawerItemAlpha: Float,
     materialMode: DisplayMaterialMode,
@@ -228,7 +229,7 @@ private fun DateHeaderItem(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(min = ConversationRowHeight)
+                .heightIn(min = ConversationRowCompactHeight)
                 .padding(horizontal = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -242,8 +243,9 @@ private fun DateHeaderItem(
     }
 }
 
-/** Every row has the same height, whether or not the selected row shows its action icons. */
-private val ConversationRowHeight = 44.dp
+/** Only the selected row reserves space for summary/history actions. */
+private val ConversationRowHeight = 36.dp
+private val ConversationRowCompactHeight = 36.dp
 private val ConversationRowShape = RoundedCornerShape(percent = 50)
 private val ConversationRowActionSize = 32.dp
 private val ConversationRowIconSize = 18.dp
@@ -284,7 +286,7 @@ private fun PinnedHeader(
 }
 
 @Composable
-private fun ConversationItem(
+internal fun ConversationItem(
     conversation: Conversation,
     showCompressedHistory: Boolean = false,
     onToggleHistory: (Uuid) -> Unit = {},
@@ -314,6 +316,7 @@ private fun ConversationItem(
     ConversationListMaterialContainer(
         modifier = modifier
             .clip(itemShape)
+            .semantics { this.selected = selected }
             .combinedClickable(
                 interactionSource = interactionSource,
                 indication = LocalIndication.current,
@@ -328,11 +331,18 @@ private fun ConversationItem(
         materialMode = materialMode,
         hasBackground = selected,
         showBackdrop = true,
+        selected = selected,
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(min = ConversationRowHeight)
+                .heightIn(min = if (selected) ConversationRowHeight else ConversationRowCompactHeight)
+                .background(
+                    brush = Brush.horizontalGradient(
+                        colors = listOf(Color.White.copy(alpha = if (selected) 0f else 0.55f), Color.Transparent),
+                    ),
+                    shape = ConversationRowShape,
+                )
                 .padding(start = 12.dp, end = 6.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -342,6 +352,7 @@ private fun ConversationItem(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 color = MaterialTheme.colorScheme.onSurface,
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
             )
             if (selected && conversation.activeCompressedMessageNodeIds.isNotEmpty() && conversation.compressedSummary.isNotBlank()) {
                 val action = stringResource(if (showCompressedHistory) R.string.compression_hide_original else R.string.compression_show_original)
@@ -469,10 +480,24 @@ private fun ConversationListMaterialContainer(
     materialMode: DisplayMaterialMode,
     hasBackground: Boolean = true,
     showBackdrop: Boolean = false,
+    selected: Boolean = false,
     content: @Composable () -> Unit,
 ) {
     val backdrop = if (showBackdrop) LocalDrawerBackdrop.current else null
-    if (!hasBackground && backdrop == null) {
+    if (backdrop != null && !selected) {
+        // Image-backed rows need only one fine outline; gray glass overlays obscure the image.
+        Box(
+            modifier = modifier.clip(shape)
+                .drawerBackdrop()
+                .border(
+                    width = 0.5.dp,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f),
+                    shape = shape,
+                ),
+        ) { content() }
+        return
+    }
+    if (!hasBackground) {
         Box(modifier = modifier) {
             content()
         }
@@ -482,13 +507,13 @@ private fun ConversationListMaterialContainer(
     val onSurface = MaterialTheme.colorScheme.onSurface
     val borderModifier = when (materialMode) {
         DisplayMaterialMode.TRANSLUCENT -> Modifier.border(
-            width = 1.dp,
+            width = if (backdrop != null) 0.5.dp else 1.dp,
             color = onSurface.copy(alpha = 0.14f * drawerItemAlpha),
             shape = shape,
         )
 
         DisplayMaterialMode.GLASS -> Modifier.border(
-            width = 1.dp,
+            width = if (backdrop != null) 0.5.dp else 1.dp,
             color = onSurface.copy(alpha = 0.1f * drawerItemAlpha),
             shape = shape,
         )
@@ -498,8 +523,6 @@ private fun ConversationListMaterialContainer(
     }
 
     val backgroundColor = when {
-        // Over a background image every row is a pill; keep the tint light so the picture shows through.
-        backdrop != null -> color.copy(alpha = minOf(color.alpha, 0.5f) * drawerItemAlpha)
         materialMode == DisplayMaterialMode.FLAT ||
             materialMode == DisplayMaterialMode.FOLLOW_THEME -> color
 
@@ -509,7 +532,6 @@ private fun ConversationListMaterialContainer(
     Box(
         modifier = modifier
             .clip(shape)
-            .then(if (backdrop != null) Modifier.drawerBackdrop() else Modifier)
             .background(backgroundColor)
             .then(borderModifier),
     ) {
@@ -517,6 +539,7 @@ private fun ConversationListMaterialContainer(
             ConversationListGlassLayers(
                 shape = shape,
                 drawerItemAlpha = drawerItemAlpha,
+                borderWidth = if (backdrop != null) 0.5.dp else 1.dp,
             )
         }
         content()
@@ -527,6 +550,7 @@ private fun ConversationListMaterialContainer(
 private fun BoxScope.ConversationListGlassLayers(
     shape: Shape,
     drawerItemAlpha: Float,
+    borderWidth: androidx.compose.ui.unit.Dp = 1.dp,
 ) {
     val colorScheme = MaterialTheme.colorScheme
     Box(
@@ -561,7 +585,7 @@ private fun BoxScope.ConversationListGlassLayers(
         modifier = Modifier
             .matchParentSize()
             .border(
-                width = 1.dp,
+                width = borderWidth,
                 brush = Brush.verticalGradient(
                     colors = listOf(
                         colorScheme.onSurface.copy(alpha = 0.2f * drawerItemAlpha),
@@ -574,7 +598,7 @@ private fun BoxScope.ConversationListGlassLayers(
     )
 }
 
-/** A small icon button that does not reserve the 48dp touch frame, so it fits inside a 44dp row. */
+/** A compact icon button that fits inside the 36dp conversation row. */
 @Composable
 private fun CompactRowAction(onClick: () -> Unit, content: @Composable () -> Unit) {
     CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides 0.dp) {

@@ -9,7 +9,6 @@ package me.rerere.rikkahub.ui.pages.setting
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.widget.Toast
-import coil3.compose.AsyncImage
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -44,7 +43,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.nestedscroll.nestedScroll
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
@@ -140,14 +138,6 @@ fun SettingPage(vm: SettingVM = koinViewModel()) {
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        settingsBackground?.let { path ->
-            AsyncImage(
-                model = File(path),
-                contentDescription = null,
-                modifier = Modifier.fillMaxSize(),
-                contentScale = ContentScale.Crop,
-            )
-        }
 
     Scaffold(
         topBar = {

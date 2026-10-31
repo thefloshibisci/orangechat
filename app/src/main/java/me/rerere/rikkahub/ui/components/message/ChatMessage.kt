@@ -5,7 +5,18 @@
  */
 
 package me.rerere.rikkahub.ui.components.message
+
+import me.rerere.rikkahub.utils.quotedBubbleSelection
+import kotlinx.datetime.toJavaLocalDateTime
+import java.time.format.DateTimeFormatter
+
  
+import me.rerere.rikkahub.data.datastore.ChatDisplayMode
+import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.combinedClickable
 import android.content.Intent
 import android.graphics.RenderEffect as AndroidRenderEffect
 import android.graphics.Shader
@@ -38,7 +49,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
@@ -46,7 +56,9 @@ import androidx.compose.material3.ProvideTextStyle
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -115,9 +127,7 @@ import me.rerere.hugeicons.stroke.Video01
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.Screen
 import me.rerere.rikkahub.data.model.Assistant
-import me.rerere.rikkahub.data.model.AssistantAffectScope
 import me.rerere.rikkahub.data.model.MessageNode
-import me.rerere.rikkahub.data.model.replaceRegexes
 import me.rerere.rikkahub.ui.components.richtext.MarkdownBlock
 import me.rerere.rikkahub.ui.components.richtext.ZoomableAsyncImage
 import me.rerere.rikkahub.ui.components.richtext.buildMarkdownPreviewHtml
@@ -146,7 +156,6 @@ import me.rerere.rikkahub.utils.JsonInstant
 import me.rerere.rikkahub.utils.base64Encode
 import me.rerere.rikkahub.utils.openUrl
 import coil3.compose.AsyncImage
-import me.rerere.rikkahub.utils.splitIntoBubbleSegments
 import me.rerere.rikkahub.utils.urlDecode
 import java.util.Locale
 import kotlin.time.Duration.Companion.milliseconds
@@ -277,6 +286,8 @@ fun ChatMessage(
     onReact: ((String, String) -> Unit)? = null,
     onAvatarInteraction: ((UIMessage) -> Unit)? = null,
     avatarPulse: String? = null,
+    onQuote: ((String) -> Unit)? = null,
+    hasAssistantResponse: Boolean? = null,
 ) {
     val message = node.messages[node.selectIndex].let { original ->
         if (original.role == MessageRole.USER && original.parts.any {
@@ -292,7 +303,7 @@ fun ChatMessage(
             original
         }
     }
-    if (message.parts.isEmptyUIMessage()) return
+    if (message.parts.isEmptyUIMessage() && !loading) return
     if (message.avatarInteraction() != null) {
         Text(
             text = message.avatarInteractionText(),
@@ -308,6 +319,18 @@ fun ChatMessage(
         onAvatarInteraction?.let { callback -> { callback(message) } },
     )
     val settings = LocalDisplaySettings.current
+    val everyday = settings.chatDisplayMode == ChatDisplayMode.EVERYDAY
+    val timestamp = remember(message.createdAt, message.role, everyday, hasAssistantResponse) {
+        val time = message.createdAt.toJavaLocalDateTime().format(DateTimeFormatter.ofPattern("HH:mm"))
+        if (everyday && message.role == MessageRole.USER && hasAssistantResponse != null) {
+            "$time ${if (hasAssistantResponse) "已读" else "未读"}"
+        } else time
+    }
+    val quoteAuthor = if (message.role == MessageRole.USER) settings.userNickname.ifBlank { "我" }
+        else assistant?.name?.takeIf { it.isNotBlank() } ?: model?.displayName ?: "AI"
+    val quoteSelection = onQuote?.let { callback ->
+        { text: String -> callback(quotedBubbleSelection(quoteAuthor, text)) }
+    }
     val textStyle = LocalTextStyle.current.copy(
         fontSize = LocalTextStyle.current.fontSize * settings.fontSizeRatio,
         color = settings.chatTextColor?.let { it.toComposeColor() } ?: Color.Unspecified,
@@ -327,6 +350,7 @@ fun ChatMessage(
         }
     )
     var showActionsSheet by remember { mutableStateOf(false) }
+    var showProcessSheet by remember(message.id) { mutableStateOf(false) }
     var showReactionPicker by remember(message.id) { mutableStateOf(false) }
     var showSelectCopySheet by remember { mutableStateOf(false) }
     val navController = LocalNavController.current
@@ -337,7 +361,7 @@ fun ChatMessage(
         horizontalAlignment = if (message.role == MessageRole.USER) Alignment.End else Alignment.Start,
         verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
-        if (!message.parts.isEmptyUIMessage()) {
+        if (!everyday && !message.parts.isEmptyUIMessage()) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth(),
@@ -362,6 +386,21 @@ fun ChatMessage(
             }
         }
         ProvideTextStyle(textStyle) {
+            if (everyday && message.role == MessageRole.ASSISTANT && message.parts.none {
+                (it is UIMessagePart.Text && it.text.isNotBlank())
+                    || it is UIMessagePart.Image || it is UIMessagePart.Audio
+                    || it is UIMessagePart.VoiceMessage || it is UIMessagePart.Video || it is UIMessagePart.Document
+            }) {
+                ChatBubbleRow(
+                    enabled = true,
+                    isUser = false,
+                    avatar = { ChatBubbleAvatar(false, model, assistant, avatarGesture) },
+                    onDoubleClick = { showActionsSheet = true },
+                    timestamp = timestamp,
+                ) {
+                    Text(if (loading) "正在回复…" else "查看思考和工具记录", Modifier.padding(8.dp), color = colorScheme.onSurfaceVariant)
+                }
+            }
             MessagePartsBlock(
                 assistant = assistant,
                 role = message.role,
@@ -375,6 +414,11 @@ fun ChatMessage(
                 reactions = reactions,
                 reactionPresets = reactionPresets,
                 onReact = onReact,
+                bubbleAvatar = { ChatBubbleAvatar(message.role == MessageRole.USER, model, assistant, avatarGesture) },
+                onBubbleLongClick = quoteSelection?.let { quote -> { quote(message.parts.filterIsInstance<UIMessagePart.Text>().joinToString("\n") { it.text }.ifBlank { "[附件消息]" }) } },
+                onBubbleDoubleClick = { showActionsSheet = true },
+                onBubbleQuote = quoteSelection,
+                timestamp = timestamp,
             )
  
             message.translation?.let { translation ->
@@ -396,7 +440,7 @@ fun ChatMessage(
         }
  
         AnimatedVisibility(
-            visible = showActions,
+            visible = showActions && !everyday,
             enter = slideInVertically { it / 2 } + fadeIn(),
             exit = slideOutVertically { it / 2 } + fadeOut()
         ) {
@@ -418,8 +462,11 @@ fun ChatMessage(
             }
         }
  
-        ProvideTextStyle(textStyle) {
-            ChatMessageNerdLine(message = message)
+        if (everyday && !readOnly && node.messages.size > 1) {
+            ChatMessageBranchSelector(node = node, onUpdate = onUpdate)
+        }
+        if (!everyday) {
+            ProvideTextStyle(textStyle) { ChatMessageNerdLine(message = message) }
         }
     }
     if (showActionsSheet) {
@@ -437,6 +484,26 @@ fun ChatMessage(
             isFavorite = isFavorite,
             onToggleFavorite = onToggleFavorite,
             onReact = onReact?.let { { showReactionPicker = true } },
+            onMessageActions = {
+                if (everyday) {
+                    Column {
+                        ChatMessageActionButtons(
+                            readOnly = readOnly,
+                            message = message,
+                            node = node,
+                            onUpdate = onUpdate,
+                            onRegenerate = { showActionsSheet = false; onRegenerate() },
+                            onOpenActionSheet = { showActionsSheet = false },
+                            onTranslate = onTranslate,
+                            onClearTranslation = onClearTranslation,
+                            showMoreButton = false,
+                        )
+                    }
+                }
+            },
+            onShowProcess = if (everyday && message.parts.any {
+                it is UIMessagePart.Reasoning || it is UIMessagePart.Tool
+            }) ({ showProcessSheet = true }) else null,
             onWebViewPreview = {
                 val textContent = message.parts
                     .filterIsInstance<UIMessagePart.Text>()
@@ -459,7 +526,9 @@ fun ChatMessage(
 
     if (showReactionPicker && onReact != null) {
         MessageReactionPicker(
-            segments = reactionSegments(message, assistant ?: Assistant()),
+            segments = reactionSegments(message, (assistant ?: Assistant()).let {
+                if (everyday) it.copy(splitBubbleByLine = true, splitUserBubbleByLine = true) else it
+            }),
             presets = reactionPresets,
             onDismiss = { showReactionPicker = false },
             onSelect = { emoji, quote ->
@@ -469,6 +538,33 @@ fun ChatMessage(
         )
     }
  
+    if (showProcessSheet) {
+        ModalBottomSheet(onDismissRequest = { showProcessSheet = false },
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
+            CompositionLocalProvider(LocalDisplaySettings provides settings.copy(
+                chatDisplayMode = ChatDisplayMode.STANDARD,
+                showThinkingContent = true,
+            )) {
+                Column(
+                    modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Text("思考和工具记录", style = MaterialTheme.typography.titleMedium)
+                    MessagePartsBlock(
+                        assistant = assistant,
+                        role = message.role,
+                        model = model,
+                        parts = message.parts.filter { it is UIMessagePart.Reasoning || it is UIMessagePart.Tool },
+                        annotations = emptyList(),
+                        loading = loading,
+                        onToolApproval = onToolApproval,
+                        onToolAnswer = onToolAnswer,
+                    )
+                }
+            }
+        }
+    }
+
     if (showSelectCopySheet) {
         ChatMessageCopySheet(
             message = message,
@@ -494,6 +590,11 @@ private fun MessagePartsBlock(
     reactions: List<MessageReaction> = emptyList(),
     reactionPresets: List<String> = emptyList(),
     onReact: ((String, String) -> Unit)? = null,
+    bubbleAvatar: @Composable () -> Unit = {},
+    onBubbleLongClick: (() -> Unit)? = null,
+    onBubbleDoubleClick: (() -> Unit)? = null,
+    onBubbleQuote: ((String) -> Unit)? = null,
+    timestamp: String? = null,
 ) {
     val context = LocalContext.current
     val contentColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.65f)
@@ -501,7 +602,7 @@ private fun MessagePartsBlock(
     // 消息输出HapticFeedback
     val hapticFeedback = LocalHapticFeedback.current
     val displaySettings = LocalDisplaySettings.current
-    val bubbleAlpha = 1f - displaySettings.chatBubbleTransparency / 100f
+    val everyday = displaySettings.chatDisplayMode == ChatDisplayMode.EVERYDAY
     val partsState by rememberUpdatedState(parts)
  
     val handleClickCitation: (String) -> Unit = remember {
@@ -539,11 +640,12 @@ private fun MessagePartsBlock(
     groupedParts.fastForEach { block ->
         when (block) {
             is MessagePartBlock.ThinkingBlock -> {
-                if (block.steps.isNotEmpty()) {
-                    val isReasoningOnlyBlock = block.steps.fastAll { it is ThinkingStep.ReasoningStep }
+                val visibleSteps = block.steps.forChatDisplay(displaySettings.chatDisplayMode)
+                if (visibleSteps.isNotEmpty()) {
+                    val isReasoningOnlyBlock = visibleSteps.fastAll { it is ThinkingStep.ReasoningStep }
                     ChainOfThought(
                         modifier = Modifier.animateContentSize(),
-                        steps = block.steps,
+                        steps = visibleSteps,
                         collapsedAdaptiveWidth = isReasoningOnlyBlock,
                     ) { step ->
                         when (step) {
@@ -579,275 +681,158 @@ private fun MessagePartsBlock(
             }
 
             is MessagePartBlock.ContentBlock -> key(block.index) {
-                when (val part = block.part) {
-                    is UIMessagePart.Text -> {
-                        // 从显示文本中移除[zip:...]标记
-                        val displayText = remember(part.text) {
-                            part.text.replace(Regex("\\[zip:[^\\]]+\\]", RegexOption.IGNORE_CASE), "")
+                ChatBubbleRow(
+                    enabled = everyday && block.part !is UIMessagePart.Text,
+                    isUser = role == MessageRole.USER,
+                    avatar = bubbleAvatar,
+                    onLongClick = onBubbleLongClick, onDoubleClick = onBubbleDoubleClick,
+                    timestamp = timestamp,
+                ) {
+                    when (val part = block.part) {
+                        is UIMessagePart.Text -> {
+                            // 从显示文本中移除[zip:...]标记
+                            val displayText = remember(part.text) {
+                                part.text.replace(Regex("\\[zip:[^\\]]+\\]", RegexOption.IGNORE_CASE), "")
+                            }
+
+                            ChatMessageTextBubbles(
+                                text = displayText, role = role, assistant = assistant,
+                                reactions = reactions, reactionPresets = reactionPresets, onReact = onReact,
+                                onUserMessageClick = onUserMessageClick, onClickCitation = handleClickCitation,
+                                avatar = bubbleAvatar, onLongClick = onBubbleLongClick, onDoubleClick = onBubbleDoubleClick, onQuote = onBubbleQuote, timestamp = timestamp,
+                            )
                         }
-                        
-                        SelectionContainer {
-                            Column {
-                                if (role == MessageRole.USER) {
-                                    if (assistant?.splitUserBubbleByLine == true) {
-                                        // 分气泡: 按用户输入的换行 (\n) 拆成多个独立气泡,
-                                        // 拆分逻辑见 splitIntoBubbleSegments (会保护代码块/表格内部的换行)
-                                        val bubbleSegments = remember(displayText) {
-                                            displayText.splitIntoBubbleSegments()
-                                        }
-                                        Column(
-                                            verticalArrangement = Arrangement.spacedBy(4.dp),
-                                            horizontalAlignment = Alignment.End,
-                                        ) {
-                                            bubbleSegments.fastForEachIndexed { segIndex, segment ->
-                                                key(segIndex) {
-                                                    BubbleSurface(
-                                                        imagePath = displaySettings.userBubbleImagePath,
-                                                        cornerRadius = displaySettings.bubbleCornerRadius.dp,
-                                                        color = displaySettings.userBubbleColor?.let { it.toComposeColor() } ?: MaterialTheme.colorScheme.secondaryContainer,
-                                                        overlayEnabled = displaySettings.bubbleImageOverlayEnabled,
-                                                        bubbleAlpha = bubbleAlpha,
-                                                        onClick = { onUserMessageClick?.invoke() },
-                                                        enableLiveBubbleBlur = true,
-                                                    ) {
-                                                        MarkdownBlock(
-                                                            content = segment.replaceRegexes(
-                                                                assistant = assistant,
-                                                                scope = AssistantAffectScope.USER,
-                                                                visual = true,
-                                                            ),
-                                                            onClickCitation = handleClickCitation
-                                                        )
-                                                    }
-                                                    MessageReactionBar(segment, reactions, reactionPresets, onReact)
-                                                }
-                                            }
-                                        }
-                                    } else {
-                                        BubbleSurface(
-                                            imagePath = displaySettings.userBubbleImagePath,
-                                            cornerRadius = displaySettings.bubbleCornerRadius.dp,
-                                            color = displaySettings.userBubbleColor?.let { it.toComposeColor() } ?: MaterialTheme.colorScheme.secondaryContainer,
-                                            overlayEnabled = displaySettings.bubbleImageOverlayEnabled,
-                                            bubbleAlpha = bubbleAlpha,
-                                            onClick = { onUserMessageClick?.invoke() },
-                                            enableLiveBubbleBlur = true,
-                                        ) {
-                                            MarkdownBlock(
-                                                content = displayText.replaceRegexes(
-                                                    assistant = assistant,
-                                                    scope = AssistantAffectScope.USER,
-                                                    visual = true,
-                                                ),
-                                                onClickCitation = handleClickCitation
-                                            )
-                                            MessageReactionBar(displayText, reactions, reactionPresets, onReact)
-                                        }
-                                    }
-                                } else if (assistant?.splitBubbleByLine == true) {
-                                    // 分气泡: 按模型自己写的换行 (\n) 拆成多个独立气泡,
-                                    // 拆分逻辑见 splitIntoBubbleSegments (会保护代码块/表格内部的换行)
-                                    val bubbleSegments = remember(displayText) {
-                                        displayText.splitIntoBubbleSegments()
-                                    }
-                                    Column(
-                                        verticalArrangement = Arrangement.spacedBy(4.dp),
-                                    ) {
-                                        bubbleSegments.fastForEachIndexed { segIndex, segment ->
-                                            key(segIndex) {
-                                                if (displaySettings.showAssistantBubble) {
-                                                    BubbleSurface(
-                                                        imagePath = displaySettings.assistantBubbleImagePath,
-                                                        cornerRadius = displaySettings.bubbleCornerRadius.dp,
-                                                        color = displaySettings.assistantBubbleColor?.let { it.toComposeColor() } ?: MaterialTheme.colorScheme.surfaceContainerHigh,
-                                                        overlayEnabled = displaySettings.bubbleImageOverlayEnabled,
-                                                        bubbleAlpha = bubbleAlpha,
-                                                        enableLiveBubbleBlur = true,
-                                                    ) {
-                                                        MarkdownBlock(
-                                                            content = segment.replaceRegexes(
-                                                                assistant = assistant,
-                                                                scope = AssistantAffectScope.ASSISTANT,
-                                                                visual = true,
-                                                            ),
-                                                            onClickCitation = handleClickCitation,
-                                                        )
-                                                    }
-                                                    MessageReactionBar(segment, reactions, reactionPresets, onReact)
-                                                } else {
-                                                    MarkdownBlock(
-                                                        content = segment.replaceRegexes(
-                                                            assistant = assistant,
-                                                            scope = AssistantAffectScope.ASSISTANT,
-                                                            visual = true,
-                                                        ),
-                                                        onClickCitation = handleClickCitation,
-                                                        modifier = Modifier
-                                                            .animateContentSize()
-                                                    )
-                                                    MessageReactionBar(segment, reactions, reactionPresets, onReact)
-                                                }
-                                            }
-                                        }
-                                    }
-                                } else {
-                                    if (displaySettings.showAssistantBubble) {
-                                        BubbleSurface(
-                                            imagePath = displaySettings.assistantBubbleImagePath,
-                                            cornerRadius = displaySettings.bubbleCornerRadius.dp,
-                                            color = displaySettings.assistantBubbleColor?.let { it.toComposeColor() } ?: MaterialTheme.colorScheme.surfaceContainerHigh,
-                                            overlayEnabled = displaySettings.bubbleImageOverlayEnabled,
-                                            bubbleAlpha = bubbleAlpha,
-                                            enableLiveBubbleBlur = true,
-                                        ) {
-                                            MarkdownBlock(
-                                                content = displayText.replaceRegexes(
-                                                    assistant = assistant,
-                                                    scope = AssistantAffectScope.ASSISTANT,
-                                                    visual = true,
-                                                ),
-                                                onClickCitation = handleClickCitation,
-                                            )
-                                            MessageReactionBar(displayText, reactions, reactionPresets, onReact)
-                                        }
-                                    } else {
-                                        MarkdownBlock(
-                                            content = displayText.replaceRegexes(
-                                                assistant = assistant,
-                                                scope = AssistantAffectScope.ASSISTANT,
-                                                visual = true,
-                                            ),
-                                            onClickCitation = handleClickCitation,
-                                            modifier = Modifier
-                                                .animateContentSize()
+
+                        is UIMessagePart.Video -> {
+                            Surface(
+                                tonalElevation = 2.dp,
+                                modifier = Modifier.combinedClickable(
+                                    onLongClick = if (everyday) onBubbleLongClick else null,
+                                    onDoubleClick = if (everyday) onBubbleDoubleClick else null,
+                                    onClick = {
+                                        val intent = Intent(Intent.ACTION_VIEW)
+                                        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                        intent.data = FileProvider.getUriForFile(
+                                            context,
+                                            "${context.packageName}.fileprovider",
+                                            part.url.toUri().toFile()
                                         )
-                                        MessageReactionBar(displayText, reactions, reactionPresets, onReact)
-                                    }
-                                }
-                                
-                            }
-                        }
-                    }
- 
-                    is UIMessagePart.Video -> {
-                        Surface(
-                            tonalElevation = 2.dp,
-                            onClick = {
-                                val intent = Intent(Intent.ACTION_VIEW)
-                                intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                intent.data = FileProvider.getUriForFile(
-                                    context,
-                                    "${context.packageName}.fileprovider",
-                                    part.url.toUri().toFile()
-                                )
-                                val chooserIndent = Intent.createChooser(intent, null)
-                                context.startActivity(chooserIndent)
-                            },
-                            modifier = Modifier,
-                            shape = RoundedCornerShape(8.dp),
-                        ) {
-                            Box(modifier = Modifier.size(72.dp), contentAlignment = Alignment.Center) {
-                                Icon(HugeIcons.Video01, null)
-                            }
-                        }
-                    }
- 
-                    is UIMessagePart.Audio -> {
-                        AudioPlayerBubble(url = part.url)
-                    }
- 
-                    is UIMessagePart.VoiceMessage -> {
-                        VoiceMessageBubble(
-                            voiceMessage = part,
-                            isUser = role == MessageRole.USER,
-                        )
-                    }
- 
-                    is UIMessagePart.Image -> {
-                        val isImageLoading =
-                            part.url.isBlank() || part.url.matches(Regex("^data:image/[^;]*;base64,\\s*$"))
-                        if (isImageLoading) {
-                            Box(
-                                modifier = Modifier
-                                    .size(72.dp)
-                                    .clip(MaterialTheme.shapes.medium)
-                                    .background(MaterialTheme.colorScheme.surfaceVariant)
-                                    .shimmer(isLoading = true)
-                            )
-                        } else {
-                            ZoomableAsyncImage(
-                                model = part.url,
-                                contentDescription = null,
-                                modifier = Modifier
-                                    .clip(MaterialTheme.shapes.medium)
-                                    .height(72.dp)
-                            )
-                        }
-                    }
- 
-                    is UIMessagePart.Document -> {
-                        Surface(
-                            tonalElevation = 2.dp,
-                            onClick = {
-                                val intent = Intent(Intent.ACTION_VIEW)
-                                intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                intent.data = FileProvider.getUriForFile(
-                                    context,
-                                    "${context.packageName}.fileprovider",
-                                    part.url.toUri().toFile()
-                                )
-                                val chooserIndent = Intent.createChooser(intent, null)
-                                context.startActivity(chooserIndent)
-                            },
-                            modifier = Modifier,
-                            shape = RoundedCornerShape(50),
-                            color = MaterialTheme.colorScheme.tertiaryContainer
-                        ) {
-                            ProvideTextStyle(MaterialTheme.typography.labelSmall) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    when (part.mime) {
-                                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document" -> {
-                                            Icon(
-                                                painter = painterResource(R.drawable.docx),
-                                                contentDescription = null,
-                                                modifier = Modifier.size(20.dp)
-                                            )
-                                        }
- 
-                                        "application/pdf" -> {
-                                            Icon(
-                                                painter = painterResource(R.drawable.pdf),
-                                                contentDescription = null,
-                                                modifier = Modifier.size(20.dp)
-                                            )
-                                        }
- 
-                                        else -> {
-                                            Icon(
-                                                imageVector = HugeIcons.File02,
-                                                contentDescription = null,
-                                                modifier = Modifier.size(20.dp)
-                                            )
-                                        }
-                                    }
- 
-                                    Text(
-                                        text = part.fileName,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                        modifier = Modifier.widthIn(max = 200.dp)
-                                    )
+                                        val chooserIndent = Intent.createChooser(intent, null)
+                                        context.startActivity(chooserIndent)
+                                    },
+                                ),
+                                shape = RoundedCornerShape(8.dp),
+                            ) {
+                                Box(modifier = Modifier.size(72.dp), contentAlignment = Alignment.Center) {
+                                    Icon(HugeIcons.Video01, null)
                                 }
                             }
                         }
-                    }
- 
-                    else -> {
-                        // Skip unknown part types (e.g., deprecated ToolCall, ToolResult, Search)
+
+                        is UIMessagePart.Audio -> {
+                            AudioPlayerBubble(url = part.url, onLongClick = if (everyday) onBubbleLongClick else null, onDoubleClick = if (everyday) onBubbleDoubleClick else null)
+                        }
+
+                        is UIMessagePart.VoiceMessage -> {
+                            VoiceMessageBubble(
+                                voiceMessage = part,
+                                isUser = role == MessageRole.USER,
+                                onLongClick = if (everyday) onBubbleLongClick else null,
+                                    onDoubleClick = if (everyday) onBubbleDoubleClick else null,
+                            )
+                        }
+
+                        is UIMessagePart.Image -> {
+                            val isImageLoading =
+                                part.url.isBlank() || part.url.matches(Regex("^data:image/[^;]*;base64,\\s*$"))
+                            if (isImageLoading) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(72.dp)
+                                        .clip(MaterialTheme.shapes.medium)
+                                        .background(MaterialTheme.colorScheme.surfaceVariant)
+                                        .shimmer(isLoading = true)
+                                )
+                            } else {
+                                ZoomableAsyncImage(
+                                    model = part.url,
+                                    contentDescription = null,
+                                    onLongClick = if (everyday) onBubbleLongClick else null,
+                                    onDoubleClick = if (everyday) onBubbleDoubleClick else null,
+                                    modifier = Modifier
+                                        .clip(MaterialTheme.shapes.medium)
+                                        .height(72.dp)
+                                )
+                            }
+                        }
+
+                        is UIMessagePart.Document -> {
+                            Surface(
+                                tonalElevation = 2.dp,
+                                modifier = Modifier.combinedClickable(
+                                    onLongClick = if (everyday) onBubbleLongClick else null,
+                                    onDoubleClick = if (everyday) onBubbleDoubleClick else null,
+                                    onClick = {
+                                        val intent = Intent(Intent.ACTION_VIEW)
+                                        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                        intent.data = FileProvider.getUriForFile(
+                                            context,
+                                            "${context.packageName}.fileprovider",
+                                            part.url.toUri().toFile()
+                                        )
+                                        val chooserIndent = Intent.createChooser(intent, null)
+                                        context.startActivity(chooserIndent)
+                                    },
+                                ),
+                                shape = RoundedCornerShape(50),
+                                color = MaterialTheme.colorScheme.tertiaryContainer
+                            ) {
+                                ProvideTextStyle(MaterialTheme.typography.labelSmall) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        when (part.mime) {
+                                            "application/vnd.openxmlformats-officedocument.wordprocessingml.document" -> {
+                                                Icon(
+                                                    painter = painterResource(R.drawable.docx),
+                                                    contentDescription = null,
+                                                    modifier = Modifier.size(20.dp)
+                                                )
+                                            }
+
+                                            "application/pdf" -> {
+                                                Icon(
+                                                    painter = painterResource(R.drawable.pdf),
+                                                    contentDescription = null,
+                                                    modifier = Modifier.size(20.dp)
+                                                )
+                                            }
+
+                                            else -> {
+                                                Icon(
+                                                    imageVector = HugeIcons.File02,
+                                                    contentDescription = null,
+                                                    modifier = Modifier.size(20.dp)
+                                                )
+                                            }
+                                        }
+
+                                        Text(
+                                            text = part.fileName,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            modifier = Modifier.widthIn(max = 200.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        else -> {
+                            // Skip unknown part types (e.g., deprecated ToolCall, ToolResult, Search)
+                        }
                     }
                 }
             }
@@ -921,7 +906,7 @@ private fun MessagePartsBlock(
 }
  
 @Composable
-private fun BubbleSurface(
+internal fun BubbleSurface(
     imagePath: String,
     cornerRadius: Dp,
     color: Color,
@@ -930,6 +915,8 @@ private fun BubbleSurface(
     onClick: (() -> Unit)? = null,
     // 本轮原型：用户与助手的普通文本气泡传 true（最终由 LiveBubbleBlurContext 与 final 条件决定）
     enableLiveBubbleBlur: Boolean = false,
+    onLongClick: (() -> Unit)? = null,
+    onDoubleClick: (() -> Unit)? = null,
     content: @Composable () -> Unit,
 ) {
     val materialMode = LocalMaterialMode.current
@@ -966,6 +953,8 @@ private fun BubbleSurface(
                 }
             }
             .graphicsLayer {
+                compositingStrategy = CompositingStrategy.Offscreen
+                clip = true
                 renderEffect = cachedBlurEffect
             }
             .drawBehind {
@@ -1136,13 +1125,18 @@ private fun BubbleSurface(
         }
     }
     val shape = RoundedCornerShape(cornerRadius)
+    val clickModifier = when {
+        onLongClick != null || onDoubleClick != null -> Modifier.combinedClickable(onClick = onClick ?: {}, onLongClick = onLongClick, onDoubleClick = onDoubleClick)
+        onClick != null -> Modifier.clickable(onClick = onClick)
+        else -> Modifier
+    }
     val hasImage = imagePath.isNotBlank() && java.io.File(imagePath).exists()
     if (materialMode == DisplayMaterialMode.GLASS) {
         Box(
             modifier = Modifier
                 .animateContentSize()
                 .clip(shape)
-                .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
+                .then(clickModifier)
                 .border(1.dp, glassBorderColor, shape)
         ) {
             if (finalLiveBubbleBlurEnabled) {
@@ -1206,7 +1200,7 @@ private fun BubbleSurface(
             modifier = Modifier
                 .animateContentSize()
                 .clip(shape)
-                .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
+                .then(clickModifier)
                 .then(
                     if (materialMode == DisplayMaterialMode.TRANSLUCENT) {
                         Modifier.border(1.dp, translucentBorderColor, shape)
@@ -1232,7 +1226,7 @@ private fun BubbleSurface(
         }
     } else {
         Surface(
-            modifier = Modifier.animateContentSize(),
+            modifier = Modifier.animateContentSize().then(clickModifier),
             shape = shape,
             color = color.copy(alpha = effectiveAlpha),
             border = if (materialMode == DisplayMaterialMode.TRANSLUCENT) {
@@ -1240,7 +1234,6 @@ private fun BubbleSurface(
             } else {
                 null
             },
-            onClick = onClick ?: {},
         ) {
             Column(modifier = Modifier.padding(8.dp)) { content() }
         }
@@ -1253,7 +1246,7 @@ private const val GLASS_BUBBLE_BORDER_ALPHA = 0.24f
  
 @Composable
 @Suppress("UnusedCrossTarget")
-internal fun AudioPlayerBubble(url: String) {
+internal fun AudioPlayerBubble(url: String, onLongClick: (() -> Unit)? = null, onDoubleClick: (() -> Unit)? = null) {
     val context = LocalContext.current
     var isPlaying by remember { mutableStateOf(false) }
     var durationMs by remember { mutableIntStateOf(0) }
@@ -1325,7 +1318,7 @@ internal fun AudioPlayerBubble(url: String) {
                 .size(36.dp)
                 .clip(CircleShape)
                 .background(MaterialTheme.colorScheme.primary)
-                .clickable {
+                .combinedClickable(onLongClick = onLongClick, onDoubleClick = onDoubleClick, onClick = {
                     if (isPlaying) {
                         mediaPlayer?.pause()
                         isPlaying = false
@@ -1353,7 +1346,7 @@ internal fun AudioPlayerBubble(url: String) {
                             isPlaying = true
                         }
                     }
-                },
+                }),
             contentAlignment = Alignment.Center
         ) {
             Icon(
@@ -1371,7 +1364,7 @@ internal fun AudioPlayerBubble(url: String) {
             modifier = Modifier
                 .weight(1f)
                 .height(28.dp)
-                .clickable { /* click waveform to seek (optional future) */ }
+                .combinedClickable(onClick = {}, onLongClick = onLongClick, onDoubleClick = onDoubleClick)
         ) {
             val barCount = animatedBars.value.size
             val totalWidth = size.width
@@ -1416,6 +1409,8 @@ internal fun AudioPlayerBubble(url: String) {
 internal fun VoiceMessageBubble(
     voiceMessage: UIMessagePart.VoiceMessage,
     isUser: Boolean,
+    onLongClick: (() -> Unit)? = null,
+    onDoubleClick: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
     var isPlaying by remember { mutableStateOf(false) }
@@ -1442,10 +1437,7 @@ internal fun VoiceMessageBubble(
     }
  
     Surface(
-        shape = RoundedCornerShape(16.dp),
-        color = if (isUser) MaterialTheme.colorScheme.secondaryContainer
-        else MaterialTheme.colorScheme.tertiaryContainer,
-        onClick = {
+        modifier = Modifier.combinedClickable(onLongClick = onLongClick, onDoubleClick = onDoubleClick, onClick = {
             if (isPlaying) {
                 mediaPlayer?.let {
                     it.stop()
@@ -1468,7 +1460,10 @@ internal fun VoiceMessageBubble(
                     // File might not exist
                 }
             }
-        },
+        }),
+        shape = RoundedCornerShape(16.dp),
+        color = if (isUser) MaterialTheme.colorScheme.secondaryContainer
+        else MaterialTheme.colorScheme.tertiaryContainer,
     ) {
         Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
             Row(

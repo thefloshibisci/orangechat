@@ -6,6 +6,7 @@
 
 package me.rerere.rikkahub.ui.pages.chat
 
+import me.rerere.rikkahub.ui.theme.LocalDarkMode
 import androidx.compose.foundation.background
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Box
@@ -58,6 +59,8 @@ fun rememberChatBackgroundVisuals(setting: Settings): ChatBackgroundVisuals {
     return ChatBackgroundVisuals(
         baseColor = baseColor,
         imageAlpha = assistant.backgroundOpacity.coerceIn(0f, 1f),
+        gradientTopAlpha = if (LocalDarkMode.current) 0.2f else 0f,
+        gradientBottomAlpha = if (LocalDarkMode.current) 0.5f else 0f,
     )
 }
 

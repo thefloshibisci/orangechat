@@ -46,6 +46,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import java.io.File
 import me.rerere.rikkahub.data.datastore.DisplaySetting
+import me.rerere.rikkahub.ui.pages.setting.components.BubbleFrameSettingsCard
 import me.rerere.rikkahub.ui.components.nav.BackButton
 import me.rerere.rikkahub.ui.components.ui.CardGroup
 import me.rerere.rikkahub.ui.theme.CustomColors
@@ -357,6 +358,17 @@ fun SettingDisplayIllustrationPage(vm: SettingVM = koinViewModel()) {
                             )
                         },
                     )
+                }
+            }
+
+            item {
+                BubbleFrameSettingsCard(true, displaySetting.userBubbleFrame) {
+                    updateDisplaySetting(displaySetting.copy(userBubbleFrame = it))
+                }
+            }
+            item {
+                BubbleFrameSettingsCard(false, displaySetting.assistantBubbleFrame) {
+                    updateDisplaySetting(displaySetting.copy(assistantBubbleFrame = it))
                 }
             }
 

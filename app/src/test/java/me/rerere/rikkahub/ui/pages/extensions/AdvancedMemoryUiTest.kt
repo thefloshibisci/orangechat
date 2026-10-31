@@ -52,11 +52,45 @@ class AdvancedMemoryUiTest {
         compose.onNodeWithText("当前助手：助手甲").performScrollTo().performClick()
         compose.onNodeWithText("助手乙").performClick()
         compose.onNodeWithText("配置连接").performScrollTo().assertIsEnabled()
+        compose.onNodeWithText("记忆使用说明").assertDoesNotExist()
+        compose.onNodeWithText("使用说明").performScrollTo().performClick()
+        compose.onNodeWithText("记忆使用说明").assertIsDisplayed()
+        compose.onNodeWithText("旧 Supabase 连接已停用，云端原有数据保留。").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("知道了").performClick()
+        compose.onNodeWithText("记忆使用说明").assertDoesNotExist()
+        compose.onNodeWithText("当前助手：助手乙").performScrollTo().assertIsDisplayed()
         compose.runOnIdle {
             val view = compose.activity.window.decorView
             val bitmap = Bitmap.createBitmap(view.width, view.height, Bitmap.Config.ARGB_8888)
             view.draw(Canvas(bitmap))
             val file = File("build/test-screenshots/advanced-memory.png")
+            file.parentFile?.mkdirs()
+            file.outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        }
+    }
+
+    @Config(qualifiers = "w411dp-h891dp-mdpi")
+    @Test fun `phone width preview uses shared settings typography`() {
+        val assistant = Assistant(name = "助手")
+        compose.setContent {
+            MemoryTestTheme {
+                val colors = me.rerere.rikkahub.ui.theme.presets.LiquidGlassThemePreset.getColorScheme(false)
+                MaterialTheme(colorScheme = colors, typography = me.rerere.rikkahub.ui.theme.Typography) {
+                    androidx.compose.material3.Surface(color = colors.surfaceContainer) {
+                        AdvancedMemoryContent(listOf(assistant), assistant.id.toString()) {
+                            SereinHookControls(it, SereinHookConfig(assistantId = it.id.toString()), {}, { "synthetic" })
+                        }
+                    }
+                }
+            }
+        }
+        compose.onNodeWithText("当前助手：助手").assertIsDisplayed()
+        compose.onNodeWithText("使用说明").assertIsDisplayed()
+        compose.runOnIdle {
+            val view = compose.activity.window.decorView
+            val bitmap = Bitmap.createBitmap(view.width, view.height, Bitmap.Config.ARGB_8888)
+            view.draw(Canvas(bitmap))
+            val file = File("build/test-screenshots/advanced-memory-phone.png")
             file.parentFile?.mkdirs()
             file.outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
         }
