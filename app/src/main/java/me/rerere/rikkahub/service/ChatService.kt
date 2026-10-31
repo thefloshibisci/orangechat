@@ -1404,6 +1404,20 @@ class ChatService(
             activitySnapshot = activitySnapshot.filter {
                 it.claimedByUserId != null || (activityCutoff != null && it.timestamp <= activityCutoff)
             }
+            // Bind before sending. Tool continuations, cancellation, or empty tool outputs must not
+            // move the same activity snapshot to a later user turn.
+            if (activityUserId != null && activityCutoff != null && messageRange == null) {
+                val pendingIds = activitySnapshot.asSequence()
+                    .filter { it.claimedByUserId == null && it.timestamp <= activityCutoff }
+                    .map { it.id }
+                    .toSet()
+                if (pendingIds.isNotEmpty()) {
+                    runCatching { activityStore.claim(pendingIds, activityUserId) }
+                        .onFailure { Log.w(TAG, "Could not bind proactive activity to user turn", it) }
+                    activitySnapshot = runCatching { activityStore.snapshot() }.getOrDefault(activitySnapshot)
+                        .filter { it.claimedByUserId != null || it.timestamp <= activityCutoff }
+                }
+            }
             activityTransformer = me.rerere.rikkahub.data.service.ProactiveActivityTransformer(
                 activitySnapshot, activityUserId,
             )
@@ -1571,19 +1585,6 @@ class ChatService(
                 } catch (e: CancellationException) { throw e }
                 catch (_: Exception) { Log.w(TAG, "Could not record Serein recall delivery") }
             }
-            // A finished reply that used tools still saw the records. Leaving them pending would
-            // move them to the next user turn and rewrite this one, breaking the prefix cache.
-            if (activityUserId != null && completedReply?.role == MessageRole.ASSISTANT &&
-                completedReply.finishedAt != null && completedReply.getTools().all { it.isExecuted }
-            ) {
-                runCatching {
-                    activityStore.claim(
-                        activityTransformer?.deliveredPendingIds.orEmpty(),
-                        activityUserId,
-                    )
-                }.onFailure { Log.w(TAG, "Could not acknowledge proactive activity records", it) }
-            }
-
             // 自动唤起网易云音乐：扫描刚完成的 assistant 文本中的 orpheus:// scheme
             try {
                 val lastAssistantMessage = finalConversation.currentMessages.lastOrNull { it.role == MessageRole.ASSISTANT }

@@ -116,4 +116,23 @@ class ProactiveActivityTest {
         val trimmed = trimProactiveActivities(claimed + pendings, maxPending = 2, maxClaimed = 10)
         assertEquals(listOf("c0", "c1", "c2", "p3", "p4"), trimmed.map { it.id })
     }
+
+    @Test fun `claimed records are never evicted by default`() {
+        val records = (0..1100).map {
+            ProactiveActivity("c$it", it.toLong(), "已发送主动消息", claimedByUserId = "user-$it")
+        }
+        assertEquals(records, trimProactiveActivities(records))
+    }
+
+    @Test fun `tool retry keeps activity bound to the same user turn`() {
+        val user = UIMessage.user("检查一下")
+        val bound = claimProactiveActivities(listOf(pending), setOf(pending.id), user.id.toString())
+        val firstRequest = injectProactiveActivities(listOf(user), bound, user.id.toString())
+        val toolRetry = injectProactiveActivities(listOf(user), bound, user.id.toString())
+        val nextTurn = UIMessage.user("继续")
+        val laterRequest = injectProactiveActivities(listOf(user, nextTurn), bound, nextTurn.id.toString())
+        assertEquals(firstRequest, toolRetry)
+        assertEquals(firstRequest.first(), laterRequest.first())
+        assertEquals(nextTurn, laterRequest.last())
+    }
 }

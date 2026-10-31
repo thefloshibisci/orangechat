@@ -61,16 +61,8 @@ internal class ProactiveActivityTransformer(
     private val records: List<ProactiveActivity>,
     private val pendingUserId: String?,
 ) : InputMessageTransformer {
-    val deliveredPendingIds = linkedSetOf<String>()
-
-    override suspend fun transform(ctx: TransformerContext, messages: List<UIMessage>): List<UIMessage> {
-        messages.lastOrNull { it.role == MessageRole.USER && it.id.toString() == pendingUserId }?.let { user ->
-            val cutoff = user.createdAt.toInstant(TimeZone.currentSystemDefault()).toEpochMilliseconds()
-            records.filter { it.claimedByUserId == null && it.timestamp <= cutoff }
-                .mapTo(deliveredPendingIds) { it.id }
-        }
-        return injectProactiveActivities(messages, records, pendingUserId)
-    }
+    override suspend fun transform(ctx: TransformerContext, messages: List<UIMessage>): List<UIMessage> =
+        injectProactiveActivities(messages, records, pendingUserId)
 }
 
 /**
@@ -81,10 +73,11 @@ internal class ProactiveActivityTransformer(
 internal fun trimProactiveActivities(
     records: List<ProactiveActivity>,
     maxPending: Int = 64,
-    maxClaimed: Int = 1024,
+    maxClaimed: Int? = null,
 ): List<ProactiveActivity> {
     val keepPending = records.filter { it.claimedByUserId == null }.takeLast(maxPending).mapTo(HashSet()) { it.id }
-    val keepClaimed = records.filter { it.claimedByUserId != null }.takeLast(maxClaimed).mapTo(HashSet()) { it.id }
+    val claimed = records.filter { it.claimedByUserId != null }
+    val keepClaimed = (maxClaimed?.let(claimed::takeLast) ?: claimed).mapTo(HashSet()) { it.id }
     return records.filter { it.id in keepPending || it.id in keepClaimed }
 }
 
