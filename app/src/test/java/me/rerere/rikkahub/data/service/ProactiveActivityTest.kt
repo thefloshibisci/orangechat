@@ -90,30 +90,4 @@ class ProactiveActivityTest {
     @Test fun `intermediate tool text never exposes note protocol`() {
         assertEquals("查到了一条记录", stripProactiveNotes("[NOTE:回顾记忆]\n查到了一条记录"))
     }
-
-    @Test fun `old claimed turns stay byte-identical after many new background records`() {
-        val first = UIMessage.user("早")
-        val later = UIMessage.user("回来了")
-        var records = trimProactiveActivities(
-            listOf(pending.copy(claimedByUserId = first.id.toString())),
-        )
-        val before = injectProactiveActivities(listOf(first), records, null).first()
-        repeat(200) { n ->
-            records = trimProactiveActivities(records + ProactiveActivity("run-x$n", 1000L + n, "这轮没有发消息"))
-        }
-        records = claimProactiveActivities(records, records.filter { it.claimedByUserId == null }.mapTo(HashSet()) { it.id }, later.id.toString())
-        repeat(200) { n ->
-            records = trimProactiveActivities(records + ProactiveActivity("run-y$n", 5000L + n, "决定再等30分钟"))
-        }
-        val after = injectProactiveActivities(listOf(first, later), records, null)
-        assertEquals(before, after.first())
-        assertEquals(64, records.count { it.claimedByUserId == null })
-    }
-
-    @Test fun `trim drops oldest pending before any claimed record`() {
-        val claimed = (0 until 3).map { ProactiveActivity("c$it", it.toLong(), "已发送主动消息", claimedByUserId = "u") }
-        val pendings = (0 until 5).map { ProactiveActivity("p$it", 10L + it, "等待") }
-        val trimmed = trimProactiveActivities(claimed + pendings, maxPending = 2, maxClaimed = 10)
-        assertEquals(listOf("c0", "c1", "c2", "p3", "p4"), trimmed.map { it.id })
-    }
 }

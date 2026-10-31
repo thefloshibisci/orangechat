@@ -1571,10 +1571,8 @@ class ChatService(
                 } catch (e: CancellationException) { throw e }
                 catch (_: Exception) { Log.w(TAG, "Could not record Serein recall delivery") }
             }
-            // A finished reply that used tools still saw the records. Leaving them pending would
-            // move them to the next user turn and rewrite this one, breaking the prefix cache.
             if (activityUserId != null && completedReply?.role == MessageRole.ASSISTANT &&
-                completedReply.finishedAt != null && completedReply.getTools().all { it.isExecuted }
+                completedReply.finishedAt != null && completedReply.getTools().isEmpty()
             ) {
                 runCatching {
                     activityStore.claim(
