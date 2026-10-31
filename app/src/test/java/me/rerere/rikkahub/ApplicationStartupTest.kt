@@ -139,7 +139,9 @@ class ApplicationStartupTest {
         } finally { controller.pause().stop().destroy() }
     }
 
-    @Test fun `fresh Application reaches its startup coordinator`() {
+    @Test
+    @Config(shadows = [HostQuickJsLoader::class, FreshStartupApplication::class])
+    fun `fresh Application reaches its startup coordinator`() {
         assertNotNull((RuntimeEnvironment.getApplication() as RikkaHubApp).startupRecovery)
         val controller = Robolectric.buildActivity(RouteActivity::class.java).setup()
         try {
@@ -154,6 +156,38 @@ class ApplicationStartupTest {
             shadowOf(Looper.getMainLooper()).idle()
             assertNotNull(controller.get().window.decorView)
         } finally { controller.pause().stop().destroy() }
+    }
+}
+
+/** Fresh launch now reaches ChatPage directly, so supply Android-only host fixtures as well. */
+@Implements(RikkaHubApp::class)
+class FreshStartupApplication : org.robolectric.shadows.ShadowApplication() {
+    @RealObject private lateinit var app: RikkaHubApp
+
+    @Implementation fun onCreate() {
+        // Android fills this from the installed APK; Robolectric leaves it null.
+        app.applicationInfo.nativeLibraryDir = File(app.cacheDir, "host-native-libs")
+            .apply { mkdirs() }.absolutePath
+        // Same real Room/DAO fixture as recovery tests: only the APK-native tokenizer is replaced.
+        dataSourceModule.single<AppDatabase> {
+            Room.databaseBuilder(app, AppDatabase::class.java, "startup-test")
+                .allowMainThreadQueries()
+                .addCallback(object : RoomDatabase.Callback() {
+                    override fun onCreate(db: SupportSQLiteDatabase) {
+                        db.execSQL("CREATE TABLE message_fts(text TEXT, node_id TEXT, message_id TEXT, conversation_id TEXT, title TEXT, update_at TEXT)")
+                    }
+                }).build()
+        }
+        Shadow.directlyOn<Unit, RikkaHubApp>(app, RikkaHubApp::class.java, "onCreate")
+    }
+
+    @Implementation fun onTerminate() {
+        try {
+            Shadow.directlyOn<Unit, RikkaHubApp>(app, RikkaHubApp::class.java, "onTerminate")
+        } finally {
+            GlobalContext.getOrNull()?.getOrNull<AppDatabase>()?.close()
+            org.koin.core.context.stopKoin()
+        }
     }
 }
 
