@@ -115,6 +115,13 @@ import me.rerere.rikkahub.data.interaction.avatarInteraction
 import me.rerere.rikkahub.service.ChatError
 import me.rerere.rikkahub.ui.components.message.ChatMessage
 import me.rerere.rikkahub.utils.repliedUserMessageIds
+import me.rerere.rikkahub.utils.readAssistantMessageIds
+import me.rerere.rikkahub.utils.visibleAssistantMessageIds
+import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
+import me.rerere.rikkahub.utils.ChatReadMarks
 import me.rerere.rikkahub.ui.context.LocalDisplaySettings
 import me.rerere.rikkahub.ui.theme.LocalMaterialMode
 import me.rerere.rikkahub.ui.components.ui.ErrorCardsDisplay
@@ -350,6 +357,31 @@ private fun ChatListNormal(
         val repliedUserIds = remember(conversation.messageNodes) {
             repliedUserMessageIds(conversation.messageNodes.map { it.currentMessage })
         }
+        val repliedAssistantIds = remember(conversation.messageNodes) {
+            readAssistantMessageIds(conversation.messageNodes.map { it.currentMessage })
+        }
+        val readContext = LocalContext.current
+        var seenMessageIds by remember(conversation.id) { mutableStateOf(ChatReadMarks.get(readContext, conversation.id)) }
+        val lifecycleOwner = LocalLifecycleOwner.current
+        val displayNodesById = remember(displayNodes) { displayNodes.associate { it.id to it.currentMessage } }
+        val currentDisplayNodesById by rememberUpdatedState(displayNodesById)
+        LaunchedEffect(conversation.id, lifecycleOwner) {
+            lifecycleOwner.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+                snapshotFlow {
+                    visibleAssistantMessageIds(currentDisplayNodesById, state.layoutInfo.visibleItemsInfo.map { it.key })
+                }.collect { visibleIds ->
+                    if (!seenMessageIds.containsAll(visibleIds)) {
+                        seenMessageIds = ChatReadMarks.record(readContext, conversation.id, visibleIds)
+                    }
+                }
+            }
+        }
+        // Read = shown on screen in the foreground, or already followed by a real user turn.
+        val readAssistantIds = remember(repliedAssistantIds, displayNodes, seenMessageIds) {
+            repliedAssistantIds + displayNodes.map { it.currentMessage }.filter {
+                it.role == MessageRole.ASSISTANT && it.id.toString() in seenMessageIds
+            }.map { it.id }
+        }
         val avatarEvent = conversation.currentMessages.lastOrNull { it.avatarInteraction() != null }
         val avatarTargetRole = if (avatarEvent?.avatarInteraction()?.target == "user") {
             MessageRole.USER
@@ -410,6 +442,7 @@ private fun ChatListNormal(
                         ChatMessage(
                             node = node,
                             hasAssistantResponse = node.currentMessage.id in repliedUserIds,
+                            hasUserRead = node.currentMessage.id in readAssistantIds,
                             onQuote = onQuote,
                             reactions = reactionsByMessageId[node.currentMessage.id.toString()].orEmpty(),
                             reactionPresets = reactionPresets,

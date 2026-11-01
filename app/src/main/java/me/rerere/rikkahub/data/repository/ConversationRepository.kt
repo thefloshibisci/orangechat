@@ -703,6 +703,7 @@ class ConversationRepository(
         undoAttachmentNames.remove(conversation.id)
         undoRawArchives.remove(conversation.id)
         filesManager.deleteExtraInfoSnapshots(conversation.id)
+        filesManager.deleteChatReadMark(conversation.id)
         deleteUnreferencedChatFiles(conversation.files.mapTo(mutableSetOf()) { it.toString() })
     }
 

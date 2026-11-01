@@ -92,4 +92,12 @@ class ChatCompletionsReliabilityTest {
         assertEquals("{}", args)
         assertEquals("", first.input)
     }
+
+    @Test
+    fun `cached tokens fall back to deepseek hit count`() {
+        val legacy = api.parseStreamChunk(obj("""{"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":1,"total_tokens":11,"prompt_cache_hit_tokens":8,"prompt_cache_miss_tokens":2}}"""))
+        assertEquals(8, legacy.usage!!.cachedTokens)
+        val both = api.parseStreamChunk(obj("""{"choices":[],"usage":{"prompt_tokens":10,"prompt_tokens_details":{"cached_tokens":6},"prompt_cache_hit_tokens":8}}"""))
+        assertEquals(6, both.usage!!.cachedTokens)
+    }
 }

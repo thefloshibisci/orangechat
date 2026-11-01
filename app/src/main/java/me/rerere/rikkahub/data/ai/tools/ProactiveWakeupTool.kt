@@ -20,8 +20,7 @@ internal fun buildProactiveWakeupTool(
     description = "为当前会话约定下次主动联系时间，或取消约定。每个会话只保留一个待执行约定，新约定替换旧约定。" +
         "到点读取最新聊天再判断回复，不是预写或定时发送固定文本；遵守主动消息总开关、免打扰和连续追问上限。" +
         "有约定时等待约定时间，无约定时按原间隔检查。仅工具返回成功后才能说已约定。" +
-        "时间须为带时区的 ISO-8601 格式，例如 2026-10-29T20:30:00+08:00。" +
-        "当前时间：${java.time.Instant.ofEpochMilli(now()).atZone(zone)}。",
+        "时间须为带时区的 ISO-8601 格式，例如 2026-10-29T20:30:00+08:00；工具会校验时间必须晚于当前时间。",
     parameters = {
         InputSchema.Obj(
             properties = buildJsonObject {
@@ -50,7 +49,10 @@ internal fun buildProactiveWakeupTool(
             "schedule" -> {
                 val time = requireNotNull(string("time")) { "time is required with a timezone offset" }
                 val millis = OffsetDateTime.parse(time).toInstant().toEpochMilli()
-                require(millis > now()) { "Appointment time must be in the future" }
+                val currentTime = now()
+                require(millis > currentTime) {
+                    "Appointment time must be in the future. Current time: ${java.time.Instant.ofEpochMilli(currentTime).atZone(zone)}"
+                }
                 val reason = string("reason")?.trim().orEmpty()
                 require(reason.isNotBlank() && reason.length <= 240) { "reason must contain 1 to 240 characters" }
                 update(millis, reason)
