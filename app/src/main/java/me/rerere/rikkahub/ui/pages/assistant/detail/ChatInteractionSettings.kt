@@ -329,14 +329,17 @@ internal fun InteractionTextField(
         var lastExternal = latestExternalText
         var pendingUserText: String? = null
         var deferredExternal: String? = null
-        val emittedEdits = linkedSetOf<String>()
+        val emittedEdits = mutableListOf<String>()
         snapshotFlow { Triple(state.text.toString(), latestExternalText, focused) }.collect { (text, external, active) ->
             if (external != lastExternal) {
                 lastExternal = external
-                if (external in emittedEdits) {
-                    // An older save echo must not replace a newer local edit after focus is lost.
-                    if (external == pendingUserText) pendingUserText = null
-                    emittedEdits.remove(external)
+                val acknowledgedIndex = emittedEdits.indexOf(external)
+                if (acknowledgedIndex >= 0) {
+                    // Keep repeated values in order: B,C,B must not treat the first B echo as
+                    // acknowledgment of the final B. Conflated echoes may acknowledge earlier
+                    // saves too, but matching the first occurrence conservatively keeps newer edits.
+                    emittedEdits.subList(0, acknowledgedIndex + 1).clear()
+                    pendingUserText = emittedEdits.lastOrNull()
                 } else {
                     deferredExternal = external
                     pendingUserText = null
@@ -348,7 +351,6 @@ internal fun InteractionTextField(
                 pendingUserText = text
                 deferredExternal = null
                 emittedEdits.add(text)
-                if (emittedEdits.size > 64) emittedEdits.remove(emittedEdits.first())
                 latestOnChange(text)
             }
             if (!active) {

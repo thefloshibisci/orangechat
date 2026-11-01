@@ -93,6 +93,31 @@ class InteractionTextFieldSyncUiTest {
         assertEquals(listOf("草稿一", "草稿二"), saves)
     }
 
+    @Test fun `repeated draft values keep emission order through delayed acknowledgments`() {
+        var external by mutableStateOf("A")
+        val saves = mutableListOf<String>()
+        lateinit var clearFocus: () -> Unit
+        compose.setContent {
+            val focus = LocalFocusManager.current
+            clearFocus = { focus.clearFocus() }
+            MaterialTheme { Surface { InteractionTextField(external, "动作", 20, onChange = { saves += it }) } }
+        }
+        val field = compose.onNode(hasSetTextAction())
+        field.performClick()
+        for (draft in listOf("B", "C", "B")) {
+            field.performTextReplacement(draft)
+            compose.waitForIdle()
+        }
+        compose.runOnIdle { clearFocus() }
+        compose.waitForIdle()
+        for (echo in listOf("B", "C", "B")) {
+            compose.runOnIdle { external = echo }
+            compose.waitForIdle()
+            assertEquals("The latest B draft must survive the delayed $echo save", "B", text())
+        }
+        assertEquals(listOf("B", "C", "B"), saves)
+    }
+
     private fun text(): String = compose.onNode(hasSetTextAction()).fetchSemanticsNode()
         .config[SemanticsProperties.EditableText].text
 }
