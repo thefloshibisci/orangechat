@@ -980,6 +980,8 @@ class ChatCompletionsAPI(
             completionTokens = jsonObject["completion_tokens"]?.jsonPrimitive?.intOrNull ?: 0,
             totalTokens = jsonObject["total_tokens"]?.jsonPrimitive?.intOrNull ?: 0,
             cachedTokens = jsonObject["prompt_tokens_details"]?.jsonObjectOrNull?.get("cached_tokens")?.jsonPrimitive?.intOrNull
+                // DeepSeek-style relays may only report the legacy hit/miss pair.
+                ?: jsonObject["prompt_cache_hit_tokens"]?.jsonPrimitive?.intOrNull
                 ?: 0
         )
     }
