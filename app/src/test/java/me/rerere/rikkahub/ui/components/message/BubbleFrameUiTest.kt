@@ -128,8 +128,10 @@ class BubbleFrameUiTest {
         var frame by mutableStateOf(BubbleFrameSetting(file.absolutePath, offsetX = 5f, scale = 1.2f))
         compose.setContent {
             MaterialTheme {
-                androidx.compose.foundation.lazy.LazyColumn {
-                    item { BubbleFrameSettingsCard(true, frame) { writes += it; frame = it } }
+                CompositionLocalProvider(LocalDisplaySettings provides DisplaySetting(userBubbleFrame = frame)) {
+                    androidx.compose.foundation.lazy.LazyColumn {
+                        item { BubbleFrameSettingsCard(true, frame) { writes += it; frame = it } }
+                    }
                 }
             }
         }
