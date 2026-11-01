@@ -116,12 +116,11 @@ import me.rerere.rikkahub.service.ChatError
 import me.rerere.rikkahub.ui.components.message.ChatMessage
 import me.rerere.rikkahub.utils.repliedUserMessageIds
 import me.rerere.rikkahub.utils.readAssistantMessageIds
+import me.rerere.rikkahub.utils.visibleAssistantMessageIds
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
-import kotlinx.datetime.TimeZone
-import kotlinx.datetime.toInstant
 import me.rerere.rikkahub.utils.ChatReadMarks
 import me.rerere.rikkahub.ui.context.LocalDisplaySettings
 import me.rerere.rikkahub.ui.theme.LocalMaterialMode
@@ -362,30 +361,25 @@ private fun ChatListNormal(
             readAssistantMessageIds(conversation.messageNodes.map { it.currentMessage })
         }
         val readContext = LocalContext.current
-        var seenUpTo by remember(conversation.id) { mutableStateOf(ChatReadMarks.get(readContext, conversation.id)) }
+        var seenMessageIds by remember(conversation.id) { mutableStateOf(ChatReadMarks.get(readContext, conversation.id)) }
         val lifecycleOwner = LocalLifecycleOwner.current
-        val currentDisplayNodes by rememberUpdatedState(displayNodes)
+        val displayNodesById = remember(displayNodes) { displayNodes.associate { it.id to it.currentMessage } }
+        val currentDisplayNodesById by rememberUpdatedState(displayNodesById)
         LaunchedEffect(conversation.id, lifecycleOwner) {
             lifecycleOwner.repeatOnLifecycle(Lifecycle.State.RESUMED) {
                 snapshotFlow {
-                    // Newest assistant message currently on screen; replying is not required to read.
-                    val byId = currentDisplayNodes.associateBy { it.id }
-                    state.layoutInfo.visibleItemsInfo.mapNotNull { info ->
-                        (info.key as? Uuid)?.let(byId::get)?.currentMessage?.takeIf { it.role == MessageRole.ASSISTANT }
-                    }.maxOfOrNull { it.createdAt.toInstant(TimeZone.currentSystemDefault()).toEpochMilliseconds() }
-                }.collect { seenAt ->
-                    if (seenAt != null && seenAt > seenUpTo) {
-                        seenUpTo = seenAt
-                        ChatReadMarks.save(readContext, conversation.id, seenAt)
+                    visibleAssistantMessageIds(currentDisplayNodesById, state.layoutInfo.visibleItemsInfo.map { it.key })
+                }.collect { visibleIds ->
+                    if (!seenMessageIds.containsAll(visibleIds)) {
+                        seenMessageIds = ChatReadMarks.record(readContext, conversation.id, visibleIds)
                     }
                 }
             }
         }
         // Read = shown on screen in the foreground, or already followed by a real user turn.
-        val readAssistantIds = remember(repliedAssistantIds, displayNodes, seenUpTo) {
+        val readAssistantIds = remember(repliedAssistantIds, displayNodes, seenMessageIds) {
             repliedAssistantIds + displayNodes.map { it.currentMessage }.filter {
-                it.role == MessageRole.ASSISTANT &&
-                    it.createdAt.toInstant(TimeZone.currentSystemDefault()).toEpochMilliseconds() <= seenUpTo
+                it.role == MessageRole.ASSISTANT && it.id.toString() in seenMessageIds
             }.map { it.id }
         }
         val avatarEvent = conversation.currentMessages.lastOrNull { it.avatarInteraction() != null }

@@ -3,8 +3,18 @@ package me.rerere.rikkahub.utils
 import me.rerere.ai.core.MessageRole
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
+import me.rerere.ai.ui.isEmptyUIMessage
 import me.rerere.rikkahub.data.interaction.avatarInteraction
 import kotlin.uuid.Uuid
+
+/** Called only by the resumed-screen visibility effect; a loading placeholder is not a receipt. */
+internal fun visibleAssistantMessageIds(messagesByNodeId: Map<Uuid, UIMessage>, visibleKeys: List<Any>): Set<String> =
+    visibleKeys.mapNotNull { key ->
+        (key as? Uuid)?.let(messagesByNodeId::get)?.takeIf {
+            it.role == MessageRole.ASSISTANT && it.avatarInteraction() == null &&
+                !it.parts.isEmptyUIMessage() && it.toText().trim() != "[SKIP]"
+        }?.id?.toString()
+    }.toSet()
 
 /** A local reply indicator, not a provider read receipt. Use only the selected conversation branch. */
 internal fun repliedUserMessageIds(messages: List<UIMessage>): Set<Uuid> {

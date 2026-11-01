@@ -4,22 +4,30 @@ import android.content.Context
 import kotlin.uuid.Uuid
 
 /**
- * Local "seen up to" marks per conversation: an assistant message counts as read once it has been
- * on screen while the chat was in the foreground. Stores the newest seen createdAt (epoch ms).
+ * Foreground visibility receipts for individual message IDs. A timestamp watermark would mark
+ * skipped history and unseen regenerated branches as read merely because they are older.
  */
 internal object ChatReadMarks {
-    private const val PREFS = "chat_read_marks"
+    private const val PREFS = "chat_read_marks_v2"
 
-    fun get(context: Context, conversationId: Uuid): Long =
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getLong(conversationId.toString(), 0L)
+    fun get(context: Context, conversationId: Uuid): Set<String> =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getStringSet(conversationId.toString(), emptySet()).orEmpty().toSet()
 
-    fun save(context: Context, conversationId: Uuid, seenAt: Long) {
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
-            .putLong(conversationId.toString(), seenAt).apply()
+    fun record(context: Context, conversationId: Uuid, messageIds: Set<String>): Set<String> {
+        val existing = get(context, conversationId)
+        val combined = existing + messageIds
+        if (combined != existing) {
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+                .putStringSet(conversationId.toString(), combined).apply()
+        }
+        return combined
     }
 
     fun delete(context: Context, conversationId: Uuid) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .remove(conversationId.toString()).apply()
+        context.getSharedPreferences("chat_read_marks", Context.MODE_PRIVATE).edit()
             .remove(conversationId.toString()).apply()
     }
 }
