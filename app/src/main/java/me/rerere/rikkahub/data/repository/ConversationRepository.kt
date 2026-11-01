@@ -22,6 +22,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withContext
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
@@ -820,6 +821,29 @@ class ConversationRepository(
             val settingsJson = JsonInstant.encodeToString(store.settingsFlow.value)
             remaining.filterTo(hashSetOf()) { name -> !settingsJson.contains(name) }
         }
+
+    /** A replaced avatar/background can still belong to a chat, favorite, draft or another setting. */
+    suspend fun collectReplacedChatAssets(urls: Collection<String>): Pair<Int, Long> = withContext(Dispatchers.IO) {
+        if (urls.isEmpty()) return@withContext 0 to 0L
+        try {
+            val ids = urls.distinct().mapNotNull { url ->
+                if (!filesManager.isManagedChatFile(url)) return@mapNotNull null
+                val file = localAttachmentFile(url) ?: return@mapNotNull null
+                filesManager.getByRelativePath("${me.rerere.rikkahub.data.files.FileFolders.UPLOAD}/${file.name}")?.id
+            }.toSet()
+            if (ids.isEmpty()) return@withContext 0 to 0L
+            me.rerere.rikkahub.data.files.collectUnreferencedAttachments(
+                filesManager, ids, ::findUnreferencedChatFileNames,
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // The edit is already durable. An unreadable reference source must keep old bytes,
+            // and must not turn a successful manual avatar change into a UI coroutine failure.
+            Log.w(TAG, "Skipped replaced image cleanup because references could not be verified", e)
+            0 to 0L
+        }
+    }
 
     /** Read a consistent node, scan outside the writer transaction, then compare-and-set its JSON. */
     internal suspend fun repairInvalidAttachments(

@@ -10,8 +10,10 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.unit.dp
@@ -33,6 +35,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import java.io.File
+import kotlin.math.roundToInt
 
 @RunWith(RobolectricTestRunner::class)
 @Config(application = Application::class, sdk = [28])
@@ -90,6 +93,67 @@ class BubbleFrameUiTest {
         compose.onNodeWithTag("frame").assertHeightIsEqualTo(90.dp)
         compose.runOnIdle { frame = frame.copy(offsetY = 24f) }
         compose.onNodeWithTag("frame").assertHeightIsEqualTo(60.dp)
+    }
+
+    @Test fun stickerOpacityBlendsOnlyTheDecorationAndKeepsBubbleGeometry() {
+        val file = makeFrame()
+        var opacity by mutableStateOf(1f)
+        compose.setContent {
+            MaterialTheme {
+                Box(Modifier.fillMaxSize().background(Color.White).padding(30.dp)) {
+                    BubbleFrame(BubbleFrameSetting(path = file.absolutePath,
+                        corner = BubbleStickerCorner.TOP_LEFT, opacity = opacity), Modifier.testTag("frame")) {
+                        Box(Modifier.size(96.dp, 44.dp).background(Color.Blue).testTag("content"))
+                    }
+                }
+            }
+        }
+        compose.waitUntil(5000) { framePixel(2) == android.graphics.Color.RED }
+        compose.runOnIdle { opacity = 0.5f }
+        val blended = framePixel(2)
+        assertEquals(255, android.graphics.Color.red(blended))
+        assertTrue(android.graphics.Color.green(blended) in 126..129)
+        assertTrue(android.graphics.Color.blue(blended) in 126..129)
+        assertEquals(android.graphics.Color.BLUE, framePixel(28))
+        compose.runOnIdle { opacity = 0f }
+        assertEquals(android.graphics.Color.WHITE, framePixel(2))
+        assertEquals(android.graphics.Color.BLUE, framePixel(28))
+        compose.onNodeWithTag("frame").assertWidthIsEqualTo(96.dp).assertHeightIsEqualTo(60.dp)
+        compose.onNodeWithTag("content").assertWidthIsEqualTo(96.dp).assertHeightIsEqualTo(44.dp)
+    }
+
+    @Test fun transparencySliderPreviewsBeforeReleaseAndResetRetainsOpacity() {
+        val file = makeFrame()
+        val writes = mutableListOf<BubbleFrameSetting>()
+        var frame by mutableStateOf(BubbleFrameSetting(file.absolutePath, offsetX = 5f, scale = 1.2f))
+        compose.setContent {
+            MaterialTheme {
+                androidx.compose.foundation.lazy.LazyColumn {
+                    item { BubbleFrameSettingsCard(true, frame) { writes += it; frame = it } }
+                }
+            }
+        }
+        val slider = compose.onNodeWithContentDescription("气泡贴纸透明度")
+        slider.performScrollTo().performTouchInput {
+            down(Offset(width * 0.2f, centerY))
+            moveTo(Offset(width * 0.7f, centerY))
+        }
+        val transparency = slider.fetchSemanticsNode().config[SemanticsProperties.ProgressBarRangeInfo].current
+        compose.runOnIdle {
+            assertTrue(transparency > 0.5f)
+            assertTrue(writes.isEmpty())
+            assertEquals(1f, frame.opacity, 0f)
+        }
+        compose.onNodeWithText("${(transparency * 100).roundToInt()}%").assertExists()
+        slider.performTouchInput { up() }
+        compose.runOnIdle {
+            assertEquals(1, writes.size)
+            assertEquals(1f - transparency, frame.opacity, 0.001f)
+        }
+        compose.onNodeWithText("重置").performScrollTo().performClick()
+        compose.runOnIdle {
+            assertEquals(BubbleFrameSetting(file.absolutePath, opacity = 1f - transparency), frame)
+        }
     }
 
     @Test fun settingsResetAndClearRetainIndependentSidesAndRoundTrip() {

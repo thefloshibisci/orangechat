@@ -1,4 +1,4 @@
-﻿/*
+/*
  * 橘瓣 OrangeChat
  * 衍生自 RikkaHub (https://github.com/rikkahub/rikkahub)，原作者 RE
  * 本项目基于 GNU AGPL v3 开源，详见根目录 LICENSE 文件
@@ -10,6 +10,8 @@ import android.content.Context
 import kotlinx.coroutines.flow.Flow
 import me.rerere.tts.model.AudioChunk
 import me.rerere.tts.model.TTSRequest
+import me.rerere.tts.model.SpeechMarkup
+import me.rerere.tts.model.SpeechStyle
 import me.rerere.tts.provider.providers.GeminiTTSProvider
 import me.rerere.tts.provider.providers.GroqTTSProvider
 import me.rerere.tts.provider.providers.MiMoTTSProvider
@@ -35,16 +37,22 @@ class TTSManager(private val context: Context) {
         providerSetting: TTSProviderSetting,
         request: TTSRequest
     ): Flow<AudioChunk> {
+        // Never send a MiniMax hint or tag to a provider that has not explicitly opted in.
+        val compatibleRequest = compatibleSpeechRequest(providerSetting, request)
         return when (providerSetting) {
-            is TTSProviderSetting.OpenAI -> openAIProvider.generateSpeech(context, providerSetting, request)
-            is TTSProviderSetting.Gemini -> geminiProvider.generateSpeech(context, providerSetting, request)
-            is TTSProviderSetting.SystemTTS -> systemProvider.generateSpeech(context, providerSetting, request)
-            is TTSProviderSetting.MiniMax -> miniMaxProvider.generateSpeech(context, providerSetting, request)
-            is TTSProviderSetting.Qwen -> qwenProvider.generateSpeech(context, providerSetting, request)
-            is TTSProviderSetting.Groq -> groqProvider.generateSpeech(context, providerSetting, request)
-            is TTSProviderSetting.XAI -> xaiProvider.generateSpeech(context, providerSetting, request)
-            is TTSProviderSetting.MiMo -> miMoProvider.generateSpeech(context, providerSetting, request)
-            is TTSProviderSetting.ElevenLabs -> elevenLabsProvider.generateSpeech(context, providerSetting, request)
+            is TTSProviderSetting.OpenAI -> openAIProvider.generateSpeech(context, providerSetting, compatibleRequest)
+            is TTSProviderSetting.Gemini -> geminiProvider.generateSpeech(context, providerSetting, compatibleRequest)
+            is TTSProviderSetting.SystemTTS -> systemProvider.generateSpeech(context, providerSetting, compatibleRequest)
+            is TTSProviderSetting.MiniMax -> miniMaxProvider.generateSpeech(context, providerSetting, compatibleRequest)
+            is TTSProviderSetting.Qwen -> qwenProvider.generateSpeech(context, providerSetting, compatibleRequest)
+            is TTSProviderSetting.Groq -> groqProvider.generateSpeech(context, providerSetting, compatibleRequest)
+            is TTSProviderSetting.XAI -> xaiProvider.generateSpeech(context, providerSetting, compatibleRequest)
+            is TTSProviderSetting.MiMo -> miMoProvider.generateSpeech(context, providerSetting, compatibleRequest)
+            is TTSProviderSetting.ElevenLabs -> elevenLabsProvider.generateSpeech(context, providerSetting, compatibleRequest)
         }
     }
 }
+
+internal fun compatibleSpeechRequest(setting: TTSProviderSetting, request: TTSRequest): TTSRequest =
+    if (setting is TTSProviderSetting.MiniMax) request
+    else request.copy(text = SpeechMarkup.plainText(request.text), style = SpeechStyle())

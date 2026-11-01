@@ -101,6 +101,8 @@ class TtsController(
 
     /** 选择/取消选择 Provider */
     fun setProvider(provider: TTSProviderSetting?) {
+        // A cached synthesis belongs to the exact old provider/model, never the newly selected one.
+        if (currentProvider != provider) stop()
         currentProvider = provider
         _isAvailable.update { provider != null }
         if (provider == null) stop()
@@ -119,7 +121,7 @@ class TtsController(
             return
         }
 
-        val newChunks = chunker.split(text)
+        val newChunks = chunker.splitSpeech(text)
         if (newChunks.isEmpty()) return
 
         if (flush) {

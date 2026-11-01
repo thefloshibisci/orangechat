@@ -6,6 +6,8 @@
 
 package me.rerere.rikkahub.ui.components.message
 
+import me.rerere.rikkahub.data.ai.transformers.speechText
+
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.LocalIndication
@@ -146,7 +148,7 @@ fun ColumnScope.ChatMessageActionButtons(
                         indication = LocalIndication.current,
                         onClick = {
                             if (!isSpeaking) {
-                                val text = message.toText()
+                                val text = message.speechText()
                                 val textToSpeak = if (displaySettings.ttsOnlyReadQuoted) {
                                     text.extractQuotedContentAsText() ?: text
                                 } else {

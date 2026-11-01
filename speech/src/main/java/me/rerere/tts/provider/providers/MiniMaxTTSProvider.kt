@@ -12,8 +12,6 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.put
 import me.rerere.common.http.SseEvent
 import me.rerere.common.http.sseFlow
 import me.rerere.tts.model.AudioChunk
@@ -30,16 +28,29 @@ import java.util.concurrent.TimeUnit
 private const val TAG = "MiniMaxTTSProvider"
 
 @Serializable
-private data class MiniMaxResponseData(
-    val audio: String,
-    val status: Int,
-    val ced: String
+internal data class MiniMaxResponseData(
+    val audio: String = "",
+    val status: Int = 0,
+    val ced: String = "",
 )
 
 @Serializable
+private data class MiniMaxBaseResponse(val status_code: Int = 0, val status_msg: String = "")
+
+@Serializable
 private data class MiniMaxResponse(
-    val data: MiniMaxResponseData
+    val data: MiniMaxResponseData? = null,
+    val base_resp: MiniMaxBaseResponse? = null,
 )
+
+internal fun decodeMiniMaxAudioEvent(payload: String): MiniMaxResponseData? {
+    if (payload.trim() == "[DONE]") return null
+    val response = Json { ignoreUnknownKeys = true }.decodeFromString<MiniMaxResponse>(payload)
+    response.base_resp?.let { base ->
+        check(base.status_code == 0) { "MiniMax TTS error ${base.status_code}: ${base.status_msg}" }
+    }
+    return response.data?.takeIf { it.audio.isNotBlank() }
+}
 
 class MiniMaxTTSProvider : TTSProvider<TTSProviderSetting.MiniMax> {
     private val httpClient = OkHttpClient.Builder()
@@ -56,22 +67,9 @@ class MiniMaxTTSProvider : TTSProvider<TTSProviderSetting.MiniMax> {
         providerSetting: TTSProviderSetting.MiniMax,
         request: TTSRequest
     ): Flow<AudioChunk> = flow {
-        val requestBody = buildJsonObject {
-            put("model", providerSetting.model)
-            put("text", request.text)
-            put("stream", true)
-            put("output_format", "hex")
-            put("stream_options", buildJsonObject {
-                put("exclude_aggregated_audio", true)
-            })
-            put("voice_setting", buildJsonObject {
-                put("voice_id", providerSetting.voiceId)
-                put("emotion", providerSetting.emotion)
-                put("speed", providerSetting.speed)
-            })
-        }
+        val requestBody = miniMaxRequestBody(providerSetting, request)
 
-        Log.i(TAG, "generateSpeech: $requestBody")
+        Log.i(TAG, "generateSpeech: model=${providerSetting.model}")
 
         val httpRequest = Request.Builder()
             .url("${providerSetting.baseUrl}/t2a_v2")
@@ -86,11 +84,10 @@ class MiniMaxTTSProvider : TTSProvider<TTSProviderSetting.MiniMax> {
             when (it) {
                 is SseEvent.Open -> Log.i(TAG, "SSE connection opened")
                 is SseEvent.Event -> {
-                    try {
-                        val data = json.decodeFromString<MiniMaxResponse>(it.data)
+                    decodeMiniMaxAudioEvent(it.data)?.let { data ->
 
                         // Convert hex string to bytes
-                        val audioBytes = hexStringToBytes(data.data.audio)
+                        val audioBytes = hexStringToBytes(data.audio)
 
                         emit(
                             AudioChunk(
@@ -102,14 +99,12 @@ class MiniMaxTTSProvider : TTSProvider<TTSProviderSetting.MiniMax> {
                                     "provider" to "minimax",
                                     "model" to providerSetting.model,
                                     "voice" to providerSetting.voiceId,
-                                    "status" to data.data.status.toString(),
-                                    "ced" to data.data.ced
+                                    "status" to data.status.toString(),
+                                    "ced" to data.ced
                                 )
                             )
                         )
                         hasEmittedAudio = true
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Failed to process audio chunk", e)
                     }
                 }
 
@@ -135,6 +130,7 @@ class MiniMaxTTSProvider : TTSProvider<TTSProviderSetting.MiniMax> {
                 }
             }
         }
+        check(hasEmittedAudio) { "MiniMax TTS returned no audio" }
     }
 }
 

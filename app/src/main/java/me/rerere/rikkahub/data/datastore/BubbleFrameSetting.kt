@@ -12,10 +12,12 @@ data class BubbleFrameSetting(
     val offsetY: Float = 0f,
     val scale: Float = 1f,
     val corner: BubbleStickerCorner = BubbleStickerCorner.AUTO,
+    val opacity: Float = 1f,
 ) {
     fun normalized() = copy(
         offsetX = offsetX.takeIf { it.isFinite() }?.coerceIn(-24f, 24f) ?: 0f,
         offsetY = offsetY.takeIf { it.isFinite() }?.coerceIn(-24f, 24f) ?: 0f,
         scale = scale.takeIf { it.isFinite() }?.coerceIn(0.8f, 1.5f) ?: 1f,
+        opacity = opacity.takeIf { it.isFinite() }?.coerceIn(0f, 1f) ?: 1f,
     )
 }

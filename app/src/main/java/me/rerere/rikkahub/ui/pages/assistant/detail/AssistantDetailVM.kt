@@ -7,7 +7,6 @@
 package me.rerere.rikkahub.ui.pages.assistant.detail
 
 import android.util.Log
-import androidx.core.net.toUri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
@@ -34,6 +33,7 @@ import me.rerere.rikkahub.data.model.Avatar
 import me.rerere.rikkahub.data.model.Tag
 import me.rerere.rikkahub.data.db.entity.WorkspaceEntity
 import me.rerere.rikkahub.data.repository.MemoryRepository
+import me.rerere.rikkahub.data.repository.ConversationRepository
 import me.rerere.rikkahub.data.repository.WorkspaceRepository
 import kotlin.uuid.Uuid
 
@@ -46,6 +46,7 @@ class AssistantDetailVM(
     private val filesManager: FilesManager,
     private val skillManager: SkillManager,
     private val workspaceRepository: WorkspaceRepository,
+    private val conversationRepository: ConversationRepository,
 ) : ViewModel() {
     private val assistantId = Uuid.parse(id)
 
@@ -127,10 +128,13 @@ class AssistantDetailVM(
                 if (old != null && new != null) replaced = old to new
                 updated
             }
-            // Delete replaced assets only after their new references have been committed.
+            // A removed avatar/background may still be a chat attachment or another setting's image.
             replaced?.let { (old, new) ->
-                checkAvatarDelete(old, new)
-                checkBackgroundDelete(old, new)
+                val candidates = buildSet {
+                    if (old.avatar is Avatar.Image && old.avatar != new.avatar) add(old.avatar.url)
+                    if (old.background != new.background) old.background?.let(::add)
+                }
+                conversationRepository.collectReplacedChatAssets(candidates)
             }
         }
     }
@@ -184,25 +188,4 @@ class AssistantDetailVM(
         }
     }
 
-    fun checkAvatarDelete(old: Assistant, new: Assistant) {
-        if (old.avatar is Avatar.Image && old.avatar != new.avatar) {
-            filesManager.deleteChatFiles(listOf(old.avatar.url.toUri()))
-        }
-    }
-
-    fun checkBackgroundDelete(old: Assistant, new: Assistant) {
-        val oldBackground = old.background
-        val newBackground = new.background
-
-        if (oldBackground != null && oldBackground != newBackground) {
-            try {
-                val oldUri = oldBackground.toUri()
-                if (oldUri.scheme == "content" || oldUri.scheme == "file") {
-                    filesManager.deleteChatFiles(listOf(oldUri))
-                }
-            } catch (e: Exception) {
-                Log.w(TAG, "Failed to delete background file: $oldBackground", e)
-            }
-        }
-    }
 }

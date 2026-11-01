@@ -13,6 +13,8 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -27,6 +29,7 @@ import me.rerere.rikkahub.ui.components.ui.toComposeColor
 import me.rerere.rikkahub.ui.context.LocalDisplaySettings
 import java.io.File
 import java.util.UUID
+import kotlin.math.roundToInt
 
 @Composable
 internal fun BubbleFrameSettingsCard(
@@ -61,7 +64,7 @@ internal fun BubbleFrameSettingsCard(
                         throw e
                     }
                 }
-                draft = BubbleFrameSetting(path = path)
+                draft = BubbleFrameSetting(path = path, opacity = draft.opacity)
                 onChange(draft)
             } catch (e: CancellationException) {
                 throw e
@@ -125,9 +128,19 @@ internal fun BubbleFrameSettingsCard(
                     { draft = draft.copy(scale = it) },
                     { onChange(draft.copy(scale = it)) }) { "${(it * 100).toInt()}%" }
             })
+            item(headlineContent = { Text("透明度") }, supportingContent = {
+                Column {
+                    Text("0% 不透明，100% 完全透明", style = MaterialTheme.typography.bodySmall)
+                    FrameSlider(1f - draft.opacity, 0f..1f,
+                        { draft = draft.copy(opacity = 1f - it) },
+                        { onChange(draft.copy(opacity = 1f - it)) },
+                        modifier = Modifier.semantics { contentDescription = "气泡贴纸透明度" },
+                    ) { "${(it * 100).roundToInt()}%" }
+                }
+            })
             item(headlineContent = { Text("恢复位置与大小") }, trailingContent = {
                 TextButton(onClick = {
-                    draft = BubbleFrameSetting(path = draft.path)
+                    draft = BubbleFrameSetting(path = draft.path, opacity = draft.opacity)
                     onChange(draft)
                 }) { Text("重置") }
             })
@@ -137,9 +150,10 @@ internal fun BubbleFrameSettingsCard(
 
 @Composable
 private fun FrameSlider(value: Float, range: ClosedFloatingPointRange<Float>,
-    onPreview: (Float) -> Unit, onCommit: (Float) -> Unit, label: (Float) -> String) {
+    onPreview: (Float) -> Unit, onCommit: (Float) -> Unit, modifier: Modifier = Modifier,
+    label: (Float) -> String) {
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        CommitSlider(value, onCommit, Modifier.weight(1f), valueRange = range, onValuePreview = onPreview) { draft, slider ->
+        CommitSlider(value, onCommit, modifier.weight(1f), valueRange = range, onValuePreview = onPreview) { draft, slider ->
             slider()
             Text(label(draft))
         }

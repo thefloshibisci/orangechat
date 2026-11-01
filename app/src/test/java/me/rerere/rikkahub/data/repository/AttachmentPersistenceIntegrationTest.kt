@@ -22,6 +22,7 @@ import me.rerere.rikkahub.data.ai.withExecutionCheckpoint
 import me.rerere.rikkahub.data.datastore.DisplaySetting
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.SettingsStore
+import me.rerere.rikkahub.data.datastore.withAssistantEdit
 import me.rerere.rikkahub.data.db.AppDatabase
 import me.rerere.rikkahub.data.db.dao.MessageNodeDAO
 import me.rerere.rikkahub.data.db.entity.MessageNodeEntity
@@ -30,6 +31,7 @@ import me.rerere.rikkahub.data.files.FileFolders
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.files.attachmentUrls
 import me.rerere.rikkahub.data.model.Avatar
+import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.model.toMessageNode
 import me.rerere.rikkahub.service.ConversationMessageJournal
@@ -47,6 +49,51 @@ import kotlin.uuid.Uuid
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [28], manifest = Config.NONE, application = Application::class, shadows = [HostFileUriShadow::class])
 class AttachmentPersistenceIntegrationTest {
+    @Test fun `manual avatar and background replacement preserves images shared with chat and other settings`() = runBlocking {
+        fixture { _, repository, files, settings ->
+            val asset = files.saveManagedFromBytes(FileFolders.UPLOAD, "shared image".toByteArray(), "shared.png", "image/png")
+            val disk = files.getFile(asset)
+            val url = disk.toUri().toString()
+            val own = Assistant(avatar = Avatar.Image(url), background = url)
+            val other = Assistant(avatar = Avatar.Image(url), background = url)
+            settings.settingsFlow.value = Settings(assistants = listOf(own, other),
+                displaySetting = DisplaySetting(userAvatar = Avatar.Image(url)))
+            val chat = conversation(UIMessage.user("keep original picture").copy(parts = listOf(
+                UIMessagePart.Text("keep original picture"), UIMessagePart.Image(url),
+            )))
+            repository.insertConversation(chat)
+            // This is the same field merge and cleanup path used after a manual AssistantDetailVM edit.
+            settings.settingsFlow.value = settings.settingsFlow.value.withAssistantEdit(
+                own, own.copy(avatar = Avatar.Emoji("🌱"), background = null),
+            )
+            assertEquals(0, repository.collectReplacedChatAssets(setOf(url)).first)
+            assertTrue(disk.isFile)
+            assertEquals(chat.currentMessages, repository.getConversationById(chat.id)!!.currentMessages)
+            assertEquals(other, settings.settingsFlow.value.assistants.single { it.id == other.id })
+            assertEquals(Avatar.Image(url), settings.settingsFlow.value.displaySetting.userAvatar)
+            // User-avatar replacement uses the same guarded collector and must retain the chat image too.
+            settings.settingsFlow.value = settings.settingsFlow.value.copy(displaySetting = DisplaySetting(userAvatar = Avatar.Dummy))
+            assertEquals(0, repository.collectReplacedChatAssets(listOf(url)).first)
+            assertTrue(disk.isFile)
+            assertNotNull(files.get(asset.id))
+        }
+    }
+
+    @Test fun `manual replacement reclaims only the last unreferenced managed asset`() = runBlocking {
+        fixture { _, repository, files, settings ->
+            val asset = files.saveManagedFromBytes(FileFolders.UPLOAD, "old image".toByteArray(), "old.png", "image/png")
+            val disk = files.getFile(asset)
+            val url = disk.toUri().toString()
+            val own = Assistant(avatar = Avatar.Image(url))
+            settings.settingsFlow.value = Settings(assistants = listOf(own))
+            assertEquals(0, repository.collectReplacedChatAssets(listOf(url)).first)
+            settings.settingsFlow.value = settings.settingsFlow.value.withAssistantEdit(own, own.copy(avatar = Avatar.Dummy))
+            assertEquals(1 to 9L, repository.collectReplacedChatAssets(listOf(url)))
+            assertFalse(disk.exists())
+            assertNull(files.get(asset.id))
+        }
+    }
+
     @Test fun `safe duplicate collection preserves rewritten history and removes redundant bytes`() = runBlocking {
         fixture { _, repository, files, _ ->
             val first = files.saveManagedFromBytes(FileFolders.UPLOAD, "same".toByteArray(), "one.txt", "text/plain")

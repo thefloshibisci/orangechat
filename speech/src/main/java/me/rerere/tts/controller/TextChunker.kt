@@ -6,22 +6,27 @@
 
 package me.rerere.tts.controller
 
+import me.rerere.tts.model.SpeechStyle
+import me.rerere.tts.model.SpeechMarkup
+
 /**
  * Split long text into speakable chunks with basic punctuation-aware grouping.
  */
 class TextChunker(
     private val maxChunkLength: Int = 150
 ) {
+    fun splitSpeech(text: String): List<TtsChunk> = SpeechMarkup.parse(text).flatMap { segment ->
+        split(segment.text).map { it.copy(style = segment.style) }
+    }.mapIndexed { index, chunk -> chunk.copy(index = index) }
+
     fun split(text: String): List<TtsChunk> {
         if (text.isBlank()) return emptyList()
 
         val paragraphs = text.split("\n\n")
-        val punctuationRegex = "(?<=[。！？，、：;.!?:,\n])".toRegex()
 
         val chunks = paragraphs.flatMap { paragraph ->
             if (paragraph.isBlank()) emptyList() else {
-                paragraph
-                    .split(punctuationRegex)
+                splitSentences(paragraph)
                     .asSequence()
                     .map { it.trim() }
                     .filter { it.isNotEmpty() }
@@ -41,11 +46,29 @@ class TextChunker(
             TtsChunk(text = value, index = index)
         }
     }
+
+    private fun splitSentences(text: String): List<String> = buildList {
+        var start = 0
+        var index = 0
+        while (index < text.length) {
+            if (text.startsWith("<#", index)) {
+                val end = text.indexOf("#>", index)
+                if (end >= 0) { index = end + 2; continue }
+            }
+            if (text[index] in "。！？，、：;.!?:,\n") {
+                add(text.substring(start, index + 1))
+                start = index + 1
+            }
+            index++
+        }
+        if (start < text.length) add(text.substring(start))
+    }
 }
 
 data class TtsChunk(
     val id: java.util.UUID = java.util.UUID.randomUUID(),
     val index: Int,
-    val text: String
+    val text: String,
+    val style: SpeechStyle = SpeechStyle(),
 )
 
