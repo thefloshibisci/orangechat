@@ -106,6 +106,7 @@ class SettingsStore(
         val THEME_ID = stringPreferencesKey("theme_id")
         val CUSTOM_THEMES = stringPreferencesKey("custom_themes")
         val DISPLAY_SETTING = stringPreferencesKey("display_setting")
+        val GONGDU_SETTING = stringPreferencesKey("gongdu_setting")
         val DEVELOPER_MODE = booleanPreferencesKey("developer_mode")
         val CUSTOM_REACTION_PRESETS = stringPreferencesKey("custom_reaction_presets")
 
@@ -283,6 +284,9 @@ class SettingsStore(
             }
         }.map { preferences ->
             Settings(
+                gongdu = preferences[GONGDU_SETTING]?.let {
+                    runCatching { JsonInstant.decodeFromString<me.rerere.rikkahub.data.gongdu.GongduSetting>(it) }.getOrNull()
+                } ?: me.rerere.rikkahub.data.gongdu.GongduSetting(),
                 disclaimerAccepted = preferences[DISCLAIMER_ACCEPTED] == true,
                 disclaimerAcceptedAt = preferences[DISCLAIMER_ACCEPTED_AT] ?: 0,
                 enableWebSearch = preferences[ENABLE_WEB_SEARCH] == true,
@@ -588,6 +592,7 @@ class SettingsStore(
             preferences[CUSTOM_REACTION_PRESETS] =
                 JsonInstant.encodeToString(normalizeCustomChatReactionPresets(settings.customReactionPresets))
             preferences[DISPLAY_SETTING] = JsonInstant.encodeToString(settings.displaySetting)
+            if (settings.gongdu != previous.gongdu) preferences[GONGDU_SETTING] = JsonInstant.encodeToString(settings.gongdu)
 
             preferences[DISCLAIMER_ACCEPTED] = settings.disclaimerAccepted
             preferences[DISCLAIMER_ACCEPTED_AT] = settings.disclaimerAcceptedAt

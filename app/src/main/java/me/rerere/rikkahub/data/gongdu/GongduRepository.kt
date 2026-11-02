@@ -138,7 +138,11 @@ class GongduRepository(private val store: SettingsStore, private val transport: 
             store.update { it.copy(gongdu = it.gongdu.copy(inbox = it.gongdu.inbox.copy(supported = false))) }
             return@withLock store.settingsFlowRaw.first().gongdu.inbox
         }
-        val incoming = GongduCodec.events(data("list_notifications", buildJsonObject { put("tab", "mentions"); put("limit", 50) }))
+        val incoming = mutableListOf<GongduEvent>()
+        for (tab in listOf("mentions", "likes", "connections")) {
+            val events = GongduCodec.events(data("list_notifications", buildJsonObject { put("tab", tab); put("limit", 50) }))
+            incoming += events.map { it.copy(id = "$tab:${it.id}") }
+        }
         store.update { current -> current.copy(gongdu = current.gongdu.copy(inbox = GongduCodec.mergeInbox(
             current.gongdu.inbox, incoming, System.currentTimeMillis(),
         ))) }

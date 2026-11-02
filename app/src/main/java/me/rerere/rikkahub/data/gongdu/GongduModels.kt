@@ -42,7 +42,9 @@ internal fun JsonObject.str(vararg keys: String): String = keys.firstNotNullOfOr
 /** Upstream versions wrap payloads differently. Never interpret plain success text as a note. */
 object GongduCodec {
     fun payload(text: String): JsonElement {
-        runCatching { Json.parseToJsonElement(text) }.getOrNull()?.let { return it }
+        runCatching { Json.parseToJsonElement(text) }.getOrNull()?.let {
+            if (it is JsonObject || it is JsonArray) return it
+        }
         val start = text.indexOfFirst { it == '{' || it == '[' }
         require(start >= 0) { "小红书服务未返回可识别的数据" }
         val end = text.indexOfLast { it == '}' || it == ']' }
@@ -98,10 +100,10 @@ object GongduCodec {
         } ?: error("服务未返回通知列表")
         return list.mapNotNull { item ->
             val obj = item as? JsonObject ?: return@mapNotNull null
-            val id = obj.str("notification_id", "comment_id", "id")
+            val id = obj.str("notification_id", "id", "comment_id")
             if (id.isBlank()) return@mapNotNull null
             val from = obj.obj("from")?.str("nickname", "nickName").orEmpty()
-            val content = obj.str("content", "comment", "title", "desc")
+            val content = obj.str("comment_text", "content", "comment", "title", "desc", "feed_title")
             GongduEvent(id, listOf(from, content).filter(String::isNotBlank).joinToString("：").take(2000).ifBlank { "收到新的小红书互动" })
         }
     }

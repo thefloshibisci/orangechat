@@ -72,13 +72,13 @@ class GongduRepositoryTest {
             repo.saveConfiguration("https://example.test/mcp", "")
             repo.connect()
             repo.refreshInbox()
-            assertTrue(store.settingsFlowRaw.first().gongdu.inbox.events.single().acknowledged)
+            assertTrue(store.settingsFlowRaw.first().gongdu.inbox.events.all { it.acknowledged })
             transport.notificationId = "second"
             repo.refreshInbox()
             repo.refreshInbox()
             val pending = store.settingsFlowRaw.first().gongdu.inbox.events.filterNot { it.acknowledged }
-            assertEquals(listOf("second"), pending.map { it.id })
-            repo.acknowledge("second")
+            assertEquals(setOf("mentions:second", "likes:second", "connections:second"), pending.map { it.id }.toSet())
+            pending.forEach { repo.acknowledge(it.id) }
             assertTrue(store.settingsFlowRaw.first().gongdu.inbox.events.all { it.acknowledged })
         }
     }
