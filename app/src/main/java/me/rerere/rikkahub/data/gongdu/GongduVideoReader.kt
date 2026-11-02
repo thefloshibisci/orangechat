@@ -106,6 +106,7 @@ class GongduVideoReader(private val context: Context, private val files: FilesMa
                     "授权并提供 gongdu_read_video 工具时，可传 start_seconds/end_seconds（每段最多30秒）和 frame_interval_seconds（0.5～5秒）补看。超过24帧时会放宽间隔，需要更密请缩短窗口。不要声称看过未采样动作。" +
                     subtitles.takeIf(String::isNotBlank)?.let { "\n全片平台字幕（不代表已听过原声）：\n$it" }.orEmpty() +
                     if (subtitles.isBlank()) "\n未获取到可用字幕，请仅根据画面分析。" else "",
+                metadata = gongduVideoReference(note.feed),
             ))
             val columns = when { plan.times.size > 8 -> 4; plan.times.size > 4 -> 3; plan.times.size > 2 -> 2; else -> 1 }
             val tileWidth = if (columns == 1) 720 else 360

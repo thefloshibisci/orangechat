@@ -11,7 +11,7 @@ import me.rerere.ai.ui.UIMessage
 
 /** Shared request-only media policy for ordinary and proactive generation. */
 val historyMediaTransformers: List<InputMessageTransformer> =
-    listOf(ImageHistoryLimitTransformer, VoiceMessageTransformer)
+    listOf(ImageHistoryLimitTransformer, VoiceMessageTransformer, me.rerere.rikkahub.data.gongdu.GongduVideoReferenceTransformer)
 
 /**
  * 支持图片输入的模型会把历史里每张上传图片重新编码进请求。
