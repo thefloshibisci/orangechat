@@ -153,6 +153,64 @@ class VoiceAudioPayloadTest {
         assertTrue(google.parts[1] is UIMessagePart.Audio)
     }
 
+    @Test fun switchingModelsAlsoAdaptsAudioInsideToolResultsWithoutMutatingStoredAttachments() = runBlocking {
+        val model = Model(modelId = "text-only")
+        val settings = Settings.dummy().copy(providers = listOf(ProviderSetting.OpenAI(models = listOf(model))))
+        val image = UIMessagePart.Image("file:///video/frame.jpg")
+        val tool = UIMessagePart.Tool("video", "gongdu_read_video", "{}", listOf(
+            UIMessagePart.Text("视频信息"), image,
+            UIMessagePart.Audio("file:///video/original.wav"),
+            UIMessagePart.VoiceMessage("/video/spoken.wav", transcript = "已知口播文字")),
+            metadata = buildJsonObject { put("thoughtSignature", "keep-signature") })
+        val source = UIMessage(role = MessageRole.ASSISTANT, parts = listOf(tool))
+        val result = VoiceMessageTransformer.transform(TransformerContext(RuntimeEnvironment.getApplication(), model,
+            Assistant(), settings), listOf(source)).single().parts.single() as UIMessagePart.Tool
+        assertEquals(tool.toolCallId, result.toolCallId)
+        assertEquals(tool.input, result.input)
+        assertEquals(tool.metadata, result.metadata)
+        assertEquals(image, result.output[1])
+        assertTrue((result.output[2] as UIMessagePart.Text).text.contains("没有转写文本"))
+        assertEquals(UIMessagePart.Text("已知口播文字"), result.output[3])
+        assertTrue(tool.output[2] is UIMessagePart.Audio)
+        assertTrue(tool.output[3] is UIMessagePart.VoiceMessage)
+    }
+
+    @Test fun newestToolOriginalAudioSurvivesSharedHistoryLimitWithUserRecordings() = runBlocking {
+        val model = Model(modelId = "gemini-2.5-flash")
+        val settings = Settings.dummy().copy(providers = listOf(ProviderSetting.Google(models = listOf(model))))
+        val latest = UIMessagePart.Audio("file:///video/newest.wav")
+        val history = listOf(
+            UIMessage.user("").copy(parts = listOf(UIMessagePart.VoiceMessage("/old.wav", transcript = "旧口播"))),
+            UIMessage(role = MessageRole.ASSISTANT, parts = listOf(UIMessagePart.Tool("old", "gongdu_read_video", "{}",
+                listOf(UIMessagePart.Audio("file:///video/old.wav"))))),
+            UIMessage(role = MessageRole.ASSISTANT, parts = listOf(UIMessagePart.Tool("latest", "gongdu_read_video", "{}",
+                listOf(UIMessagePart.Text("新视频"), latest)))),
+        )
+        val result = VoiceMessageTransformer.transform(TransformerContext(RuntimeEnvironment.getApplication(), model,
+            Assistant(maxContextVoices = 1), settings), history)
+        assertEquals(UIMessagePart.Text("旧口播"), result[0].parts.single())
+        assertTrue((result[1].parts.single() as UIMessagePart.Tool).output.single() is UIMessagePart.Text)
+        assertEquals(latest, (result[2].parts.single() as UIMessagePart.Tool).output.last())
+        assertTrue((history[1].parts.single() as UIMessagePart.Tool).output.single() is UIMessagePart.Audio)
+    }
+
+    @Test fun toolAudioUsesTheSameFormatCompatibilityRulesAsUserRecordings() = runBlocking {
+        val model = Model(modelId = "gemini-2.5-flash")
+        val history = listOf(UIMessage(role = MessageRole.ASSISTANT, parts = listOf(UIMessagePart.Tool("video", "gongdu_read_video", "{}",
+            listOf(UIMessagePart.Audio("file:///original.m4a"),
+                UIMessagePart.VoiceMessage("/spoken.ogg", transcript = "回退文字"))))))
+        suspend fun result(provider: ProviderSetting): List<UIMessagePart> {
+            val settings = Settings.dummy().copy(providers = listOf(provider))
+            return (VoiceMessageTransformer.transform(TransformerContext(RuntimeEnvironment.getApplication(), model,
+                Assistant(), settings), history).single().parts.single() as UIMessagePart.Tool).output
+        }
+        val openAi = result(ProviderSetting.OpenAI(models = listOf(model)))
+        assertTrue(openAi.all { it is UIMessagePart.Text })
+        assertEquals(UIMessagePart.Text("回退文字"), openAi.last())
+        val google = result(ProviderSetting.Google(models = listOf(model)))
+        assertTrue(google.all { it is UIMessagePart.Audio })
+    }
+
     @Test fun wavBytesSurviveOpenAiAndGoogleMessageSerialization() = runBlocking {
         val bytes = DirectAudioRecorder.wavHeader(4) + byteArrayOf(0, 0, 1, 0)
         val file = File.createTempFile("voice", ".wav", RuntimeEnvironment.getApplication().cacheDir)

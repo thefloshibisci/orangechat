@@ -43,6 +43,7 @@ import me.rerere.ai.provider.ModelType
 import me.rerere.ai.provider.Provider
 import me.rerere.ai.provider.ProviderSetting
 import me.rerere.ai.provider.TextGenerationParams
+import me.rerere.ai.provider.supportsDirectAudio
 import me.rerere.ai.provider.providers.vertex.ServiceAccountTokenProvider
 import me.rerere.ai.provider.providers.google.InteractionsAPI
 import me.rerere.ai.registry.ModelRegistry
@@ -433,7 +434,8 @@ class GoogleProvider(private val client: OkHttpClient, context: Context? = null)
             "contents",
             buildContents(
                 messages = messages,
-                requireThoughtSignature = requiresThoughtSignature(params.model.modelId)
+                requireThoughtSignature = requiresThoughtSignature(params.model.modelId),
+                supportsAudio = params.model.supportsDirectAudio(ProviderSetting.Google()),
             )
         )
 
@@ -627,6 +629,12 @@ class GoogleProvider(private val client: OkHttpClient, context: Context? = null)
     private fun buildContents(
         messages: List<UIMessage>,
         requireThoughtSignature: Boolean
+    ): JsonArray = buildContents(messages, requireThoughtSignature, supportsAudio = true)
+
+    private fun buildContents(
+        messages: List<UIMessage>,
+        requireThoughtSignature: Boolean,
+        supportsAudio: Boolean,
     ): JsonArray {
         return buildJsonArray {
             messages
@@ -640,7 +648,7 @@ class GoogleProvider(private val client: OkHttpClient, context: Context? = null)
                         } else part
                     })
                     if (message.role == MessageRole.ASSISTANT) {
-                        addModelMessage(message, requireThoughtSignature)
+                        addModelMessage(message, requireThoughtSignature, supportsAudio)
                     } else {
                         addUserMessage(message)
                     }
@@ -650,7 +658,8 @@ class GoogleProvider(private val client: OkHttpClient, context: Context? = null)
 
     private fun JsonArrayBuilder.addModelMessage(
         message: UIMessage,
-        requireThoughtSignature: Boolean
+        requireThoughtSignature: Boolean,
+        supportsAudio: Boolean,
     ) {
         val groups = groupPartsByToolBoundary(message.parts)
         val partsBuffer = mutableListOf<JsonObject>()
@@ -687,7 +696,7 @@ class GoogleProvider(private val client: OkHttpClient, context: Context? = null)
                     })
                     partsBuffer.clear()
 
-                    // Keep function responses and returned images in one user turn. Some
+                    // Keep function responses and returned media in one user turn. Some
                     // Gemini-compatible gateways reject consecutive user turns here.
                     add(buildJsonObject {
                         put("role", "user")
@@ -722,6 +731,26 @@ class GoogleProvider(private val client: OkHttpClient, context: Context? = null)
                                                 )
                                             }
                                         )
+                                    })
+                                }
+                            }
+                            // Audio belongs alongside function responses as user input, never
+                            // in a functionResponse JSON value where it can be silently ignored.
+                            group.tools.forEach { tool ->
+                                tool.output.forEach audioPart@{ part ->
+                                    val audio = when (part) {
+                                        is UIMessagePart.Audio -> part
+                                        is UIMessagePart.VoiceMessage -> UIMessagePart.Audio(part.url)
+                                        else -> null
+                                    } ?: return@audioPart
+                                    val encoded = if (supportsAudio) runCatching { audio.toGooglePart() }.getOrNull() else null
+                                    add(encoded ?: buildJsonObject {
+                                        val transcript = (part as? UIMessagePart.VoiceMessage)?.transcript.orEmpty()
+                                        put("text", if (transcript.isNotBlank()) {
+                                            "[Original audio unavailable; transcript only]\n$transcript"
+                                        } else {
+                                            "[Audio unavailable: this model/channel does not support it or the attachment could not be read. Do not infer its sounds.]"
+                                        })
                                     })
                                 }
                             }

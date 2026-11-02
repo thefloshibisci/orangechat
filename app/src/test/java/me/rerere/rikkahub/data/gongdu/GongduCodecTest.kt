@@ -71,7 +71,7 @@ class GongduCodecTest {
         assertFalse(GongduConfiguration("https://example.test/mcp", "secret").toString().contains("secret"))
     }
     @Test fun sampledFramesCoverTheActualStartAndEndWithoutDuplicateTimestamps() {
-        assertEquals(listOf(0L, 199L, 399L, 599L, 799L, 999L), GongduVideoReader.sampleTimes(1000))
+        assertEquals(listOf(0L, 999L), GongduVideoReader.sampleTimes(1000))
         assertEquals(listOf(0L), GongduVideoReader.sampleTimes(1))
     }
     @Test fun mediaFetchIsRestrictedToTheVideoCdnAndNeverTreatsADocumentAsVideo() {

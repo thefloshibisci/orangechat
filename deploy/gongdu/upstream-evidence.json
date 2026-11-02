@@ -1,0 +1,26 @@
+{
+  "verified_date": "2026-11-02",
+  "release": "v2.7.0",
+  "release_published_at": "2026-11-01T19:38:25Z",
+  "source_commit": "d6352e5435b45ebb48fe240dc03a2bec0476bd56",
+  "image": "xpzouying/xiaohongshu-mcp@sha256:086aa5db10219a018dc42ae1edfa1ffebe1e54197ac036121997d8b0bbe3eea8",
+  "image_tag": "v2.7.0",
+  "image_platform": "linux/amd64",
+  "image_last_updated": "2026-11-01T19:39:42.439967Z",
+  "image_compressed_bytes": 405371089,
+  "verification_sources": [
+    "https://api.github.com/repos/xpzouying/xiaohongshu-mcp/releases/latest",
+    "https://api.github.com/repos/xpzouying/xiaohongshu-mcp/git/ref/tags/v2.7.0",
+    "https://api.github.com/repos/xpzouying/xiaohongshu-mcp/git/tags/3c59856ee3d9370ebdd398d74e53ed344bc2a9e7",
+    "https://hub.docker.com/v2/repositories/xpzouying/xiaohongshu-mcp/tags/v2.7.0",
+    "https://github.com/xpzouying/xiaohongshu-mcp/blob/d6352e5435b45ebb48fe240dc03a2bec0476bd56/main.go",
+    "https://github.com/xpzouying/xiaohongshu-mcp/blob/d6352e5435b45ebb48fe240dc03a2bec0476bd56/middleware.go",
+    "https://github.com/xpzouying/xiaohongshu-mcp/blob/d6352e5435b45ebb48fe240dc03a2bec0476bd56/routes.go",
+    "https://github.com/xpzouying/xiaohongshu-mcp/blob/d6352e5435b45ebb48fe240dc03a2bec0476bd56/Dockerfile",
+    "https://github.com/xpzouying/xiaohongshu-mcp/blob/d6352e5435b45ebb48fe240dc03a2bec0476bd56/docker/docker-compose.yml",
+    "https://github.com/xpzouying/headless_browser/blob/v0.4.0/headless_browser.go",
+    "https://github.com/go-rod/rod/blob/v0.116.2/lib/launcher/launcher.go",
+    "https://zeabur.com/docs/en-US/deploy/methods/custom-docker-image"
+  ],
+  "deployment_executed_by_this_spec": false
+}

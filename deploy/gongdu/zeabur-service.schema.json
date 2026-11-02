@@ -1,0 +1,22 @@
+{
+  "id": "gongdu-xiaohongshu",
+  "name": "gongdu-xiaohongshu",
+  "description": "共度的小红书 MCP 服务，持久化登录状态并启用 Bearer 访问鉴权",
+  "tags": ["MCP"],
+  "source": {
+    "image": "xpzouying/xiaohongshu-mcp@sha256:086aa5db10219a018dc42ae1edfa1ffebe1e54197ac036121997d8b0bbe3eea8"
+  },
+  "ports": [
+    {"id": "web", "port": 18060, "type": "HTTP"}
+  ],
+  "volumes": [
+    {"id": "data", "dir": "/app/data"},
+    {"id": "images", "dir": "/app/images"}
+  ],
+  "env": [
+    {"key": "AUTH_TOKEN", "required": true, "default": "", "expose": false, "readonly": false},
+    {"key": "COOKIES_PATH", "default": "/app/data/cookies.json", "expose": false, "readonly": false},
+    {"key": "HOME", "default": "/app/data/home", "expose": false, "readonly": false},
+    {"key": "XDG_CONFIG_HOME", "default": "/app/data/config", "expose": false, "readonly": false}
+  ]
+}

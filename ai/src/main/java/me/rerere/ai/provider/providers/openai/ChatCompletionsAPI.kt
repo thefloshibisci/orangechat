@@ -42,6 +42,7 @@ import me.rerere.ai.provider.Model
 import me.rerere.ai.provider.ModelAbility
 import me.rerere.ai.provider.ProviderSetting
 import me.rerere.ai.provider.TextGenerationParams
+import me.rerere.ai.provider.supportsDirectAudio
 import me.rerere.ai.provider.providers.PartGroup
 import me.rerere.ai.provider.providers.groupPartsByToolBoundary
 import me.rerere.ai.registry.ModelRegistry
@@ -622,6 +623,7 @@ class ChatCompletionsAPI(
         // OcrTransformer 只覆盖 file: 图片, http/base64 图片会漏网; 这里在序列化层兜底,
         // 普通上传按能力过滤；工具返回的视觉附件必须保留，不能靠可能缺失的本地标签丢弃。
         val supportsImage = model.inputModalities.contains(Modality.IMAGE)
+        val supportsAudio = model.supportsDirectAudio(ProviderSetting.OpenAI())
 
         filteredMessages.forEach { message ->
             if (message.role == MessageRole.ASSISTANT) {
@@ -629,6 +631,7 @@ class ChatCompletionsAPI(
                     message = message,
                     includeReasoning = true,
                     supportsImage = supportsImage,
+                    supportsAudio = supportsAudio,
                     requireThoughtSignature = requiresThoughtSignature(model.modelId),
                     includeThoughtSignatures = googleEndpoint || model.modelId.contains("gemini", ignoreCase = true)
                 )
@@ -642,6 +645,7 @@ class ChatCompletionsAPI(
         message: UIMessage,
         includeReasoning: Boolean,
         supportsImage: Boolean = true,
+        supportsAudio: Boolean = false,
         requireThoughtSignature: Boolean = false,
         includeThoughtSignatures: Boolean = false,
     ) {
@@ -687,6 +691,8 @@ class ChatCompletionsAPI(
                             .ifBlank {
                                 if (tool.output.any { it is UIMessagePart.Image }) {
                                     "[Tool returned an image; see the following attachment.]"
+                                } else if (tool.output.any { it is UIMessagePart.Audio || it is UIMessagePart.VoiceMessage }) {
+                                    "[Tool returned audio; see the following attachment.]"
                                 } else {
                                     "[Tool completed with no text output.]"
                                 }
@@ -700,66 +706,9 @@ class ChatCompletionsAPI(
                         })
                     }
 
-                    val imageTools = if (group.tools.size == 1) group.tools else emptyList()
-                    imageTools.forEach { tool ->
-                        val imageOutput = tool.output.filterIsInstance<UIMessagePart.Image>()
-                        if (imageOutput.isNotEmpty()) {
-                            add(buildJsonObject {
-                                put("role", "user")
-                                putJsonArray("content") {
-                                    add(buildJsonObject {
-                                        put("type", "text")
-                                        put("text", "[Tool ${tool.toolName} returned an image]")
-                                    })
-                                    imageOutput.forEach { imagePart ->
-                                        add(buildJsonObject {
-                                            imagePart.encodeBase64().onSuccess { encodedImage ->
-                                                put("type", "image_url")
-                                                put("image_url", buildJsonObject {
-                                                    put("url", encodedImage.base64)
-                                                })
-                                            }.onFailure {
-                                                put("type", "text")
-                                                put("text", "[Image unavailable: the attachment could not be read.]")
-                                            }
-                                        })
-                                    }
-                                }
-                            })
-                        }
-                    }
-
-                    // For parallel calls, keep all tool messages contiguous and append one
-                    // multimodal user message after the complete batch.
-                    if (group.tools.size > 1) {
-                        group.tools.forEach { tool ->
-                            val imageOutput = tool.output.filterIsInstance<UIMessagePart.Image>()
-                            if (imageOutput.isNotEmpty()) {
-                                add(buildJsonObject {
-                                    put("role", "user")
-                                    putJsonArray("content") {
-                                        add(buildJsonObject {
-                                            put("type", "text")
-                                            put("text", "[Tool ${tool.toolName} returned an image]")
-                                        })
-                                        imageOutput.forEach { imagePart ->
-                                            add(buildJsonObject {
-                                                imagePart.encodeBase64().onSuccess { encodedImage ->
-                                                    put("type", "image_url")
-                                                    put("image_url", buildJsonObject {
-                                                        put("url", encodedImage.base64)
-                                                    })
-                                                }.onFailure {
-                                                    put("type", "text")
-                                                    put("text", "[Image unavailable: the attachment could not be read.]")
-                                                }
-                                            })
-                                        }
-                                    }
-                                })
-                            }
-                        }
-                    }
+                    // Audio is legal only in user messages. Keep all parallel tool results
+                    // contiguous, then attach each tool's media in its original order.
+                    group.tools.forEach { tool -> addToolMedia(tool, supportsAudio) }
                 }
             }
         }
@@ -775,6 +724,55 @@ class ChatCompletionsAPI(
                 add(assistantMessage)
             }
         }
+    }
+
+    private fun JsonArrayBuilder.addToolMedia(tool: UIMessagePart.Tool, supportsAudio: Boolean) {
+        val media = tool.output.filter {
+            it is UIMessagePart.Image || it is UIMessagePart.Audio || it is UIMessagePart.VoiceMessage
+        }
+        if (media.isEmpty()) return
+        val hasImages = media.any { it is UIMessagePart.Image }
+        val hasAudio = media.any { it is UIMessagePart.Audio || it is UIMessagePart.VoiceMessage }
+        add(buildJsonObject {
+            put("role", "user")
+            putJsonArray("content") {
+                add(buildJsonObject {
+                    put("type", "text")
+                    put("text", when {
+                        hasImages && hasAudio -> "[Tool ${tool.toolName} returned images and audio]"
+                        hasAudio -> "[Tool ${tool.toolName} returned audio]"
+                        else -> "[Tool ${tool.toolName} returned an image]"
+                    })
+                })
+                media.forEach { part ->
+                    if (part is UIMessagePart.Image) {
+                        add(buildJsonObject {
+                            part.encodeBase64().onSuccess { encoded ->
+                                put("type", "image_url")
+                                put("image_url", buildJsonObject { put("url", encoded.base64) })
+                            }.onFailure {
+                                put("type", "text")
+                                put("text", "[Image unavailable: the attachment could not be read.]")
+                            }
+                        })
+                    } else {
+                        val audio = if (part is UIMessagePart.Audio) part else UIMessagePart.Audio((part as UIMessagePart.VoiceMessage).url)
+                        val encoded = if (supportsAudio) runCatching {
+                            encodeChatContentParts(listOf(audio), supportsImage = false, allowAudio = true).single()
+                        }.getOrNull() else null
+                        add(encoded ?: buildJsonObject {
+                            put("type", "text")
+                            val transcript = (part as? UIMessagePart.VoiceMessage)?.transcript.orEmpty()
+                            put("text", if (transcript.isNotBlank()) {
+                                "[Original audio unavailable; transcript only]\n$transcript"
+                            } else {
+                                "[Audio unavailable: this model/channel does not support it or the attachment could not be read. Do not infer its sounds.]"
+                            })
+                        })
+                    }
+                }
+            }
+        })
     }
 
     private fun buildAssistantMessageJson(

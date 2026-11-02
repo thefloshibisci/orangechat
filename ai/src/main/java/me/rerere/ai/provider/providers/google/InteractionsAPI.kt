@@ -93,7 +93,7 @@ internal class InteractionsAPI(
             val system = messages.filter { it.role == MessageRole.SYSTEM }.flatMap { it.parts }
                 .filterIsInstance<UIMessagePart.Text>().joinToString("\n") { it.text }
             if (system.isNotBlank()) put("system_instruction", system)
-            put("input", buildInput(messages))
+            put("input", buildInput(messages, params.model.supportsDirectAudio(ProviderSetting.Google())))
             val config = buildJsonObject {
                 params.temperature?.let { put("temperature", it) }
                 params.topP?.let { put("top_p", it) }
@@ -135,7 +135,7 @@ internal class InteractionsAPI(
         ))
     }
 
-    internal fun buildInput(messages: List<UIMessage>): JsonArray = buildJsonArray {
+    internal fun buildInput(messages: List<UIMessage>, supportsAudio: Boolean = true): JsonArray = buildJsonArray {
         messages.filter { it.role != MessageRole.SYSTEM }.forEach { message ->
             if (message.role != MessageRole.ASSISTANT) {
                 val content = message.parts.mapNotNull(::content)
@@ -177,11 +177,36 @@ internal class InteractionsAPI(
                         }) }
                         functions.forEach { tool -> add(buildJsonObject {
                             put("type", "function_result"); put("call_id", tool.toolCallId); put("name", tool.toolName)
-                            val outputs = tool.output.mapNotNull(::content)
+                            val outputs = tool.output.filterNot {
+                                it is UIMessagePart.Audio || it is UIMessagePart.VoiceMessage
+                            }.mapNotNull(::content)
                             put("result", JsonArray(outputs.ifEmpty { listOf(buildJsonObject {
                                 put("type", "text"); put("text", " ")
                             }) }))
                         }) }
+                        // Keep parallel calls/results contiguous. Original audio is user
+                        // media rather than opaque JSON inside the function result.
+                        val audios = functions.flatMap { tool -> tool.output.mapNotNull { part ->
+                            val attachment = when (part) {
+                                is UIMessagePart.Audio -> part
+                                is UIMessagePart.VoiceMessage -> UIMessagePart.Audio(part.url)
+                                else -> null
+                            } ?: return@mapNotNull null
+                            val encoded = if (supportsAudio) runCatching {
+                                attachment.audioMimeType()
+                                audio(attachment)
+                            }.getOrNull() else null
+                            encoded ?: buildJsonObject {
+                                put("type", "text")
+                                val transcript = (part as? UIMessagePart.VoiceMessage)?.transcript.orEmpty()
+                                put("text", if (transcript.isNotBlank()) {
+                                    "[Original audio unavailable; transcript only]\n$transcript"
+                                } else {
+                                    "[Audio unavailable: this model/channel does not support it or the attachment could not be read. Do not infer its sounds.]"
+                                })
+                            }
+                        } }
+                        if (audios.isNotEmpty()) add(step("user_input", audios))
                     }
                 } }
                 flush()
