@@ -1,4 +1,4 @@
-﻿/*
+/*
  * 橘瓣 OrangeChat
  * 衍生自 RikkaHub (https://github.com/rikkahub/rikkahub)，原作者 RE
  * 本项目基于 GNU AGPL v3 开源，详见根目录 LICENSE 文件
@@ -347,7 +347,10 @@ class McpManager(
                         name = serverTool.name,
                         description = serverTool.description,
                         enable = true,
-                        inputSchema = serverTool.inputSchema.toSchema()
+                        inputSchema = serverTool.inputSchema.toSchema(),
+                        needsApproval = me.rerere.rikkahub.data.gongdu.GongduRepository.initialApproval(
+                            settingsStore.settingsFlow.value.gongdu.serverId, config.id, serverTool.name,
+                        )
                     )
                 )
             } else {

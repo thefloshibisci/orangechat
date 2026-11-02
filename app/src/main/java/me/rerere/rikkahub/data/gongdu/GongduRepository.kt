@@ -158,6 +158,7 @@ class GongduRepository(private val store: SettingsStore, private val transport: 
     companion object {
         val PUBLIC_ACTIONS = setOf("publish_content", "publish_with_video", "post_comment_to_feed", "reply_comment_in_feed",
             "reply_notification", "like_feed", "favorite_feed", "like_notification")
+        fun initialApproval(managedServer: Uuid?, server: Uuid, name: String): Boolean = managedServer == server && name in PUBLIC_ACTIONS
         fun validateEndpoint(value: String): String {
             val url = value.trim().toHttpUrlOrNull() ?: error("请输入完整的 HTTP 或 HTTPS 服务地址")
             require(url.username.isEmpty() && url.password.isEmpty() && url.query == null && url.fragment == null) { "请将访问令牌填在单独的令牌栏" }

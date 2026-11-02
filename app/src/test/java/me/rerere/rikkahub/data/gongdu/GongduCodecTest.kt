@@ -8,8 +8,16 @@ import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.utils.readAssistantMessageIds
 import org.junit.Assert.*
 import org.junit.Test
+import kotlin.uuid.Uuid
 
 class GongduCodecTest {
+    @Test fun automaticMcpDiscoveryRequiresApprovalBeforeExposingNewPublicActions() {
+        val managed = Uuid.random()
+        assertTrue(GongduRepository.initialApproval(managed, managed, "publish_content"))
+        assertTrue(GongduRepository.initialApproval(managed, managed, "reply_notification"))
+        assertFalse(GongduRepository.initialApproval(managed, managed, "get_feed_detail"))
+        assertFalse(GongduRepository.initialApproval(managed, Uuid.random(), "publish_content"))
+    }
     @Test fun feedResultRetainsTheTokenAndCoverRequiredForTheNextRealCall() {
         val result = GongduCodec.feeds(GongduCodec.payload("搜索成功\n" + """{"data":{"feeds":[{"id":"note-1","xsecToken":"session-token","noteCard":{"displayTitle":"一只猫","user":{"nickname":"作者"},"cover":{"urlDefault":"https://example.test/cat.jpg"}}}]}}"""))
         assertEquals(GongduFeed("note-1", "一只猫", "session-token", "作者", "https://example.test/cat.jpg"), result.single())
