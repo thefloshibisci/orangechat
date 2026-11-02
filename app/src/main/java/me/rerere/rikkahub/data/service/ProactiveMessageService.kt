@@ -1709,7 +1709,13 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                         )
                     ),
                     forSending = true,
-                ).filterNot { it.parts.isEmpty() }
+                ).filterNot { it.parts.isEmpty() }.transforms(
+                    transformers = listOf(me.rerere.rikkahub.data.gongdu.GongduToolResultTransformer),
+                    context = this@ProactiveMessageTriggerService,
+                    model = model,
+                    assistant = assistant,
+                    settings = settings,
+                )
                 var streamMessages = beginProactiveAssistantTurn(turnMessages, model.id)
                 trace.event(
                     "assistant_turn",

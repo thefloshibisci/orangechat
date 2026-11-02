@@ -1818,7 +1818,7 @@ class ChatService(
                     description = tool.description ?: "Search configured memories",
                     parameters = { tool.inputSchema },
                     needsApproval = tool.needsApproval,
-                    execute = { mcpManager.callTool(serverId, tool.name, if (it is JsonObject) it else normalizeMcpArguments(it)) },
+                    execute = { mcpManager.callToolForModel(serverId, tool.name, if (it is JsonObject) it else normalizeMcpArguments(it), assistant.id) },
                 ))
             }
     }
@@ -1882,7 +1882,7 @@ class ChatService(
                     description = tool.description ?: "",
                     parameters = { tool.inputSchema },
                     needsApproval = tool.needsApproval,
-                    execute = { mcpManager.callTool(serverId, tool.name, if (it is JsonObject) it else normalizeMcpArguments(it)) },
+                    execute = { mcpManager.callToolForModel(serverId, tool.name, if (it is JsonObject) it else normalizeMcpArguments(it), assistant.id) },
                 )
             )
         }

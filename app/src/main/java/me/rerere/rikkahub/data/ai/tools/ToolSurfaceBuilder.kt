@@ -94,7 +94,9 @@ class ToolSurfaceBuilder(
                     parameters = { tool.inputSchema },
                     needsApproval = tool.needsApproval,
                     execute = {
-                        mcpManager.callTool(serverId, tool.name, if (it is JsonObject) it else normalizeMcpArguments(it))
+                        mcpManager.callToolForModel(
+                            serverId, tool.name, if (it is JsonObject) it else normalizeMcpArguments(it), assistant.id,
+                        )
                     },
                 )
             )

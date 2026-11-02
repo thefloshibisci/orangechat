@@ -5,6 +5,7 @@ import kotlinx.serialization.json.*
 import me.rerere.ai.core.InputSchema
 import me.rerere.ai.provider.Modality
 import me.rerere.ai.core.Tool
+import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.datastore.getChatModelForAssistant
@@ -14,9 +15,11 @@ import kotlin.uuid.Uuid
 
 fun gongduTools(settings: Settings, assistantId: Uuid): List<Tool> {
     val server = settings.gongdu.serverId ?: return emptyList()
-    if (settings.assistants.none { it.id == assistantId && server in it.mcpServers } ||
-        Modality.IMAGE !in settings.getChatModelForAssistant(assistantId)?.inputModalities.orEmpty()) return emptyList()
-    return listOf(Tool(
+    if (settings.assistants.none { it.id == assistantId && server in it.mcpServers }) return emptyList()
+    if (settings.mcpServers.none { it.id == server && it.commonOptions.enable }) return emptyList()
+    val resultTools = gongduResultTools(settings, assistantId) + gongduLinkTool(server, assistantId)
+    if (Modality.IMAGE !in settings.getChatModelForAssistant(assistantId)?.inputModalities.orEmpty()) return resultTools
+    return resultTools + listOf(Tool(
         name = "gongdu_read_video",
         description = "读取共度小红书视频：全片概览按时长采样，最多24帧带时间拼图，含可用字幕。" +
             "可以传start_seconds/end_seconds补看最多30秒片段，frame_interval_seconds调整0.5～5秒间隔。" +
@@ -46,6 +49,44 @@ fun gongduTools(settings: Settings, assistantId: Uuid): List<Tool> {
         },
     ))
 }
+
+private fun gongduLinkTool(server: Uuid, assistantId: Uuid): Tool = Tool(
+    name = "gongdu_read_link",
+    description = "直接读取小红书分享链接或整段分享文字，自动解析短链跳转和笔记标识后读取详情摘要。" +
+        "不需要工作区、wget或手工解析令牌；不评论、不关注。只支持小红书官方分享域名，链接必须包含完整访问参数。",
+    parameters = { InputSchema.Obj(buildJsonObject {
+        put("url", buildJsonObject { put("type", "string"); put("description", "一条完整小红书链接，或包含该链接的分享文字") })
+    }, required = listOf("url")) },
+    execute = { args ->
+        val koin = GlobalContext.get()
+        val store = koin.get<SettingsStore>()
+        suspend fun checkAccess() {
+            val live = store.settingsFlowRaw.first()
+            check(live.gongdu.serverId == server &&
+                live.assistants.any { it.id == assistantId && server in it.mcpServers } &&
+                live.mcpServers.any { it.id == server && it.commonOptions.enable }) {
+                "此助手的小红书工具已关闭"
+            }
+        }
+        checkAccess()
+        val obj = args as? JsonObject ?: error("参数必须是对象")
+        val input = (obj["url"] as? JsonPrimitive)?.takeIf { it.isString }?.content
+            ?: error("url必须是分享链接文字")
+        val feed = GongduLinkReader().resolve(input)
+        checkAccess()
+        val note = koin.get<GongduRepository>().detail(feed)
+        checkAccess()
+        val raw = GongduCodec.unwrap(note.raw) as? JsonObject ?: note.raw
+        val card = raw.obj("note") ?: raw
+        val detail = buildJsonObject {
+            put("note", JsonObject(card + mapOf(
+                "feed_id" to JsonPrimitive(note.feed.id), "xsec_token" to JsonPrimitive(note.feed.token),
+                "title" to JsonPrimitive(note.feed.title), "desc" to JsonPrimitive(note.content),
+            )))
+        }
+        GongduToolResultPolicy.compact(server, assistantId, "get_feed_detail", listOf(UIMessagePart.Text(detail.toString())))
+    },
+)
 
 internal fun gongduVideoRequest(args: JsonObject): GongduVideoRequest {
     fun seconds(name: String): Double? {

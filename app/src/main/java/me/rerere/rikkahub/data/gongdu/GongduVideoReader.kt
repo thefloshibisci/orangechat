@@ -33,7 +33,13 @@ import java.io.File
 import java.util.concurrent.TimeUnit
 import kotlin.uuid.Uuid
 
-data class GongduVideoSource(val url: String, val subtitles: String, val subtitleUrl: String = "")
+data class GongduVideoSource(
+    val url: String,
+    val subtitles: String,
+    val subtitleUrl: String = "",
+    val subtitleLanguage: String = "",
+    val subtitleOriginal: Boolean = false,
+)
 
 /** Real sampled frames, not a claim that the model received a video URL's pixels or sound. */
 class GongduVideoReader(private val context: Context, private val files: FilesManager, private val settingsStore: SettingsStore) {
@@ -87,7 +93,7 @@ class GongduVideoReader(private val context: Context, private val files: FilesMa
                             bytes.write(buffer, 0, count)
                         }
                     }
-                    subtitleText(bytes.toString("UTF-8"))
+                    bytes.toString("UTF-8")
                 }
             }.onFailure { if (it is CancellationException) throw it }.getOrDefault("")
             retriever.setDataSource(temp.path)
@@ -95,6 +101,13 @@ class GongduVideoReader(private val context: Context, private val files: FilesMa
                 ?: error("无法读取视频时长")
             require(duration in 1..180_000) { "首版支持 3 分钟以内的视频，请换一条较短视频" }
             val plan = gongduVideoPlan(duration, request)
+            val subtitleMessage = GongduSubtitles.message(
+                GongduSubtitleTrack(
+                    text = source.subtitles, url = source.subtitleUrl,
+                    language = source.subtitleLanguage, original = source.subtitleOriginal,
+                ),
+                subtitles, plan,
+            )
             if (Build.VERSION.SDK_INT < 27) {
                 val width = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0
                 val height = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0
@@ -104,8 +117,7 @@ class GongduVideoReader(private val context: Context, private val files: FilesMa
                 "[共度·小红书视频抽样] ${note.feed.title}\n视频总长 ${duration / 1000.0} 秒，本次范围 ${plan.startMs / 1000.0}～${plan.endMs / 1000.0} 秒。" +
                     "画面按时间排列在带秒数的拼图中，最多 24 帧；长视频概览会调大间隔，短暂动作可能未被采样。" +
                     "授权并提供 gongdu_read_video 工具时，可传 start_seconds/end_seconds（每段最多30秒）和 frame_interval_seconds（0.5～5秒）补看。超过24帧时会放宽间隔，需要更密请缩短窗口。不要声称看过未采样动作。" +
-                    subtitles.takeIf(String::isNotBlank)?.let { "\n全片平台字幕（不代表已听过原声）：\n$it" }.orEmpty() +
-                    if (subtitles.isBlank()) "\n未获取到可用字幕，请仅根据画面分析。" else "",
+                    subtitleMessage,
                 metadata = gongduVideoReference(note.feed),
             ))
             val columns = when { plan.times.size > 8 -> 4; plan.times.size > 4 -> 3; plan.times.size > 2 -> 2; else -> 1 }
@@ -179,9 +191,7 @@ class GongduVideoReader(private val context: Context, private val files: FilesMa
             return if (url.scheme == "http") url.newBuilder().scheme("https").build() else url
         }
         fun sampleTimes(durationMs: Long): List<Long> = gongduVideoPlan(durationMs).times
-        fun subtitleText(srt: String): String = srt.lineSequence().map(String::trim)
-            .filter { it.isNotBlank() && !it.matches(Regex("\\d+")) && !it.contains("-->") && it != "WEBVTT" }
-            .map { it.replace(Regex("<[^>]+>"), "") }.joinToString("\n").take(12000)
+        fun subtitleText(srt: String): String = GongduSubtitles.plainText(srt).take(GongduSubtitles.OVERVIEW_LIMIT)
         fun source(raw: JsonObject): GongduVideoSource {
             val root = (GongduCodec.unwrap(raw) as? JsonObject) ?: raw
             val video = (root.obj("note") ?: root).obj("video") ?: error("这篇笔记没有可读取的视频")
@@ -192,12 +202,10 @@ class GongduVideoReader(private val context: Context, private val files: FilesMa
                 .mapNotNull { it as? JsonObject }.filter { it.str("masterUrl").isNotBlank() }
                 .sortedBy { (it["size"] as? JsonPrimitive)?.longOrNull?.takeIf { size -> size > 0 } ?: Long.MAX_VALUE }
             val stream = choices.firstOrNull() ?: error("服务未返回可下载的视频地址，请刷新笔记")
-            val subtitles = video.obj("subtitles")?.values?.filterIsInstance<JsonArray>()?.flatten()
-                ?.mapNotNull { it as? JsonObject }?.map { it.str("text", "content") }?.filter(String::isNotBlank)
-                ?.distinct()?.joinToString("\n").orEmpty().take(12000)
-            val subtitleUrl = video.obj("subtitles")?.values?.filterIsInstance<JsonArray>()?.flatten()
-                ?.mapNotNull { it as? JsonObject }?.firstNotNullOfOrNull { it.str("url").takeIf(String::isNotBlank) }.orEmpty()
-            return GongduVideoSource(stream.str("masterUrl"), subtitles, subtitleUrl)
+            val subtitles = GongduSubtitles.select(video)
+            return GongduVideoSource(
+                stream.str("masterUrl"), subtitles.text, subtitles.url, subtitles.language, subtitles.original,
+            )
         }
     }
 }

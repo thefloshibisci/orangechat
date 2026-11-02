@@ -62,6 +62,7 @@ import me.rerere.rikkahub.data.datastore.getCurrentAssistant
 import me.rerere.rikkahub.data.datastore.withMcpServerEdit
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.files.saveUploadFromBytes
+import me.rerere.rikkahub.data.gongdu.GongduToolResultPolicy
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.utils.JsonInstant
 import me.rerere.rikkahub.utils.checkDifferent
@@ -208,6 +209,25 @@ class McpManager(
                 else -> UIMessagePart.Text(JsonInstant.encodeToString(it))
             }
         }
+    }
+
+    /** Keep full results for the app UI; bound only the managed Gongdu model-facing surface. */
+    suspend fun callToolForModel(
+        serverId: Uuid,
+        toolName: String,
+        args: JsonObject,
+        assistantId: Uuid,
+    ): List<UIMessagePart> {
+        val before = settingsStore.settingsFlowRaw.first()
+        if (before.gongdu.serverId != serverId) return callTool(serverId, toolName, args)
+        fun authorized(settings: me.rerere.rikkahub.data.datastore.Settings): Boolean =
+            settings.gongdu.serverId == serverId &&
+                settings.assistants.any { it.id == assistantId && serverId in it.mcpServers } &&
+                settings.mcpServers.any { it.id == serverId && it.commonOptions.enable }
+        check(authorized(before)) { "此助手的小红书工具已关闭" }
+        val result = callTool(serverId, toolName, args)
+        check(authorized(settingsStore.settingsFlowRaw.first())) { "此助手的小红书工具已关闭" }
+        return GongduToolResultPolicy.compact(serverId, assistantId, toolName, result)
     }
 
     private suspend fun convertImageContentToFilePart(image: ImageContent): UIMessagePart.Image {
