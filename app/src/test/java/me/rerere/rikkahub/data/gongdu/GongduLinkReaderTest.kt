@@ -6,6 +6,15 @@ import org.junit.Test
 import java.net.InetAddress
 
 class GongduLinkReaderTest {
+    @Test fun mainlandShortLinksResolveWithTheSameRedirectGuards(): Unit = runBlocking {
+        val feed = GongduLinkReader { GongduLinkRedirect(302, longUrl) }
+            .resolve("分享 https://xhslink.cn/o/sample，打开小红书")
+        assertEquals(id, feed.id)
+        assertEquals("AbC+DEF==", feed.token)
+        assertThrows(IllegalArgumentException::class.java) {
+            GongduLinkReader.inputUrl("https://xhslink.cn.evil.test/o/sample")
+        }
+    }
     private val id = "69001234567890abcdef1234"
     private val longUrl = "https://www.xiaohongshu.com/explore/$id?xsec_token=AbC%2BDEF%3D%3D&xsec_source=pc_feed"
 

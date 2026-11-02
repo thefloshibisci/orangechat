@@ -50,11 +50,12 @@ internal class GongduLinkReader(
         fun checkedUrl(url: HttpUrl): HttpUrl {
             require(url.scheme in setOf("http", "https") && url.username.isEmpty() && url.password.isEmpty() &&
                 url.port == (if (url.scheme == "https") 443 else 80)) { "仅支持不含账号和自定义端口的公开分享链接" }
-            require(allowedHost(url.host)) { "只支持 xhslink.com 和 xiaohongshu.com 的小红书链接" }
+            require(allowedHost(url.host)) { "只支持 xhslink.cn、xhslink.com 和 xiaohongshu.com 的小红书链接" }
             return if (url.scheme == "http") url.newBuilder().scheme("https").port(443).build() else url
         }
 
         private fun allowedHost(host: String): Boolean =
+            host == "xhslink.cn" || host.endsWith(".xhslink.cn") ||
             host == "xhslink.com" || host.endsWith(".xhslink.com") ||
                 host == "xiaohongshu.com" || host.endsWith(".xiaohongshu.com")
 

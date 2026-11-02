@@ -226,7 +226,9 @@ fun ChainOfThoughtScope.ChatMessageToolStep(
         null
     }
     val images = tool.output.filterIsInstance<UIMessagePart.Image>()
-    val audios = tool.output.filterIsInstance<UIMessagePart.Audio>()
+    // Video analysis attachments feed the model; they are not assistant voice messages.
+    val audios = if (tool.toolName == "gongdu_read_video") emptyList()
+        else tool.output.filterIsInstance<UIMessagePart.Audio>()
 
     val title = when (tool.toolName) {
         ToolNames.MEMORY -> when (memoryAction) {
@@ -638,7 +640,8 @@ fun ChainOfThoughtScope.ChatMessageToolStep(
             toolName = ToolNaming.toDisplayName(tool.toolName),
             arguments = arguments,
             content = content,
-            output = tool.output,
+            output = if (tool.toolName == "gongdu_read_video")
+                tool.output.filterNot { it is UIMessagePart.Audio } else tool.output,
             onDismissRequest = { showResult = false }
         )
     }

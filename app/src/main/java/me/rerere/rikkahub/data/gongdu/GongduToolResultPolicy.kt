@@ -54,6 +54,24 @@ object GongduToolResultPolicy {
     }
 
     private fun compactText(server: Uuid, assistant: Uuid, tool: String, text: String): String {
+        if (tool in setOf("post_comment_to_feed", "reply_comment_in_feed", "reply_notification")) {
+            val receipt = runCatching { Json.parseToJsonElement(text) as? JsonObject }.getOrNull()
+            if (receipt?.get("_gongdu_write_receipt") == JsonPrimitive(1)) return text
+            val state = receipt?.str("status", "submission_state").orEmpty()
+            val status = when {
+                state == "visible_to_current_account" -> state
+                state == "not_submitted" || text.contains("[not_submitted]") -> "not_submitted"
+                else -> "submitted_unconfirmed"
+            }
+            return buildJsonObject {
+                put("_gongdu_write_receipt", 1); put("tool", tool); put("status", status)
+                put("retry_safe", false); put("public_visibility", "unverified")
+                put("notice", if (status == "visible_to_current_account")
+                    "仅确认刷新后当前账号可见，未核实其他账号可见；不要重复提交。"
+                    else "没有可靠的公开发布确认；可能已经提交，不要自动重试，也不要改发顶层评论。")
+                put("receipt", boundedText(text, 2600))
+            }.toString()
+        }
         if (text.length > 2_000_000) return "[共度原始返回超过处理上限，本次未提供内容；请缩小查询范围。不能据此判定公开操作成功或失败，不要自动重试。]"
         val parsed = runCatching { GongduCodec.payload(text) }.getOrNull() ?: return boundedText(text, 2200)
         if (parsed is JsonObject && parsed[MARKER] == JsonPrimitive(1)) return text
@@ -64,6 +82,12 @@ object GongduToolResultPolicy {
             (parsed as? JsonObject)?.get("error") != null || obj?.get("error") != null ||
             obj?.get("success") == JsonPrimitive(false)) {
             return boundedText(text, 2200)
+        }
+        // A write receipt (including a serialized MCP content array) must never
+        // enter list paging: dropping it can hide an uncertain public action.
+        if (tool !in setOf("list_feeds", "search_feeds", "list_notifications") &&
+            tool !in setOf("get_feed_detail", "user_profile", "get_my_profile")) {
+            return boundedText(text, 3500)
         }
         val list = unwrapped as? JsonArray ?: listKeys.firstNotNullOfOrNull { obj?.get(it) as? JsonArray }
         if (list != null) {

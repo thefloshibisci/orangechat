@@ -24,6 +24,24 @@ import kotlin.uuid.Uuid
 @RunWith(RobolectricTestRunner::class)
 @Config(application = Application::class, sdk = [28], manifest = Config.NONE)
 class GongduToolResultTest {
+    @Test fun commentReceiptsCannotBecomePagedListsOrUnqualifiedSuccess() {
+        for (raw in listOf("""[{"type":"text","text":"评论发表成功"}]""",
+            """{"_gongdu_compact":1,"omitted":1,"items":[]}""",
+            """{"comment_id":"target","content":"回复内容"}""")) {
+            val output = text(compact(raw, "reply_notification"))
+            val result = Json.parseToJsonElement(output).jsonObject
+            assertEquals("submitted_unconfirmed", result.str("status"))
+            assertEquals(JsonPrimitive(false), result["retry_safe"])
+            assertFalse(result.containsKey("result_ref"))
+            assertEquals(output, text(compact(output, "reply_notification")))
+        }
+    }
+    @Test fun verifiedCurrentAccountVisibilityDoesNotImplyPublicVisibility() {
+        val result = Json.parseToJsonElement(text(compact(
+            """{"status":"visible_to_current_account","public_visibility":"unverified"}""", "post_comment_to_feed"))).jsonObject
+        assertEquals("visible_to_current_account", result.str("status"))
+        assertEquals("unverified", result.str("public_visibility"))
+    }
     private val server = Uuid.random()
     private val assistant = Assistant(mcpServers = setOf(server))
     private val settings = Settings.dummy().copy(gongdu = GongduSetting(serverId = server), assistants = listOf(assistant))
