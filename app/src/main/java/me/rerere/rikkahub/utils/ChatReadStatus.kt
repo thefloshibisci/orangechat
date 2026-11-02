@@ -23,7 +23,9 @@ internal fun repliedUserMessageIds(messages: List<UIMessage>): Set<Uuid> {
     for (message in messages) {
         if (message.avatarInteraction() != null) continue
         if (message.role == MessageRole.USER) {
-            if (message.toText().contains("[主动消息上下文]")) {
+            if (message.toText().contains("[主动消息上下文]") || message.parts.any {
+                it is UIMessagePart.Text && it.metadata?.containsKey("gongdu_event_id") == true
+            }) {
                 // A scheduled message is not a response to pending user messages.
                 pending.clear()
             } else {
@@ -60,7 +62,9 @@ internal fun readAssistantMessageIds(messages: List<UIMessage>): Set<Uuid> {
         when (message.role) {
             MessageRole.ASSISTANT -> pending.add(message.id)
             // A proactive trigger is written by the app, not by the person reading.
-            MessageRole.USER -> if (!message.toText().contains("[主动消息上下文]")) {
+            MessageRole.USER -> if (!message.toText().contains("[主动消息上下文]") && message.parts.none {
+                it is UIMessagePart.Text && it.metadata?.containsKey("gongdu_event_id") == true
+            }) {
                 read.addAll(pending)
                 pending.clear()
             }

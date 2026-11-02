@@ -163,6 +163,7 @@ import me.rerere.rikkahub.ui.pages.setting.SettingWeixinBotPage
 import me.rerere.rikkahub.ui.pages.setting.SettingQqBotPage
 import me.rerere.rikkahub.ui.pages.setting.components.SettingsBackground
 import me.rerere.rikkahub.plugin.webview.PluginWebViewPage
+import me.rerere.rikkahub.ui.pages.gongdu.GongduPage
 import me.rerere.rikkahub.ui.pages.memory.MemoryBankPage
 import me.rerere.rikkahub.ui.components.ui.EmojiPickerPage
 import me.rerere.rikkahub.ui.pages.share.handler.ShareHandlerPage
@@ -755,13 +756,23 @@ class RouteActivity : ComponentActivity() {
                             }
 
                             entry<Screen.PluginWebView> { key ->
+                                if (key.pluginId == "com.orangechat.plugin.orange-watch") {
+                                    GongduPage(conversationId = key.conversationId, onNavigateBack = { backStack.removeLastOrNull() })
+                                    return@entry
+                                }
                                 val pluginManager = koinInject<me.rerere.rikkahub.plugin.manager.PluginManager>()
                                 PluginWebViewPage(
                                     pluginId = key.pluginId,
                                     htmlEntryPath = key.entryPath,
-                                    initialConversationId = key.conversationId,
                                     pluginManager = pluginManager,
                                     onNavigateBack = { backStack.removeLastOrNull() }
+                                )
+                            }
+
+                            entry<Screen.Gongdu> { key ->
+                                GongduPage(
+                                    conversationId = key.conversationId,
+                                    onNavigateBack = { backStack.removeLastOrNull() },
                                 )
                             }
 
@@ -1098,6 +1109,9 @@ sealed interface Screen : NavKey {
 
     @Serializable
     data class PluginWebView(val pluginId: String, val entryPath: String, val conversationId: String = "") : Screen
+
+    @Serializable
+    data class Gongdu(val conversationId: String) : Screen
 
     @Serializable
     data class PluginDeclarativeUI(val pluginId: String) : Screen

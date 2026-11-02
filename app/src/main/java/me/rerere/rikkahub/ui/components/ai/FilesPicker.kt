@@ -121,14 +121,10 @@ internal fun FilesPicker(
 
             FilePickButton(onClick = onPickFile)
 
-            WatchTogetherButton(onClick = {
+            GongduButton(onClick = {
                 onDismiss()
                 navController.navigate(
-                    Screen.PluginWebView(
-                        pluginId = "com.orangechat.plugin.orange-watch",
-                        entryPath = "ui/index.html",
-                        conversationId = conversation.id.toString(),
-                    )
+                    Screen.Gongdu(conversationId = conversation.id.toString())
                 )
             })
         }
@@ -339,11 +335,11 @@ fun FilePickButton(onClick: () -> Unit = {}) {
 }
 
 @Composable
-fun WatchTogetherButton(onClick: () -> Unit = {}) {
+fun GongduButton(onClick: () -> Unit = {}) {
     BigIconTextButton(icon = {
         Icon(HugeIcons.Tv01, null)
     }, text = {
-        Text("共看")
+        Text("共度")
     }) {
         onClick()
     }

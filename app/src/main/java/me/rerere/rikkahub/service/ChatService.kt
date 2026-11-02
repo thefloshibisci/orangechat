@@ -1836,6 +1836,7 @@ class ChatService(
         allowAppUsage: Boolean,
     ): List<Tool> = buildList {
         addAll(buildProactiveWakeupTools(settings, assistant, conversation))
+        addAll(me.rerere.rikkahub.data.gongdu.gongduTools(settings, assistant.id))
         if (settings.enableWebSearch) {
             addAll(createSearchTools(settings))
         }

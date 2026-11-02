@@ -151,6 +151,7 @@ class RikkaHubApp : Application() {
         // sync upload files to DB
         syncManagedFiles()
         get<me.rerere.rikkahub.data.model.ModelCapabilitySync>().start(get<AppScope>())
+        get<me.rerere.rikkahub.data.gongdu.GongduDoorbell>().start()
         me.rerere.rikkahub.data.serein.SereinUploadScheduler.start(this)
         me.rerere.rikkahub.data.serein.SereinObservationScheduler.start(this)
         get<AppScope>().launch {

@@ -29,6 +29,10 @@ import org.koin.dsl.module
 import java.io.File
 
 val repositoryModule = module {
+    single { me.rerere.rikkahub.data.gongdu.GongduRepository(get<me.rerere.rikkahub.data.datastore.SettingsStore>(),
+        get<me.rerere.rikkahub.data.ai.mcp.McpManager>(), get<me.rerere.rikkahub.AppScope>()) }
+    single { me.rerere.rikkahub.data.gongdu.GongduVideoReader(get(), get()) }
+    single { me.rerere.rikkahub.data.gongdu.GongduDoorbell(get(), get(), get(), get(), get()) }
     single { me.rerere.workspace.ssh.SshConnectionPool() } onClose { it?.close() }
     single { TranslationHistoryRepository(get()) }
     single { me.rerere.rikkahub.data.serein.SereinHookClient() }

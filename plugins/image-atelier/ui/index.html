@@ -311,8 +311,8 @@ async function upscaleImage(id) {
 }
 $('upscaleInput').onclick = function() { safe(function() { return upscaleImage(imageId); }); };
 async function sendImage(src, parent) {
-  if (!Bridge.listWatchConversations || !Bridge.sendWatchMessage) throw Error('宿主不支持会话发图');
-  var r = parse(await Bridge.listWatchConversations()); var list = r && r.conversations;
+  if (!Bridge.listConversations || !Bridge.sendChatMessage) throw Error('宿主不支持会话发图');
+  var r = parse(await Bridge.listConversations()); var list = r && r.conversations;
   if (!Array.isArray(list) || !list.length) throw Error('未找到可用聊天');
   var box = document.createElement('div'), sel = document.createElement('select');
   list.forEach(function(c) {
@@ -331,7 +331,7 @@ async function sendImage(src, parent) {
       cv.getContext('2d').drawImage(im, 0, 0, cv.width, cv.height);
       frame = cv.toDataURL('image/jpeg', 0.9);
     }
-    var sent = parse(await Bridge.sendWatchMessage(sel.value, '图生出来啦，咱们一起看看吧？', '', frame));
+    var sent = parse(await Bridge.sendChatMessage(sel.value, '图生出来啦，咱们一起看看吧？', '', frame));
     if (!sent || sent.success !== true) throw Error('发送未确认');
     say('已发到聊天：「' + targetTitle + '」');
   });
@@ -434,14 +434,14 @@ $('i2iSend').onclick = function() { safe(async function() {
   var idea = $('i2iIdea').value.trim();
   if (!idea) throw Error('写几个字告诉机你想改什么吧');
   var a = await asset(imageId);
-  if (!Bridge.listWatchConversations || !Bridge.sendWatchMessage) throw Error('当前宿主不支持发送图片到聊天');
-  var list = parse(await Bridge.listWatchConversations());
+  if (!Bridge.listConversations || !Bridge.sendChatMessage) throw Error('当前宿主不支持发送图片到聊天');
+  var list = parse(await Bridge.listConversations());
   var convs = (list && list.conversations || []).filter(function(c) { return typeof c.id === 'string' && c.id; });
   if (!convs.length) throw Error('没有可用聊天');
   var cfg = await avConfig(); var target = avResolve(cfg.target, convs);
   if (!confirm('将底图和改图想法发送到「' + (target.title || target.id) + '」？此操作仅发送消息，不直接提交生图。')) return;
   var text = '帮我改一下这张图：' + idea + '\n\n（底图素材编号：' + imageId + '，已在插件本地，直接用 nai_draw 图生图即可）';
-  var sent = parse(await Bridge.sendWatchMessage(target.id, text, '', a.src));
+  var sent = parse(await Bridge.sendChatMessage(target.id, text, '', a.src));
   if (!sent || sent.success !== true) throw Error('发送未确认，请检查聊天');
   say('已发到「' + (target.title || '聊天') + '」，请在聊天里确认改图参数');
   $('i2iIdea').value = '';

@@ -858,6 +858,7 @@ class SettingsStore(
 
 @Serializable
 data class Settings(
+    val gongdu: me.rerere.rikkahub.data.gongdu.GongduSetting = me.rerere.rikkahub.data.gongdu.GongduSetting(),
     @Transient
     val init: Boolean = false,
     // Legacy backup fields; no longer gate application startup.
@@ -1032,7 +1033,7 @@ data class DisplaySetting(
     val drawerItemAlpha: Float = 1f,
     // 显示在聊天侧边栏“插件”页中的快捷插件 ID
     val drawerPluginShortcutIds: Set<String> = emptySet(),
-    // 共看控件颜色与不透明度（PluginWebView 共看功能）
+    // 已移除功能的历史字段，仅用于兼容旧设置；不再提供界面或读取执行路径。
     val watchControlColor: Long? = null,
     val watchControlAlpha: Float = 0.18f,
     // 纪念日：完全保存在本机；保留旧选中 ID 以兼容历史设置
