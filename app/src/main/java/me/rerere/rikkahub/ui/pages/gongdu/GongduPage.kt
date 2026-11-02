@@ -2,6 +2,7 @@ package me.rerere.rikkahub.ui.pages.gongdu
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.*
@@ -9,6 +10,7 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil3.compose.AsyncImage
@@ -46,6 +48,8 @@ fun GongduPage(conversationId: String, onNavigateBack: () -> Unit) {
     var keyword by rememberSaveable { mutableStateOf("") }
     var feeds by remember { mutableStateOf<List<GongduFeed>>(emptyList()) }
     var selected by remember { mutableStateOf<GongduNote?>(null) }
+    var videoStart by remember(selected?.feed?.id) { mutableStateOf("") }
+    var videoEnd by remember(selected?.feed?.id) { mutableStateOf("") }
     var qr by remember { mutableStateOf<String?>(null) }
     var login by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
@@ -73,7 +77,9 @@ fun GongduPage(conversationId: String, onNavigateBack: () -> Unit) {
         attachmentReferenceGuard.beginWrite().use {
             val parts = if (video) {
                 check(vision) { "当前聊天模型未启用识图，请先选择支持图片的模型" }
-                videos.read(note)
+                fun optionalSeconds(value: String): Double? = if (value.isBlank()) null else
+                    requireNotNull(value.toDoubleOrNull()?.takeIf { it.isFinite() && it >= 0 }) { "补看时间请填写非负秒数" }
+                videos.read(note, conversation.assistantId, GongduVideoRequest(optionalSeconds(videoStart), optionalSeconds(videoEnd)))
             } else buildList {
                 add(UIMessagePart.Text("[共度·小红书]\n${note.feed.title}\n${note.content}\n作者：${note.feed.author}\n笔记ID：${note.feed.id}\n我们一起聊聊这篇吧。"))
                 if (vision && note.feed.cover.isNotBlank()) add(UIMessagePart.Image(note.feed.cover))
@@ -172,7 +178,12 @@ fun GongduPage(conversationId: String, onNavigateBack: () -> Unit) {
                     val body = (note.raw["note"] as? JsonObject) ?: note.raw
                     if (body["video"] is JsonObject) {
                         OutlinedButton(enabled = !busy, onClick = { runAction { share(note, true) } }) { Text("让机看视频") }
-                        Text("提取 6 个时间点的画面和可用字幕；首版不提供原始声音。", style = MaterialTheme.typography.bodySmall)
+                        Text("按时长抽取最多24帧，带时间标记；声音由支持音频的模型直接分析，或用语音识别读取对白。", style = MaterialTheme.typography.bodySmall)
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedTextField(videoStart, { videoStart = it }, modifier = Modifier.weight(1f), label = { Text("补看起点（秒）") }, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal))
+                            OutlinedTextField(videoEnd, { videoEnd = it }, modifier = Modifier.weight(1f), label = { Text("补看终点（秒）") }, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal))
+                        }
+                        Text("留空看全片概览；填写后补看指定片段，每次最多30秒。授权当前助手使用小红书后，机也可自主补看。仅转写文字时不能分析语气、音乐或音效。", style = MaterialTheme.typography.bodySmall)
                     }
                 }
             }

@@ -76,8 +76,30 @@ fun isHistoryUploadImage(part: UIMessagePart): Boolean =
 
 fun downgradeOldImage(part: UIMessagePart): UIMessagePart = UIMessagePart.Text(OLD_IMAGE_PLACEHOLDER)
 
-fun limitRecentAudio(messages: List<UIMessage>, limit: Int): List<UIMessage> =
-    limitRecentParts(messages, limit, ::isHistoryAudio, ::downgradeOldAudio)
+/** User recordings and original audio returned by tools share one chronological budget. */
+fun limitRecentAudio(messages: List<UIMessage>, limit: Int): List<UIMessage> {
+    fun count(part: UIMessagePart): Int = when {
+        isHistoryAudio(part) -> 1
+        part is UIMessagePart.Tool -> part.output.sumOf(::count)
+        else -> 0
+    }
+    val total = messages.sumOf { message -> message.parts.sumOf(::count) }
+    var remaining = mediaToDowngrade(total, limit)
+    if (remaining == 0) return messages
+    fun downgrade(part: UIMessagePart): UIMessagePart = when {
+        remaining == 0 || count(part) == 0 -> part
+        isHistoryAudio(part) -> {
+            remaining--
+            downgradeOldAudio(part)
+        }
+        part is UIMessagePart.Tool -> part.copy(output = part.output.map(::downgrade))
+        else -> part
+    }
+    return messages.map { message ->
+        if (remaining == 0 || message.parts.none { count(it) > 0 }) message
+        else message.copy(parts = message.parts.map(::downgrade))
+    }
+}
 
 fun limitRecentUploadImages(messages: List<UIMessage>, limit: Int): List<UIMessage> =
     limitToolImages(limitRecentParts(messages, limit, ::isHistoryUploadImage, ::downgradeOldImage), limit)

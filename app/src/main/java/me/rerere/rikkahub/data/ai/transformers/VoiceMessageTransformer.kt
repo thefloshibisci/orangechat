@@ -34,17 +34,17 @@ object VoiceMessageTransformer : InputMessageTransformer {
         }
         // 直传音频时，每条历史语音都会被 base64 编进请求；按助手设置只保留最近几条原音频，防止 OOM
         val limited = if (directAudio) limitRecentAudio(messages, ctx.assistant.maxContextVoices) else messages
+        fun adaptPart(part: UIMessagePart): UIMessagePart = when (part) {
+            is UIMessagePart.VoiceMessage -> adapt(part.url, part.transcript)
+            is UIMessagePart.Audio -> {
+                val adapted = adapt(part.url)
+                if (adapted is UIMessagePart.Audio) part.copy(url = adapted.url) else adapted
+            }
+            is UIMessagePart.Tool -> part.copy(output = part.output.map(::adaptPart))
+            else -> part
+        }
         return limited.map { message ->
-            message.copy(parts = message.parts.map { part ->
-                when (part) {
-                    is UIMessagePart.VoiceMessage -> adapt(part.url, part.transcript)
-                    is UIMessagePart.Audio -> {
-                        val adapted = adapt(part.url)
-                        if (adapted is UIMessagePart.Audio) part.copy(url = adapted.url) else adapted
-                    }
-                    else -> part
-                }
-            })
+            message.copy(parts = message.parts.map(::adaptPart))
         }
     }
 }

@@ -90,6 +90,43 @@ class RecentMediaLimitTest {
     }
 
     @Test
+    fun `tool audio and user recordings share one chronological budget while newest survives`() {
+        val oldTool = UIMessagePart.Tool("old", "gongdu_read_video", "{}", listOf(image(0), voice(1)))
+        val latestTool = UIMessagePart.Tool("latest", "gongdu_read_video", "{}", listOf(
+            UIMessagePart.Text("视频原声"), UIMessagePart.Audio("file:///video/latest.wav")))
+        val messages = listOf(user(voice(0)), UIMessage(role = MessageRole.ASSISTANT, parts = listOf(oldTool)),
+            user(UIMessagePart.Audio("file:///voice/new.wav")),
+            UIMessage(role = MessageRole.ASSISTANT, parts = listOf(latestTool)))
+        val result = limitRecentAudio(messages, 2)
+        assertEquals(UIMessagePart.Text("转写0"), result[0].parts.single())
+        val downgraded = result[1].parts.single() as UIMessagePart.Tool
+        assertEquals(oldTool.toolCallId, downgraded.toolCallId)
+        assertEquals(oldTool.input, downgraded.input)
+        assertEquals(image(0), downgraded.output[0])
+        assertEquals(UIMessagePart.Text("转写1"), downgraded.output[1])
+        assertSame(messages[2], result[2])
+        assertSame(messages[3], result[3])
+        assertTrue(oldTool.output[1] is UIMessagePart.VoiceMessage)
+    }
+
+    @Test
+    fun `audio nested in tools is trimmed in batches and unlimited remains unchanged`() {
+        val audio = UIMessagePart.Audio("file:///video/original.wav")
+        val messages = (1..10).map { index ->
+            val inner = UIMessagePart.Tool("nested-$index", "audio", "{}", listOf(audio))
+            UIMessage(role = MessageRole.ASSISTANT, parts = listOf(
+                UIMessagePart.Tool("video-$index", "video", "{}", listOf(inner))))
+        }
+        assertSame(messages, limitRecentAudio(messages, 0))
+        val result = limitRecentAudio(messages, 3)
+        fun nestedOutput(message: UIMessage): UIMessagePart =
+            (((message.parts.single() as UIMessagePart.Tool).output.single()) as UIMessagePart.Tool).output.single()
+        assertEquals(8, result.count { nestedOutput(it) == UIMessagePart.Text(OLD_AUDIO_PLACEHOLDER) })
+        assertEquals(audio, nestedOutput(result.last()))
+        assertTrue(messages.all { nestedOutput(it) is UIMessagePart.Audio })
+    }
+
+    @Test
     fun `old uploaded images become a text note`() {
         val messages = (1..55).map { user(image(it)) }
         val result = limitRecentUploadImages(messages, 50)

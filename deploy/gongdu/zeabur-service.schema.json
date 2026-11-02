@@ -1,0 +1,21 @@
+{
+  "id": "gongdu-xiaohongshu",
+  "name": "gongdu-xiaohongshu",
+  "replicas": 1,
+  "source": {
+    "image": "xpzouying/xiaohongshu-mcp@sha256:086aa5db10219a018dc42ae1edfa1ffebe1e54197ac036121997d8b0bbe3eea8"
+  },
+  "ports": [
+    {"id": "web", "port": 18060, "type": "HTTP"}
+  ],
+  "volumes": [
+    {"id": "data", "dir": "/app/data"},
+    {"id": "images", "dir": "/app/images"}
+  ],
+  "env": [
+    {"key": "AUTH_TOKEN", "default": "", "expose": false},
+    {"key": "COOKIES_PATH", "default": "/app/data/cookies.json", "expose": false},
+    {"key": "HOME", "default": "/app/data/home", "expose": false},
+    {"key": "XDG_CONFIG_HOME", "default": "/app/data/config", "expose": false}
+  ]
+}
