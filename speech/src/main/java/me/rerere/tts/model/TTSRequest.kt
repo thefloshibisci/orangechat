@@ -10,7 +10,8 @@ import kotlinx.serialization.Serializable
 
 @Serializable
 data class TTSRequest(
-    val text: String
+    val text: String,
+    val style: SpeechStyle = SpeechStyle(),
 )
 
 @Serializable

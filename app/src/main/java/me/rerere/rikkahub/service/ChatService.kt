@@ -120,6 +120,7 @@ import me.rerere.rikkahub.data.ai.transformers.PromptInjectionTransformer
 import me.rerere.rikkahub.data.ai.transformers.RegexOutputTransformer
 import me.rerere.rikkahub.data.ai.transformers.TemplateTransformer
 import me.rerere.rikkahub.data.ai.transformers.ThinkTagTransformer
+import me.rerere.rikkahub.data.ai.transformers.SpeechOutputTransformer
 import me.rerere.rikkahub.data.ai.transformers.TimeReminderTransformer
 import me.rerere.rikkahub.data.ai.transformers.ImageHistoryLimitTransformer
 import me.rerere.rikkahub.data.ai.transformers.VoiceMessageTransformer
@@ -154,6 +155,10 @@ import me.rerere.rikkahub.data.interaction.rebaseReactionReceipts
 import me.rerere.rikkahub.data.interaction.MAX_CUSTOM_CHAT_REACTION_PRESETS
 import me.rerere.rikkahub.data.interaction.ReactionPresetToolResult
 import me.rerere.rikkahub.data.interaction.buildChatInteractionTools
+import me.rerere.rikkahub.data.interaction.AssistantCustomizationImages
+import me.rerere.rikkahub.data.interaction.AssistantCustomizationPatch
+import me.rerere.rikkahub.data.interaction.buildAssistantSelfCustomizationTools
+import me.rerere.rikkahub.data.interaction.customizeAssistant
 import me.rerere.rikkahub.data.interaction.effectiveChatReactionPresets
 import me.rerere.rikkahub.data.interaction.interactionText
 import me.rerere.rikkahub.data.interaction.normalizeCustomChatReactionPreset
@@ -203,6 +208,7 @@ private val outputTransformers by lazy {
         ThinkTagTransformer,
         Base64ImageToLocalFileTransformer,
         RegexOutputTransformer,
+        SpeechOutputTransformer,
     )
 }
 
@@ -822,14 +828,15 @@ class ChatService(
             check(conversationRepo.existsConversationById(conversationId)) { "聊天已删除" }
             val current = session.state.value
             check(current.assistantId == assistant.id) { "助手已改变" }
-            check(settingsStore.settingsFlow.value.getAssistantById(assistant.id)?.enableAvatarInteractions == true) {
+            val liveAssistant = settingsStore.settingsFlow.value.getAssistantById(assistant.id)
+            check(liveAssistant?.enableAvatarInteractions == true) {
                 "头像互动已关闭"
             }
             val text = interactionText(
-                assistant.name.ifBlank { "AI" },
+                liveAssistant.name.ifBlank { "AI" },
                 "你",
-                assistant.assistantInteractionAction.ifBlank { "拍了拍" },
-                assistant.assistantInteractionSuffix,
+                liveAssistant.assistantInteractionAction.ifBlank { "拍了拍" },
+                liveAssistant.assistantInteractionSuffix,
             )
             val notice = UIMessage(
                 role = MessageRole.SYSTEM,
@@ -851,6 +858,53 @@ class ChatService(
             ))
             text
         }
+    }
+
+    private suspend fun customizeCurrentAssistant(
+        conversationId: Uuid,
+        assistantId: Uuid,
+        patch: AssistantCustomizationPatch?,
+    ): Assistant {
+        val session = getOrCreateSession(conversationId)
+        fun checkCaller() {
+            session.requireActive()
+            check(session.state.value.assistantId == assistantId) { "此聊天的助手已改变" }
+        }
+        checkCaller()
+        val images = AssistantCustomizationImages(context, saveImage = { file, mime ->
+            // Keep upload files reusable and generated/remote images durable across restarts and backup.
+            if (filesManager.isManagedChatFile(file.toURI().toString())) {
+                file.toURI().toString()
+            } else {
+                val saved = filesManager.saveManagedFromUri(
+                    folder = me.rerere.rikkahub.data.files.FileFolders.UPLOAD,
+                    uri = file.toURI().toString().toUri(),
+                    displayName = "assistant-image.${mime.substringAfter('/').substringBefore('+')}",
+                    mimeType = mime,
+                )
+                filesManager.getFile(saved).toURI().toString()
+            }
+        })
+        return customizeAssistant(
+            assistantId = assistantId,
+            patch = patch,
+            readSettings = {
+                checkCaller()
+                check(conversationRepo.existsConversationById(conversationId)) { "聊天已删除" }
+                settingsStore.settingsFlowRaw.first()
+            },
+            importImage = images::importImage,
+            commit = { edit ->
+                session.saveMutex.withLock {
+                    checkCaller()
+                    check(conversationRepo.existsConversationById(conversationId)) { "聊天已删除" }
+                    settingsStore.update { current ->
+                        checkCaller()
+                        edit(current)
+                    }
+                }
+            },
+        )
     }
 
     private suspend fun manageReactionPresets(
@@ -1832,6 +1886,9 @@ class ChatService(
             )
         }
         addAll(pluginToolProvider.getTools(conversation.currentMessages, conversation.id.toString()))
+        addAll(buildAssistantSelfCustomizationTools(assistant) { patch ->
+            customizeCurrentAssistant(conversationId, assistant.id, patch)
+        })
         addAll(buildChatInteractionTools(
             assistant = assistant,
             reactionPresets = effectiveChatReactionPresets(settings.customReactionPresets),

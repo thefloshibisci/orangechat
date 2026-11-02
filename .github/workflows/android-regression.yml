@@ -7,6 +7,7 @@ on:
       - 'app/**'
       - 'ai/**'
       - 'search/**'
+      - 'speech/**'
       - 'workspace/**'
       - '.github/workflows/android-regression.yml'
   workflow_dispatch:
@@ -43,7 +44,7 @@ jobs:
         working-directory: web-ui
         run: pnpm install --frozen-lockfile
       - name: Test regressions and compile device tests
-        run: bash gradlew :app:testDebugUnitTest :ai:testDebugUnitTest :search:testDebugUnitTest :workspace:testDebugUnitTest :app:compileDebugAndroidTestKotlin
+        run: bash gradlew :app:testDebugUnitTest :ai:testDebugUnitTest :speech:testDebugUnitTest :search:testDebugUnitTest :workspace:testDebugUnitTest :app:compileDebugAndroidTestKotlin
       - name: Build debug APK
         run: bash gradlew :app:assembleDebug -PorangechatAbis=arm64-v8a -PorangechatUniversalApk=false
       - uses: actions/upload-artifact@v4

@@ -12,6 +12,7 @@ import androidx.compose.foundation.text.input.InputTransformation
 import androidx.compose.foundation.text.input.TextFieldLineLimits
 import androidx.compose.foundation.text.input.maxLength
 import androidx.compose.foundation.text.input.rememberTextFieldState
+import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Card
@@ -30,6 +31,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -37,9 +39,9 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
-import kotlinx.coroutines.flow.drop
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.Add01
 import me.rerere.hugeicons.stroke.Cancel01
@@ -62,6 +64,18 @@ internal fun ChatInteractionSettings(
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         CardGroup(title = { Text("聊天互动") }) {
+            item(
+                headlineContent = { Text("允许 AI 自己设置") },
+                supportingContent = { Text("AI 可以修改自己的拍一拍、头像和此助手的聊天背景。你仍可在这里手动调整。") },
+                trailingContent = {
+                    Switch(
+                        checked = assistant.allowSelfCustomization,
+                        onCheckedChange = { enabled ->
+                            onEdit { current -> current.copy(allowSelfCustomization = enabled) }
+                        },
+                    )
+                },
+            )
             item(
                 headlineContent = { Text("头像互动") },
                 supportingContent = { Text("双击头像互动，AI 也能调用工具对你使用。双击会触发一次回复。") },
@@ -297,7 +311,7 @@ internal fun ReactionPresetSettings(
     }
 }
 
-/** The editor owns selection/composition; delayed persistence never replaces its active buffer. */
+/** External tool edits refresh idle fields; the focused editor keeps its composition and pending user edits. */
 @Composable
 internal fun InteractionTextField(
     initialText: String,
@@ -308,13 +322,52 @@ internal fun InteractionTextField(
 ) {
     val state = rememberTextFieldState(initialText)
     val latestOnChange by rememberUpdatedState(onChange)
+    val latestExternalText by rememberUpdatedState(initialText)
+    var focused by remember { mutableStateOf(false) }
     LaunchedEffect(state) {
-        snapshotFlow { state.text.toString() }.drop(1).collect { latestOnChange(it) }
+        var observedText = state.text.toString()
+        var lastExternal = latestExternalText
+        var pendingUserText: String? = null
+        var deferredExternal: String? = null
+        val emittedEdits = mutableListOf<String>()
+        snapshotFlow { Triple(state.text.toString(), latestExternalText, focused) }.collect { (text, external, active) ->
+            if (external != lastExternal) {
+                lastExternal = external
+                val acknowledgedIndex = emittedEdits.indexOf(external)
+                if (acknowledgedIndex >= 0) {
+                    // Keep repeated values in order: B,C,B must not treat the first B echo as
+                    // acknowledgment of the final B. Conflated echoes may acknowledge earlier
+                    // saves too, but matching the first occurrence conservatively keeps newer edits.
+                    emittedEdits.subList(0, acknowledgedIndex + 1).clear()
+                    pendingUserText = emittedEdits.lastOrNull()
+                } else {
+                    deferredExternal = external
+                    pendingUserText = null
+                    emittedEdits.clear()
+                }
+            }
+            if (text != observedText) {
+                observedText = text
+                pendingUserText = text
+                deferredExternal = null
+                emittedEdits.add(text)
+                latestOnChange(text)
+            }
+            if (!active) {
+                val desired = deferredExternal ?: external.takeIf { pendingUserText == null }
+                if (desired != null && text != desired) {
+                    // Mark before editing, so the subsequent snapshot is display-only, with no save callback.
+                    observedText = desired
+                    deferredExternal = null
+                    state.setTextAndPlaceCursorAtEnd(desired)
+                }
+            }
+        }
     }
     OutlinedTextField(
         state = state,
         label = { Text(label) },
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().onFocusChanged { focused = it.isFocused },
         inputTransformation = InputTransformation.maxLength(maxLength),
         lineLimits = if (singleLine) {
             TextFieldLineLimits.SingleLine

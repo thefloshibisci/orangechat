@@ -20,6 +20,7 @@ import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.datastore.getSelectedTTSProvider
 import me.rerere.rikkahub.utils.stripMarkdown
 import me.rerere.tts.model.PlaybackState
+import me.rerere.tts.model.SpeechMarkup
 import me.rerere.tts.provider.TTSManager
 import me.rerere.tts.provider.TTSProviderSetting
 import me.rerere.tts.controller.TtsController
@@ -129,7 +130,8 @@ internal class CustomTtsStateImpl(
     }
 
     override fun speak(text: String, flushCalled: Boolean) {
-        val processed = text.stripMarkdown()
+        updateProvider(settingsStore.settingsFlow.value.getSelectedTTSProvider())
+        val processed = SpeechMarkup.prepare(text) { it.stripMarkdown() }
         controller.speak(processed, flushCalled)
     }
 
@@ -161,7 +163,8 @@ internal class CustomTtsStateImpl(
 
     override fun enqueueText(text: String) {
         if (text.isBlank()) return
-        val processed = text.stripMarkdown()
+        updateProvider(settingsStore.settingsFlow.value.getSelectedTTSProvider())
+        val processed = SpeechMarkup.prepare(text) { it.stripMarkdown() }
         if (processed.isBlank()) return
         controller.speak(processed, flush = false)
     }

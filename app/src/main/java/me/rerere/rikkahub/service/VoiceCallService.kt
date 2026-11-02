@@ -1,10 +1,14 @@
-﻿/*
+/*
  * 橘瓣 OrangeChat
  * 衍生自 RikkaHub (https://github.com/rikkahub/rikkahub)，原作者 RE
  * 本项目基于 GNU AGPL v3 开源，详见根目录 LICENSE 文件
  */
 
 package me.rerere.rikkahub.service
+
+import me.rerere.tts.model.SpeechMarkup
+import me.rerere.tts.provider.speechDeliveryPrompt
+import me.rerere.rikkahub.data.datastore.getSelectedTTSProvider
 
 import me.rerere.rikkahub.data.sync.isChatRecoveryBlocking
 import android.app.NotificationManager
@@ -424,7 +428,8 @@ class VoiceCallService : Service(), KoinComponent {
         try {
             val entry = requireNotNull(chatService.submitMessage(
                 conversationId,
-                listOf(UIMessagePart.Text(transcript))
+                listOf(UIMessagePart.Text(transcript)),
+                transientSystemPrompt = speechDeliveryPrompt(settingsStore.settingsFlow.value.getSelectedTTSProvider()),
             )) { "语音内容为空或会话已删除" }
             activeVoiceMessage = entry
             voiceRequestIds += entry.id
@@ -439,7 +444,8 @@ class VoiceCallService : Service(), KoinComponent {
                     } else if (finalText.isBlank()) {
                         failVoiceReply(entry, "本次未返回可朗读的回复，请到聊天页查看")
                     } else {
-                        publishVoiceReply(entry, finalText)
+                        publishVoiceReply(entry, queuedSpeechReplyText(conversation.value.currentMessages, entry.id)
+                            .ifBlank { finalText })
                         onGenerationDone(entry)
                     }
                 } catch (cancelled: CancellationException) {
@@ -484,7 +490,7 @@ class VoiceCallService : Service(), KoinComponent {
                 ) return@collect
 
                 val entry = activeVoiceMessage ?: return@collect
-                val currentText = queuedReplyText(conv.currentMessages, entry.id)
+                val currentText = queuedSpeechReplyText(conv.currentMessages, entry.id)
                 if (currentText.isNotBlank()) publishVoiceReply(entry, currentText)
             }
         }
@@ -493,11 +499,12 @@ class VoiceCallService : Service(), KoinComponent {
     private fun publishVoiceReply(entry: QueuedMessage, currentText: String) {
         if (activeVoiceMessage !== entry || _uiState.value.status !in
             setOf(VoiceCallStatus.Processing, VoiceCallStatus.Speaking)) return
-        _uiState.update { it.copy(assistantText = currentText) }
+        _uiState.update { it.copy(assistantText = SpeechMarkup.transcript(currentText)) }
         if (currentText.length > ttsSentLength) {
             val newText = currentText.substring(ttsSentLength)
-            extractCompleteSentences(newText).filter(String::isNotBlank).forEach { tts.enqueueText(it) }
-            ttsSentLength = currentText.length - getPendingRemainder(newText).length
+            val ready = SpeechMarkup.readyPrefixLength(newText)
+            if (ready > 0) tts.enqueueText(newText.substring(0, ready))
+            ttsSentLength += ready
         }
         if (_uiState.value.status == VoiceCallStatus.Processing && currentText.isNotBlank()) {
             _uiState.update { it.copy(status = VoiceCallStatus.Speaking) }
@@ -518,7 +525,7 @@ class VoiceCallService : Service(), KoinComponent {
         if (activeVoiceMessage !== entry || _uiState.value.status !in
             setOf(VoiceCallStatus.Processing, VoiceCallStatus.Speaking)) return
         // 朗读最后剩余的文本
-        val finalText = _uiState.value.assistantText
+        val finalText = lastAssistantText
         if (finalText.length > ttsSentLength) {
             val remaining = finalText.substring(ttsSentLength)
             if (remaining.isNotBlank()) {
@@ -578,43 +585,6 @@ class VoiceCallService : Service(), KoinComponent {
         }
         // 额外等待状态更新
         delay(300)
-    }
-
-    /**
-     * 从增量文本中提取完整的句子 (以句号/问号/感叹号/换行结尾)
-     */
-    private fun extractCompleteSentences(text: String): List<String> {
-        val result = mutableListOf<String>()
-        val current = StringBuilder()
-        for (char in text) {
-            current.append(char)
-            if (char == '。' || char == '？' || char == '！' || char == '.' ||
-                char == '?' || char == '!' || char == '\n'
-            ) {
-                val sentence = current.toString().trim()
-                if (sentence.isNotEmpty()) {
-                    result.add(sentence)
-                }
-                current.clear()
-            }
-        }
-        // 保存未完成的部分 (不朗读, 等下次)
-        return result
-    }
-
-    /**
-     * 获取增量文本中未形成完整句子的剩余部分
-     */
-    private fun getPendingRemainder(text: String): String {
-        val lastSentenceEnd =
-            text.lastIndexOfAny(charArrayOf('。', '？', '！', '.', '?', '!', '\n'))
-        return if (lastSentenceEnd >= 0 && lastSentenceEnd < text.length - 1) {
-            text.substring(lastSentenceEnd + 1)
-        } else if (lastSentenceEnd < 0) {
-            text
-        } else {
-            ""
-        }
     }
 
     /**

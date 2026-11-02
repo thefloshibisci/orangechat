@@ -59,7 +59,8 @@ internal fun BubbleFrame(
                 val ratio = min(size.width / image.width, size.height / image.height)
                 val w = (image.width * ratio).roundToInt().coerceAtLeast(1)
                 val h = (image.height * ratio).roundToInt().coerceAtLeast(1)
-                drawImage(image, dstOffset = IntOffset(((size.width - w) / 2).roundToInt(), ((size.height - h) / 2).roundToInt()), dstSize = IntSize(w, h))
+                drawImage(image, dstOffset = IntOffset(((size.width - w) / 2).roundToInt(), ((size.height - h) / 2).roundToInt()),
+                    dstSize = IntSize(w, h), alpha = frame.opacity)
             }
         }
     }) { measurables, constraints ->

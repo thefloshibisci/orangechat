@@ -356,13 +356,24 @@ class LocalTools(
                 Use this when the user asks you to read something aloud, or when audio output is appropriate.
                 The tool returns immediately; audio plays in the background on the device.
                 Provide natural, readable text without markdown formatting.
+                You may set delivery per sentence inside text, for example:
+                [[voice emotion=happy speed=0.9 pitch=-2 volume=1]]Hello(laughs), how are you?[[/voice]]
+                Wrap each styled sentence separately and always close the block. All attributes are optional.
+                emotion: auto, happy, sad, angry, fearful, disgusted, surprised, calm (fluent/whisper only on MiniMax 2.6).
+                speed: 0.5-2, pitch: integer -12 to 12, volume: >0 to 10.
+                MiniMax pauses: put <#0.3#> between spoken words (0.01-99.99 seconds, at most two decimals).
+                Only MiniMax 2.8 supports interjections: (laughs), (chuckle), (sighs), (breath), (pant),
+                (inhale), (exhale), (gasps), (sniffs), (coughs), (clear-throat), (groans), (snorts),
+                (burps), (lip-smacking), (humming), (hissing), (emm), (sneezes).
+                Unsupported settings and tags are automatically omitted when another model/provider is selected.
+                Ordinary spoken fillers such as 嗯, 啊, 呀 may be written directly in the text.
             """.trimIndent().replace("\n", " "),
             parameters = {
                 InputSchema.Obj(
                     properties = buildJsonObject {
                         put("text", buildJsonObject {
                             put("type", "string")
-                            put("description", "The text to speak aloud")
+                            put("description", "Text to speak; optional per-sentence [[voice emotion=happy speed=0.9 pitch=-2]]words[[/voice]] blocks. Plain text also works.")
                         })
                     },
                     required = listOf("text")

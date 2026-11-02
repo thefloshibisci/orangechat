@@ -14,7 +14,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.tooling.preview.Preview
-import androidx.core.net.toUri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Job
@@ -277,12 +276,12 @@ class ChatVM(
     )
 
     // 检查用户头像删除
-    private fun checkUserAvatarDelete(oldSettings: Settings, newSettings: Settings) {
+    private suspend fun checkUserAvatarDelete(oldSettings: Settings, newSettings: Settings) {
         val oldAvatar = oldSettings.displaySetting.userAvatar
         val newAvatar = newSettings.displaySetting.userAvatar
 
         if (oldAvatar is Avatar.Image && oldAvatar != newAvatar) {
-            filesManager.deleteChatFiles(listOf(oldAvatar.url.toUri()))
+            conversationRepo.collectReplacedChatAssets(listOf(oldAvatar.url))
         }
     }
 

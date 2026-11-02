@@ -75,7 +75,7 @@ jobs:
         run: ./gradlew :search:testDebugUnitTest :workspace:testDebugUnitTest :terminal:testDebugUnitTest
 
       - name: Test app and AI regressions
-        run: ./gradlew :app:testDebugUnitTest :ai:testDebugUnitTest :app:compileDebugAndroidTestKotlin
+        run: ./gradlew :app:testDebugUnitTest :ai:testDebugUnitTest :speech:testDebugUnitTest :app:compileDebugAndroidTestKotlin
 
       - name: Test Image Atelier plugin regressions
         run: node --test plugins/image-atelier/tests/references.test.cjs

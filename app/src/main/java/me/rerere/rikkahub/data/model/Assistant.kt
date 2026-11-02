@@ -37,6 +37,7 @@ data class Assistant(
     val userInteractionSuffix: String = "",
     val assistantInteractionAction: String = "拍了拍",
     val assistantInteractionSuffix: String = "",
+    val allowSelfCustomization: Boolean = true,
     val enableMemory: Boolean = false,
     val saveLocalRawMessages: Boolean = false,
     val enableLocalSceneTools: Boolean = false,
