@@ -1,4 +1,4 @@
-﻿/*
+/*
  * 橘瓣 OrangeChat
  * 衍生自 RikkaHub (https://github.com/rikkahub/rikkahub)，原作者 RE
  * 本项目基于 GNU AGPL v3 开源，详见根目录 LICENSE 文件
@@ -125,7 +125,7 @@ class McpManager(
                 .map { settings -> settings.mcpServers }
                 .collect { mcpServerConfigs ->
                     runCatching {
-                        Log.i(TAG, "update configs: $mcpServerConfigs")
+                        Log.i(TAG, "update configs: ${mcpServerConfigs.size} servers")
                         val newConfigs = mcpServerConfigs.filter { it.commonOptions.enable }
                         val currentConfigs = clients.values.map { it.first }.toList()
                         val (toAdd, toRemove) = currentConfigs.checkDifferent(
@@ -136,8 +136,8 @@ class McpManager(
                                 a.commonOptions.headers == b.commonOptions.headers
                             }
                         )
-                        Log.i(TAG, "to_add: $toAdd")
-                        Log.i(TAG, "to_remove: $toRemove")
+                        Log.i(TAG, "to_add: ${toAdd.size}")
+                        Log.i(TAG, "to_remove: ${toRemove.size}")
                         toAdd.forEach { cfg ->
                             appScope.launch {
                                 runCatching { addClient(cfg) }
@@ -179,7 +179,7 @@ class McpManager(
         }
     }
 
-    suspend fun callTool(serverId: Uuid, toolName: String, args: JsonObject): List<UIMessagePart> {
+    suspend fun callTool(serverId: Uuid, toolName: String, args: JsonObject, timeoutSeconds: Int? = null, failOnError: Boolean = false): List<UIMessagePart> {
         if (toolName == DISABLED_CONTINUITY_TOOL_NAME) {
             return listOf(UIMessagePart.Text("Cross-client continuity bridge is disabled in this build."))
         }
@@ -188,7 +188,7 @@ class McpManager(
             ?: return listOf(UIMessagePart.Text("Failed to execute tool, because no such mcp client for the tool"))
         val config = pair.first
         val normalizedArgs = normalizeMcpArguments(args)
-        Log.i(TAG, "callTool: $toolName / $normalizedArgs (server: ${config.commonOptions.name})")
+        Log.i(TAG, "callTool: $toolName (server: ${config.commonOptions.name})")
 
         if (client.transport == null) client.connect(getTransport(config))
         val result = client.callTool(
@@ -198,8 +198,9 @@ class McpManager(
                     arguments = normalizedArgs,
                 ),
             ),
-            options = RequestOptions(timeout = 120.seconds),
+            options = RequestOptions(timeout = (timeoutSeconds ?: if (settingsStore.settingsFlow.value.gongdu.serverId == serverId && toolName in setOf("publish_content", "publish_with_video")) 600 else 120).coerceIn(1, 600).seconds),
         )
+        if (failOnError && result.isError == true) error("小红书服务未完成操作，请检查登录状态或稍后重试")
         return result.content.map {
             when(it) {
                 is TextContent -> UIMessagePart.Text(it.text)
@@ -346,7 +347,10 @@ class McpManager(
                         name = serverTool.name,
                         description = serverTool.description,
                         enable = true,
-                        inputSchema = serverTool.inputSchema.toSchema()
+                        inputSchema = serverTool.inputSchema.toSchema(),
+                        needsApproval = me.rerere.rikkahub.data.gongdu.GongduRepository.initialApproval(
+                            settingsStore.settingsFlow.value.gongdu.serverId, config.id, serverTool.name,
+                        )
                     )
                 )
             } else {

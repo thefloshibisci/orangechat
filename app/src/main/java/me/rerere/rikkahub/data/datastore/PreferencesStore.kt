@@ -106,6 +106,7 @@ class SettingsStore(
         val THEME_ID = stringPreferencesKey("theme_id")
         val CUSTOM_THEMES = stringPreferencesKey("custom_themes")
         val DISPLAY_SETTING = stringPreferencesKey("display_setting")
+        val GONGDU_SETTING = stringPreferencesKey("gongdu_setting")
         val DEVELOPER_MODE = booleanPreferencesKey("developer_mode")
         val CUSTOM_REACTION_PRESETS = stringPreferencesKey("custom_reaction_presets")
 
@@ -283,6 +284,9 @@ class SettingsStore(
             }
         }.map { preferences ->
             Settings(
+                gongdu = preferences[GONGDU_SETTING]?.let {
+                    runCatching { JsonInstant.decodeFromString<me.rerere.rikkahub.data.gongdu.GongduSetting>(it) }.getOrNull()
+                } ?: me.rerere.rikkahub.data.gongdu.GongduSetting(),
                 disclaimerAccepted = preferences[DISCLAIMER_ACCEPTED] == true,
                 disclaimerAcceptedAt = preferences[DISCLAIMER_ACCEPTED_AT] ?: 0,
                 enableWebSearch = preferences[ENABLE_WEB_SEARCH] == true,
@@ -588,6 +592,7 @@ class SettingsStore(
             preferences[CUSTOM_REACTION_PRESETS] =
                 JsonInstant.encodeToString(normalizeCustomChatReactionPresets(settings.customReactionPresets))
             preferences[DISPLAY_SETTING] = JsonInstant.encodeToString(settings.displaySetting)
+            if (settings.gongdu != previous.gongdu) preferences[GONGDU_SETTING] = JsonInstant.encodeToString(settings.gongdu)
 
             preferences[DISCLAIMER_ACCEPTED] = settings.disclaimerAccepted
             preferences[DISCLAIMER_ACCEPTED_AT] = settings.disclaimerAcceptedAt
@@ -858,6 +863,7 @@ class SettingsStore(
 
 @Serializable
 data class Settings(
+    val gongdu: me.rerere.rikkahub.data.gongdu.GongduSetting = me.rerere.rikkahub.data.gongdu.GongduSetting(),
     @Transient
     val init: Boolean = false,
     // Legacy backup fields; no longer gate application startup.
@@ -1032,7 +1038,7 @@ data class DisplaySetting(
     val drawerItemAlpha: Float = 1f,
     // 显示在聊天侧边栏“插件”页中的快捷插件 ID
     val drawerPluginShortcutIds: Set<String> = emptySet(),
-    // 共看控件颜色与不透明度（PluginWebView 共看功能）
+    // 已移除功能的历史字段，仅用于兼容旧设置；不再提供界面或读取执行路径。
     val watchControlColor: Long? = null,
     val watchControlAlpha: Float = 0.18f,
     // 纪念日：完全保存在本机；保留旧选中 ID 以兼容历史设置
