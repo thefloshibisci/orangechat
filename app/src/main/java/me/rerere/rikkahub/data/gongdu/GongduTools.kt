@@ -76,17 +76,22 @@ private fun gongduLinkTool(server: Uuid, assistantId: Uuid): Tool = Tool(
         checkAccess()
         val note = koin.get<GongduRepository>().detail(feed)
         checkAccess()
-        val raw = GongduCodec.unwrap(note.raw) as? JsonObject ?: note.raw
-        val card = raw.obj("note") ?: raw
-        val detail = buildJsonObject {
-            put("note", JsonObject(card + mapOf(
-                "feed_id" to JsonPrimitive(note.feed.id), "xsec_token" to JsonPrimitive(note.feed.token),
-                "title" to JsonPrimitive(note.feed.title), "desc" to JsonPrimitive(note.content),
-            )))
-        }
+        val detail = gongduLinkDetail(note)
         GongduToolResultPolicy.compact(server, assistantId, "get_feed_detail", listOf(UIMessagePart.Text(detail.toString())))
     },
 )
+
+internal fun gongduLinkDetail(note: GongduNote): JsonObject {
+    val raw = GongduCodec.unwrap(note.raw) as? JsonObject ?: note.raw
+    val card = raw.obj("note") ?: raw
+    return buildJsonObject {
+        raw.filterKeys { it != "note" }.forEach { (key, value) -> put(key, value) }
+        put("note", JsonObject(card + mapOf(
+            "feed_id" to JsonPrimitive(note.feed.id), "xsec_token" to JsonPrimitive(note.feed.token),
+            "title" to JsonPrimitive(note.feed.title), "desc" to JsonPrimitive(note.content),
+        )))
+    }
+}
 
 internal fun gongduVideoRequest(args: JsonObject): GongduVideoRequest {
     fun seconds(name: String): Double? {

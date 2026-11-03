@@ -6,6 +6,9 @@ import me.rerere.ai.core.InputSchema
 import me.rerere.ai.core.Tool
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
+import me.rerere.ai.provider.Modality
+import me.rerere.rikkahub.data.datastore.getChatModelForAssistant
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import me.rerere.rikkahub.data.ai.tools.ToolNaming
 import me.rerere.rikkahub.data.ai.transformers.InputMessageTransformer
 import me.rerere.rikkahub.data.ai.transformers.TransformerContext
@@ -54,6 +57,16 @@ object GongduToolResultPolicy {
     }
 
     private fun compactText(server: Uuid, assistant: Uuid, tool: String, text: String): String {
+        if (tool in setOf("follow_user", "follow_back")) {
+            val original = runCatching { Json.parseToJsonElement(text) as? JsonObject }.getOrNull()
+            if (original?.get("_gongdu_follow_observation") == JsonPrimitive(1)) return text
+            return buildJsonObject {
+                put("_gongdu_follow_observation", 1); put("tool", tool)
+                put("status", "cross_account_unverified"); put("retry_safe", false)
+                put("notice", "此回执至多是操作账号侧观察，未核实目标账号收到关注；不要宣称关注已验收，也不要自动重试。")
+                put("receipt", boundedText(text, 4200))
+            }.toString()
+        }
         if (tool in setOf("post_comment_to_feed", "reply_comment_in_feed", "reply_notification")) {
             val receipt = runCatching { Json.parseToJsonElement(text) as? JsonObject }.getOrNull()
             if (receipt?.get("_gongdu_write_receipt") == JsonPrimitive(1)) return text
@@ -83,6 +96,7 @@ object GongduToolResultPolicy {
             obj?.get("success") == JsonPrimitive(false)) {
             return boundedText(text, 2200)
         }
+        if (tool == "get_feed_detail") return detail(server, assistant, unwrapped)
         // A write receipt (including a serialized MCP content array) must never
         // enter list paging: dropping it can hide an uncertain public action.
         if (tool !in setOf("list_feeds", "search_feeds", "list_notifications") &&
@@ -116,6 +130,105 @@ object GongduToolResultPolicy {
             }.toString() }
         }
         return boundedText(text, 3500)
+    }
+
+    /** Separate bounded snapshots retain detail media and reply threads without flooding history. */
+    private fun detail(server: Uuid, assistant: Uuid, value: JsonElement): String {
+        var root = value as? JsonObject ?: return boundedText(value.toString(), 2200)
+        repeat(3) { if (root.obj("note") == null && root.obj("data") != null) root = root.obj("data")!! }
+        val note = root.obj("note") ?: root
+        val sourceImages = note["imageList"] as? JsonArray ?: JsonArray(emptyList())
+        val images = sourceImages.mapIndexedNotNull { index, item ->
+            val obj = item as? JsonObject ?: return@mapIndexedNotNull null
+            val url = sequenceOf(obj.str("urlDefault"), obj.str("url"), obj.str("urlPre"))
+                .plus((obj["infoList"] as? JsonArray).orEmpty().mapNotNull { (it as? JsonObject)?.str("url") })
+                .mapNotNull(::normalizedImageUrl).firstOrNull() ?: return@mapIndexedNotNull null
+            buildJsonObject { put("kind", "image"); put("image_index", index + 1); put("url", url) }
+        }
+        val imageRef = cacheDetail(server, assistant, "detail_images", images, sourceImages.size)
+        val commentValue = root["comments"] ?: note["comments"]
+        val commentMeta = commentValue as? JsonObject
+        val sourceComments = (commentMeta?.get("list") ?: commentValue) as? JsonArray ?: JsonArray(emptyList())
+        val comments = mutableListOf<JsonObject>()
+        var commentTotal = 0
+        fun visit(items: JsonArray, parent: String = "", depth: Int = 0) {
+            if (depth > 8) return
+            items.forEach { item ->
+                val obj = item as? JsonObject ?: return@forEach
+                commentTotal++
+                if (validReferences(obj) && comments.size < MAX_SNAPSHOT_ITEMS) comments += buildJsonObject {
+                    put("kind", "comment")
+                    val id = obj.str("id", "comment_id")
+                    if (id.isNotBlank()) put("comment_id", id)
+                    if (parent.isNotBlank()) put("parent_comment_id", parent)
+                    put("content", boundedText(obj.str("content", "text"), 2400))
+                    (obj.obj("userInfo") ?: obj.obj("user"))?.let { put("user", project(it, 0)) }
+                    listOf("noteId", "createTime", "likeCount", "subCommentCount").forEach { key ->
+                        obj[key]?.let { put(key, project(it, 0, key)) }
+                    }
+                }
+                val children = (obj["subComments"] ?: obj["sub_comments"]) as? JsonArray
+                if (children != null) visit(children, obj.str("id", "comment_id").ifBlank { parent }, depth + 1)
+            }
+        }
+        visit(sourceComments)
+        val commentRef = cacheDetail(server, assistant, "detail_comments", comments, commentTotal)
+        // Keep long reference strings intact; the preview itself has a strict budget.
+        val projected = project(note.filterKeys { it !in setOf("comments", "imageList") }.let(::JsonObject), 0)
+        val data = if (projected.toString().length <= 4500) projected else minimalDetail(note)
+        return buildJsonObject {
+            put(MARKER, 1); put("tool", "get_feed_detail"); put("data", data)
+            put("images", buildJsonObject {
+                put("source_total", sourceImages.size); put("readable_total", images.size)
+                put("result_ref", imageRef); put("offset", 0)
+            })
+            put("comments", buildJsonObject {
+                put("loaded_total", commentTotal); put("result_ref", commentRef); put("offset", 0)
+                put("platform_has_more", commentMeta?.get("hasMore") ?: commentMeta?.get("has_more") ?: JsonNull)
+                put("cursor", commentMeta?.str("cursor")?.takeIf { it.length <= 2048 }?.let(::JsonPrimitive) ?: JsonNull)
+                put("preview", JsonArray(comments.take(2).map { c -> buildJsonObject {
+                    put("content", c.str("content").take(300))
+                    c.str("comment_id").takeIf { it.length <= 128 }?.let { put("comment_id", it) }
+                } }))
+            })
+            put("notice", "用gongdu_result_page分别读取images/comments的result_ref和offset。图片页保留原始地址；识图模型可设include_images=true，每次最多4张图片附件。评论是本次实际加载的快照，包含父评论ID；platform_has_more是平台剩余状态，与本地分页不同。平台未加载的评论需get_feed_detail显式load_all_comments=true、click_more_replies=true，limit控制一级评论加载量。")
+        }.toString()
+    }
+
+    internal fun readableImageUrl(value: String): Boolean {
+        val url = value.toHttpUrlOrNull() ?: return false
+        return value.length <= 4096 && url.isHttps && url.port == 443 && url.username.isEmpty() &&
+            url.password.isEmpty() && (url.host == "xhscdn.com" || url.host.endsWith(".xhscdn.com"))
+    }
+
+    private fun normalizedImageUrl(value: String): String? {
+        val url = value.toHttpUrlOrNull() ?: return null
+        if (value.length > 4096 || url.port != (if (url.isHttps) 443 else 80)) return null
+        val secure = url.newBuilder().scheme("https").port(443).build().toString()
+        return secure.takeIf(::readableImageUrl)
+    }
+
+    private fun cacheDetail(server: Uuid, assistant: Uuid, kind: String, items: List<JsonObject>, total: Int): String {
+        var chars = 0
+        val retained = items.filter { it.toString().length <= RESULT_LIMIT - 1200 }.take(MAX_SNAPSHOT_ITEMS).takeWhile { row ->
+            chars += row.toString().length
+            chars <= MAX_SNAPSHOT_CHARS
+        }
+        return remember(server, assistant, kind, retained, total)
+    }
+
+    @Synchronized fun pageParts(server: Uuid, assistant: Uuid, ref: String, offset: Int, limit: Int,
+        includeImages: Boolean = false): List<UIMessagePart> {
+        require(!includeImages || limit <= 4) { "图片附件每次最多4张，请按next_offset分批读取" }
+        val text = page(server, assistant, ref, offset, limit)
+        if (!includeImages) return listOf(UIMessagePart.Text(text))
+        val page = runCatching { Json.parseToJsonElement(text).jsonObject }.getOrNull()
+            ?: return listOf(UIMessagePart.Text(text))
+        val images = page["items"]?.jsonArray.orEmpty().mapNotNull { row ->
+            val item = row as? JsonObject ?: return@mapNotNull null
+            item.str("url").takeIf { item.str("kind") == "image" && readableImageUrl(it) }?.let { UIMessagePart.Image(it) }
+        }
+        return listOf(UIMessagePart.Text(text)) + images
     }
 
     private fun validReferences(value: JsonElement): Boolean = when (value) {
@@ -253,11 +366,12 @@ fun gongduResultTools(settings: Settings, assistantId: Uuid): List<Tool> {
     if (settings.mcpServers.none { it.id == server && it.commonOptions.enable }) return emptyList()
     return listOf(Tool(
         name = "gongdu_result_page",
-        description = "按需读取先前共度列表摘要的下一批，使用返回的result_ref和next_offset；不访问平台、不重复评论或关注。每批最多12条，缓存30分钟；进程重启后需重新查询。",
+        description = "读取共度列表、详情图片或评论快照，使用对应result_ref和offset/next_offset。每批最多12条；图片设include_images=true会返回可供模型阅读的图片附件，每次最多4张，需识图模型。仅读取本地缓存，不重复公开操作；缓存30分钟，过期需重新查询详情。",
         parameters = { InputSchema.Obj(buildJsonObject {
             put("result_ref", buildJsonObject { put("type", "string") })
             put("offset", buildJsonObject { put("type", "integer"); put("minimum", 0) })
             put("limit", buildJsonObject { put("type", "integer"); put("minimum", 1); put("maximum", 12) })
+            put("include_images", buildJsonObject { put("type", "boolean"); put("description", "读取图片快照时附带图片，需识图能力；默认false只返回地址") })
         }, required = listOf("result_ref", "offset")) },
         execute = { args ->
             val live = GlobalContext.get().get<SettingsStore>().settingsFlowRaw.first()
@@ -271,8 +385,13 @@ fun gongduResultTools(settings: Settings, assistantId: Uuid): List<Tool> {
                 require(value is JsonPrimitive && !value.isString) { "${key}必须是整数" }
                 return requireNotNull(value.intOrNull) { "${key}必须是整数" }
             }
-            listOf(UIMessagePart.Text(GongduToolResultPolicy.page(server, assistantId, obj.str("result_ref"),
-                integer("offset"), integer("limit", 8))))
+            val includeImages = obj["include_images"]?.let {
+                require(it is JsonPrimitive && !it.isString && it.booleanOrNull != null) { "include_images必须是布尔值" }
+                it.boolean
+            } ?: false
+            check(!includeImages || Modality.IMAGE in live.getChatModelForAssistant(assistantId)?.inputModalities.orEmpty()) { "当前模型未启用识图，可用include_images=false读取图片地址" }
+            GongduToolResultPolicy.pageParts(server, assistantId, obj.str("result_ref"),
+                integer("offset"), integer("limit", if (includeImages) 4 else 8), includeImages)
         },
     ))
 }
