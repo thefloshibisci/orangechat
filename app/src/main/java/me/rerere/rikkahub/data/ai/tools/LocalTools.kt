@@ -15,6 +15,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.add
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
@@ -147,9 +148,30 @@ internal fun imageGenerationInputSchema() = InputSchema.Obj(
             put("type", "string")
             put("description", "Detailed image description")
         })
+        put("aspect_ratio", buildJsonObject {
+            put("type", "string")
+            put("enum", buildJsonArray { IMAGE_ASPECT_RATIO_ARGS.keys.forEach { add(it) } })
+            put("description", "Optional. 1:1 square, 16:9 landscape, 9:16 portrait. Omit to use the default ratio set in the image page.")
+        })
     },
     required = listOf("prompt"),
 )
+
+internal val IMAGE_ASPECT_RATIO_ARGS = linkedMapOf(
+    "1:1" to ImageAspectRatio.SQUARE,
+    "16:9" to ImageAspectRatio.LANDSCAPE,
+    "9:16" to ImageAspectRatio.PORTRAIT,
+)
+
+/** Model-chosen ratio wins; unknown or missing values fall back to the saved default. */
+internal fun resolveImageAspectRatio(arg: String?, default: ImageAspectRatio): ImageAspectRatio =
+    when (val value = arg?.trim()?.lowercase()) {
+        null, "" -> default
+        "square" -> ImageAspectRatio.SQUARE
+        "landscape" -> ImageAspectRatio.LANDSCAPE
+        "portrait" -> ImageAspectRatio.PORTRAIT
+        else -> IMAGE_ASPECT_RATIO_ARGS[value] ?: default
+    }
 
 class LocalTools(
     private val context: Context,
@@ -176,7 +198,11 @@ class LocalTools(
                 val providerSetting = settings.providers.first { it.id == provider.id }
                 val result = providerManager.getProviderByType(provider).generateImage(
                     providerSetting,
-                    ImageGenerationParams(model = model, prompt = prompt, numOfImages = 1, aspectRatio = ImageAspectRatio.SQUARE,
+                    ImageGenerationParams(model = model, prompt = prompt, numOfImages = 1,
+                        aspectRatio = resolveImageAspectRatio(
+                            args.jsonObject["aspect_ratio"]?.jsonPrimitive?.contentOrNull,
+                            settings.imageGenerationAspectRatio,
+                        ),
                         customHeaders = model.customHeaders, customBody = model.customBodies),
                 )
                 check(result.items.isNotEmpty()) { "Image provider returned no images" }

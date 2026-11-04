@@ -75,6 +75,13 @@ class ImgGenVM(
     private val _aspectRatio = MutableStateFlow(ImageAspectRatio.SQUARE)
     val aspectRatio: StateFlow<ImageAspectRatio> = _aspectRatio
 
+    init {
+        // The chosen ratio is a saved default shared with the chat generate_image tool.
+        viewModelScope.launch {
+            _aspectRatio.value = settingsStore.settingsFlowRaw.first().imageGenerationAspectRatio
+        }
+    }
+
     private val _isGenerating = MutableStateFlow(false)
     val isGenerating: StateFlow<Boolean> = _isGenerating
     private var cancelJob: Job? = null
@@ -108,6 +115,9 @@ class ImgGenVM(
 
     fun updateAspectRatio(aspectRatio: ImageAspectRatio) {
         _aspectRatio.value = aspectRatio
+        viewModelScope.launch {
+            settingsStore.update { it.copy(imageGenerationAspectRatio = aspectRatio) }
+        }
     }
 
     fun addReferenceImages(paths: List<String>) {
