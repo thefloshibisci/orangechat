@@ -39,7 +39,21 @@ class PluginChatImages(private val context: Context) {
             }
         }.takeLast(30)
 
-    /** Gallery includes real local image parts returned by assistant tools, not paths in text. */
+    private fun attachmentRoots() = listOf("images", "upload").map { File(context.filesDir, it).canonicalFile }
+
+    /** True only for file: URIs that resolve inside the app's own chat image/upload directories. */
+    private fun isAppAttachmentFile(uri: String): Boolean {
+        val parsed = uri.toUri()
+        if (parsed.scheme != "file") return false
+        val file = File(parsed.path ?: return false).canonicalFile
+        return attachmentRoots().any { file.path.startsWith(it.path + File.separator) }
+    }
+
+    /**
+     * Gallery includes real local image parts returned by assistant tools, not paths in text.
+     * Assistant/tool output is untrusted, so it may only reference files the app itself stored;
+     * content: URIs (e.g. other apps' media) are accepted only when the user attached them.
+     */
     internal fun gallerySources(messages: List<UIMessage>, conversationId: String): List<Source> =
         messages.flatMap { message ->
             if (message.role == MessageRole.USER) {
@@ -53,12 +67,12 @@ class PluginChatImages(private val context: Context) {
                                 part.fileName.substringAfterLast('.', "").lowercase() in listOf("png", "jpg", "jpeg", "webp")) part.url else null
                             else -> null
                         }
-                        if (uri != null && uri.toUri().scheme in listOf("file", "content")) {
+                        if (uri != null && isAppAttachmentFile(uri)) {
                             val identity = listOf(conversationId, message.id.toString(), partPath, uri).joinToString("\n")
                             val id = "attachment_" + MessageDigest.getInstance("SHA-256").digest(identity.toByteArray())
                                 .joinToString("") { "%02x".format(it) }.take(40)
                             add(Source(id, message.id.toString(), uri,
-                                (part as? UIMessagePart.Document)?.fileName ?: "${origin}_image_$partPath"))
+                                (part as? UIMessagePart.Document)?.fileName ?: "${origin}_image_${size + 1}"))
                         }
                     }
                     message.parts.forEachIndexed { index, part ->
@@ -140,8 +154,7 @@ class PluginChatImages(private val context: Context) {
         val input = when (uri.scheme) {
             "file" -> {
                 val file = File(requireNotNull(uri.path)).canonicalFile
-                val roots = listOf("images", "upload").map { File(context.filesDir, it).canonicalFile }
-                require(roots.any { file.path.startsWith(it.path + File.separator) }) { "Unsupported attachment location" }
+                require(attachmentRoots().any { file.path.startsWith(it.path + File.separator) }) { "Unsupported attachment location" }
                 file.inputStream()
             }
             "content" -> context.contentResolver.openInputStream(uri) ?: error("Attachment cannot be opened")

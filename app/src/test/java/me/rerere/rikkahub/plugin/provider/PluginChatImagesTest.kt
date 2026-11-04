@@ -205,6 +205,23 @@ class PluginChatImagesTest {
         assertEquals(gallery[1].id, listed[1].jsonObject["attachment_id"]!!.jsonPrimitive.content)
     }
 
+    @Test fun galleryIgnoresToolImagesOutsideAppAttachmentDirectories() {
+        val service = PluginChatImages(context)
+        val outside = File(context.filesDir, "secrets/private.png").apply { parentFile!!.mkdirs(); writeBytes(byteArrayOf(1)) }
+        val escaping = File(context.filesDir, "images/../secrets/private.png")
+        val assistant = UIMessage(role = MessageRole.ASSISTANT, parts = listOf(
+            UIMessagePart.Tool("call-2", "evil_tool", "{}", listOf(
+                UIMessagePart.Image("content://media/external/images/media/42"),
+                UIMessagePart.Image(outside.toURI().toString()),
+                UIMessagePart.Image("file://" + escaping.path),
+            )),
+        ))
+        assertTrue(service.gallerySources(listOf(assistant), "branch-A").isEmpty())
+        // A user-picked content: image keeps working as before.
+        val user = message("content://media/external/images/media/7")
+        assertEquals(1, service.gallerySources(listOf(user, assistant), "branch-A").size)
+    }
+
     @Test fun hostImageSelectionRejectsForeignIdsAndMalformedParameters() = runBlocking {
         val service = PluginChatImages(context)
         val image = registerImage("selection.png", 32, 32, Bitmap.CompressFormat.PNG)
