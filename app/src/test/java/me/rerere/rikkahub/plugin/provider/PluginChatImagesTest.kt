@@ -179,6 +179,32 @@ class PluginChatImagesTest {
         }
     }
 
+    @Test fun galleryListsNativeToolImagesButNaiStudioStillListsOnlyUserImages() {
+        val service = PluginChatImages(context)
+        val user = message("file:///upload/user.png")
+        val imageRoot = File(context.filesDir, "images/gallery-test").apply { mkdirs() }
+        val toolImage = File(imageRoot, "tool.png").apply { writeBytes(byteArrayOf(1, 2, 3)) }
+        val assistant = UIMessage(role = MessageRole.ASSISTANT, parts = listOf(
+            UIMessagePart.Text("file:///images/not-an-attachment.png"),
+            UIMessagePart.Tool("call-1", "draw_image", "{}", listOf(
+                UIMessagePart.Text("not an image"),
+                UIMessagePart.Image(toolImage.toURI().toString()),
+            )),
+        ))
+        val remote = message("https://example.invalid/image.png", MessageRole.ASSISTANT)
+        val gallery = service.gallerySources(listOf(user, assistant, remote), "branch-A")
+        assertEquals(2, gallery.size)
+        assertEquals(service.sources(listOf(user), "branch-A").single().id, gallery[0].id)
+        assertTrue(gallery[1].name.startsWith("tool_image_"))
+        assertFalse(gallery.any { it.uri.contains("not-an-attachment") || it.uri.contains("example.invalid") })
+        assertNotEquals(gallery[1].id, service.gallerySources(listOf(assistant), "branch-B").single().id)
+        assertEquals(1, service.sources(listOf(user, assistant, remote), "branch-A").size)
+
+        val listed = service.galleryList(listOf(user, assistant, remote), "branch-A").jsonObject["images"]!!.jsonArray
+        assertEquals(2, listed.size)
+        assertEquals(gallery[1].id, listed[1].jsonObject["attachment_id"]!!.jsonPrimitive.content)
+    }
+
     @Test fun hostImageSelectionRejectsForeignIdsAndMalformedParameters() = runBlocking {
         val service = PluginChatImages(context)
         val image = registerImage("selection.png", 32, 32, Bitmap.CompressFormat.PNG)

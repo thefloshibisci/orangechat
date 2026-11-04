@@ -39,6 +39,39 @@ class PluginChatImages(private val context: Context) {
             }
         }.takeLast(30)
 
+    /** Gallery includes real local image parts returned by assistant tools, not paths in text. */
+    internal fun gallerySources(messages: List<UIMessage>, conversationId: String): List<Source> =
+        messages.flatMap { message ->
+            if (message.role == MessageRole.USER) {
+                sources(listOf(message), conversationId)
+            } else if (message.role == MessageRole.ASSISTANT) {
+                buildList {
+                    fun collect(part: UIMessagePart, partPath: String, origin: String) {
+                        val uri = when (part) {
+                            is UIMessagePart.Image -> part.url
+                            is UIMessagePart.Document -> if (part.mime.startsWith("image/") ||
+                                part.fileName.substringAfterLast('.', "").lowercase() in listOf("png", "jpg", "jpeg", "webp")) part.url else null
+                            else -> null
+                        }
+                        if (uri != null && uri.toUri().scheme in listOf("file", "content")) {
+                            val identity = listOf(conversationId, message.id.toString(), partPath, uri).joinToString("\n")
+                            val id = "attachment_" + MessageDigest.getInstance("SHA-256").digest(identity.toByteArray())
+                                .joinToString("") { "%02x".format(it) }.take(40)
+                            add(Source(id, message.id.toString(), uri,
+                                (part as? UIMessagePart.Document)?.fileName ?: "${origin}_image_$partPath"))
+                        }
+                    }
+                    message.parts.forEachIndexed { index, part ->
+                        if (part is UIMessagePart.Tool) {
+                            part.output.forEachIndexed { outputIndex, output ->
+                                collect(output, "tool:$index:${part.toolCallId}:$outputIndex", "tool")
+                            }
+                        } else collect(part, "assistant:$index", "assistant")
+                    }
+                }
+            } else emptyList()
+        }.takeLast(30)
+
     suspend fun execute(pluginId: String, params: JsonElement, messages: List<UIMessage>, conversationId: String): JsonElement =
         withContext(Dispatchers.IO) {
             try {
@@ -172,7 +205,7 @@ class PluginChatImages(private val context: Context) {
     internal fun galleryList(messages: List<UIMessage>, conversationId: String): JsonElement = buildJsonObject {
         put("success", true)
         putJsonArray("images") {
-            (if (conversationId.isNotBlank()) sources(messages, conversationId) else emptyList()).forEach { source ->
+            (if (conversationId.isNotBlank()) gallerySources(messages, conversationId) else emptyList()).forEach { source ->
                 add(buildJsonObject {
                     put("attachment_id", source.id); put("message_id", source.messageId); put("name", source.name)
                 })
@@ -180,10 +213,10 @@ class PluginChatImages(private val context: Context) {
         }
     }
 
-    /** attachment_id blank = the newest image the user sent in this branch. */
+    /** attachment_id blank = newest user/assistant/tool image in this branch. */
     suspend fun prepareGalleryUpload(attachmentId: String?, messages: List<UIMessage>, conversationId: String): GalleryUpload =
         withContext(Dispatchers.IO) {
-            val available = if (conversationId.isNotBlank()) sources(messages, conversationId) else emptyList()
+            val available = if (conversationId.isNotBlank()) gallerySources(messages, conversationId) else emptyList()
             val source = if (attachmentId.isNullOrBlank()) available.lastOrNull() ?: error("No image in this conversation")
             else available.singleOrNull { it.id == attachmentId } ?: error("Attachment is not in this conversation branch. List images first.")
             val bytes = readAttachment(source)
