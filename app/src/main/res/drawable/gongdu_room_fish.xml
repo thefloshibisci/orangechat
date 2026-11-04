@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Specimen line art for the "一起读" room. Tinted at runtime; stroke color here is only a fallback. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="100dp"
+    android:height="100dp"
+    android:viewportWidth="100"
+    android:viewportHeight="100">
+    <path
+        android:pathData="M18,50 C26,36 46,32 60,40 C66,44 69,48 70,50 C69,52 66,56 60,60 C46,68 26,64 18,50 Z M68,50 C76,38 86,30 92,26 C88,38 86,44 88,50 C86,56 88,62 92,74 C86,70 76,62 68,50 M74,47 C80,40 86,34 90,30 M74,53 C80,60 86,66 90,70 M76,50 C82,50 86,50 88,50 M40,37 C44,26 52,22 58,24 C56,30 52,35 48,38 M42,63 C44,72 50,76 54,75 C52,70 50,66 47,63 M30,42 C27,46 27,54 30,58 M38,46 q3,3 0,6 M44,44 q3,3 0,6 M50,45 q3,3 0,6 M44,52 q3,3 0,6 M50,52 q3,3 0,6 M56,48 q3,3 0,6 M23.4,48 a1.6,1.6 0 1,0 3.2,0 a1.6,1.6 0 1,0 -3.2,0"
+        android:strokeColor="#8C847A" android:strokeWidth="1.15" android:strokeLineCap="round" android:strokeLineJoin="round" />
+</vector>

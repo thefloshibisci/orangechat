@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Specimen line art for the "一起逛" room. Tinted at runtime; stroke color here is only a fallback. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="100dp"
+    android:height="100dp"
+    android:viewportWidth="100"
+    android:viewportHeight="100">
+    <group android:name="strokes">
+        <path
+            android:pathData="M50,12 C64,12 70,24 69,34 C68,43 62,49 58,52 C54,55 46,55 42,52 C38,49 32,43 31,34 C30,24 36,12 50,12 Z"
+            android:strokeColor="#8C847A" android:strokeWidth="1.15" android:strokeLineCap="round" android:strokeLineJoin="round" />
+        <path
+            android:pathData="M42,38 q3,-2.4 6,0 M52,38 q3,-2.4 6,0"
+            android:strokeColor="#8C847A" android:strokeWidth="1.15" android:strokeLineCap="round" android:strokeLineJoin="round" />
+        <path
+            android:pathData="M44,52 C36,62 26,66 22,76 C19,84 27,88 31,83 C34,79 30,76 28,79 M47,54 C44,66 38,74 37,84 C36,92 44,94 46,89 C47,85 43,84 42,87 M53,55 C54,67 52,77 55,86 C57,92 64,91 63,86 C62,83 58,84 59,87 M56,53 C63,62 72,66 76,75 C79,83 72,87 69,83 C67,80 71,77 72,80 M42,49 C32,54 20,52 14,58 C9,63 14,69 18,66 C21,63 18,61 16,63 M58,49 C68,53 80,50 86,56 C91,61 87,67 83,64 C80,62 83,59 85,61"
+            android:strokeColor="#8C847A" android:strokeWidth="1.15" android:strokeLineCap="round" android:strokeLineJoin="round" />
+    </group>
+</vector>
