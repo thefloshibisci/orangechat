@@ -48,7 +48,8 @@ import me.rerere.rikkahub.ui.theme.popupContainerColor
 @Composable
 fun CompressContextDialog(
     onDismiss: () -> Unit,
-    onConfirm: suspend (additionalPrompt: String, targetTokens: Int, keepRecentMessages: Int, mergeWithPrevious: Boolean, onProgress: (String) -> Unit) -> Unit
+    compressionModelLabel: String = "未配置可用压缩模型",
+    onConfirm: suspend (additionalPrompt: String, targetTokens: Int, keepRecentMessages: Int, mergeWithPrevious: Boolean, onProgress: (String) -> Unit) -> Unit,
 ) {
     var additionalPrompt by remember { mutableStateOf("") }
     var selectedTokens by remember { mutableIntStateOf(2000) }
@@ -97,6 +98,11 @@ fun CompressContextDialog(
                     }
                 } else {
                     error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                    Text(
+                        "本次压缩请求：$compressionModelLabel",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
                     Text(stringResource(R.string.chat_page_compress_context_desc))
 
                     // Token size selector

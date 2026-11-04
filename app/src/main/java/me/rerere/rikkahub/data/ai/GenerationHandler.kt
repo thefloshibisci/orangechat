@@ -504,9 +504,18 @@ class GenerationHandler(
         aiLoggingManager.addLog(
             AILogging.Generation(
                 params = params,
+                // Keep the existing UI message snapshot for the developer page, but also
+                // record a one-way fingerprint of the exact transformed request. This is
+                // enough to compare cache prefixes without retaining prompt contents.
                 messages = messages,
                 providerSetting = provider,
                 stream = stream,
+                requestFingerprint = fingerprintGenerationRequest(
+                    provider = provider,
+                    params = params,
+                    messages = internalMessages,
+                    tools = tools,
+                ),
             )
         )
         messages = generateModelTurn(

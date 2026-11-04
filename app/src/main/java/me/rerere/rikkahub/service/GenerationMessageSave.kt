@@ -105,6 +105,8 @@ internal fun Conversation.generationMessageMutation(
 
 private fun UIMessage.preservingToolEvidence(saved: UIMessage?): UIMessage {
     if (saved === this) return this
+    // Interaction state is owned by user actions / wallet receipts, never by a stale model snapshot.
+    if (saved?.annotations?.any { it is me.rerere.ai.ui.UIMessageAnnotation.ChatInteraction } == true) return saved
     val evidence = saved?.getTools()?.filter { it.hasDurableToolEvidence }.orEmpty().associateBy { it.toolCallId }
     if (evidence.isEmpty()) return this
     val incomingIds = getTools().map { it.toolCallId }.toSet()

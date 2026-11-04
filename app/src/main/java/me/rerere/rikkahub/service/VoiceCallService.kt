@@ -16,6 +16,8 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.media.AudioDeviceInfo
+import android.media.AudioManager
 import android.content.pm.ServiceInfo
 import android.os.Binder
 import android.os.IBinder
@@ -87,6 +89,7 @@ class VoiceCallService : Service(), KoinComponent {
     private lateinit var microphone: VoiceCallMicrophone
     private var microphonePolicyJob: Job? = null
     private var callEnded = false
+    private var interactionStartJob: Job? = null
 
     private val _uiState = MutableStateFlow(VoiceCallUiState())
     val uiState: StateFlow<VoiceCallUiState> = _uiState.asStateFlow()
@@ -113,12 +116,27 @@ class VoiceCallService : Service(), KoinComponent {
 
     // 静音状态 (独立于 _uiState.isMuted, 检测循环里直接读这个字段更快)
     private var isMuted: Boolean = false
+    private var initialAudioMode: Int? = null
+    private var initialSpeakerphoneOn = false
+    private var initialCommunicationDevice: AudioDeviceInfo? = null
 
     companion object {
+        private val _startedAtMillis = MutableStateFlow(0L)
+        val startedAtMillis: StateFlow<Long> = _startedAtMillis.asStateFlow()
         private val _activeConversationId = MutableStateFlow<String?>(null)
         val activeConversationId: StateFlow<String?> = _activeConversationId.asStateFlow()
+        private val _activeUiState = MutableStateFlow(VoiceCallUiState())
+        val activeUiState: StateFlow<VoiceCallUiState> = _activeUiState.asStateFlow()
 
         fun isRunning(): Boolean = _activeConversationId.value != null
+
+        fun toggleMute(context: Context) = sendControlAction(context, ACTION_TOGGLE_MUTE)
+
+        fun toggleSpeaker(context: Context) = sendControlAction(context, ACTION_TOGGLE_SPEAKER)
+
+        private fun sendControlAction(context: Context, action: String) {
+            if (isRunning()) context.applicationContext.startService(Intent(context, VoiceCallService::class.java).setAction(action))
+        }
 
         /**
          * 启动服务: 调用方 (VoiceCallPage) 负责在自己判断"没有冲突"之后才调这个方法.
@@ -144,6 +162,8 @@ class VoiceCallService : Service(), KoinComponent {
 
         const val EXTRA_CONVERSATION_ID = "conversationId"
         const val ACTION_HANG_UP = "me.rerere.rikkahub.VOICE_CALL_HANG_UP"
+        const val ACTION_TOGGLE_MUTE = "me.rerere.rikkahub.VOICE_CALL_TOGGLE_MUTE"
+        const val ACTION_TOGGLE_SPEAKER = "me.rerere.rikkahub.VOICE_CALL_TOGGLE_SPEAKER"
         const val NOTIFICATION_ID = 40001
     }
 
@@ -156,6 +176,11 @@ class VoiceCallService : Service(), KoinComponent {
 
     override fun onBind(intent: Intent?): IBinder = binder
 
+    override fun onCreate() {
+        super.onCreate()
+        serviceScope.launch { _uiState.collect { _activeUiState.value = it } }
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (isChatRecoveryBlocking()) {
             stopSelf(startId)
@@ -166,6 +191,14 @@ class VoiceCallService : Service(), KoinComponent {
         if (intent?.action == ACTION_HANG_UP) {
             endCall()
             stopSelf()
+            return START_NOT_STICKY
+        }
+        if (intent?.action == ACTION_TOGGLE_MUTE) {
+            toggleMute()
+            return START_NOT_STICKY
+        }
+        if (intent?.action == ACTION_TOGGLE_SPEAKER) {
+            toggleSpeaker()
             return START_NOT_STICKY
         }
 
@@ -214,6 +247,7 @@ class VoiceCallService : Service(), KoinComponent {
             )
         } catch (e: Exception) {
             Log.e(TAG, "startForeground 失败, conversationId=$conversationId", e)
+            _startedAtMillis.value = 0L
             _activeConversationId.value = null
             stopSelf()
             return START_NOT_STICKY
@@ -283,6 +317,10 @@ class VoiceCallService : Service(), KoinComponent {
      */
     fun startCall() {
         if (_uiState.value.status != VoiceCallStatus.Idle) return
+        if (_startedAtMillis.value == 0L) {
+            _startedAtMillis.value = System.currentTimeMillis()
+            interactionStartJob = chatService.beginInteractionCall(conversationId, _startedAtMillis.value)
+        }
         lastAssistantText = ""
         lastSpokenText = ""
         hasSentCurrentMessage = false
@@ -698,6 +736,38 @@ class VoiceCallService : Service(), KoinComponent {
         syncMicrophone()
     }
 
+    fun toggleSpeaker() {
+        val audioManager = getSystemService(AudioManager::class.java) ?: return
+        val enableSpeaker = !_uiState.value.isSpeakerOn
+        try {
+            if (initialAudioMode == null) {
+                initialAudioMode = audioManager.mode
+                @Suppress("DEPRECATION")
+                run { initialSpeakerphoneOn = audioManager.isSpeakerphoneOn }
+            }
+            audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                if (initialCommunicationDevice == null) initialCommunicationDevice = audioManager.communicationDevice
+                val targetType = if (enableSpeaker) AudioDeviceInfo.TYPE_BUILTIN_SPEAKER else AudioDeviceInfo.TYPE_BUILTIN_EARPIECE
+                val device = if (enableSpeaker) {
+                    audioManager.availableCommunicationDevices.firstOrNull { it.type == targetType }
+                } else {
+                    initialCommunicationDevice?.takeIf { it.type == targetType }
+                        ?: audioManager.availableCommunicationDevices.firstOrNull { it.type == targetType }
+                }
+                check(device != null && audioManager.setCommunicationDevice(device)) {
+                    if (enableSpeaker) "扬声器当前不可用" else "听筒当前不可用"
+                }
+            } else {
+                @Suppress("DEPRECATION")
+                run { audioManager.isSpeakerphoneOn = enableSpeaker }
+            }
+            _uiState.update { it.copy(isSpeakerOn = enableSpeaker, errorMessage = null) }
+        } catch (error: Exception) {
+            _uiState.update { it.copy(errorMessage = error.message ?: "切换扬声器失败") }
+        }
+    }
+
     /**
      * 切换自动发送模式. UI 上不再挂载按钮, 但保留方法 (autoSendEnabled 字段仍在用).
      */
@@ -710,6 +780,7 @@ class VoiceCallService : Service(), KoinComponent {
      * 额外复位 _activeConversationId 和移除前台通知.
      */
     fun endCall() {
+        if (!callEnded && ::conversationId.isInitialized) chatService.finishInteractionCalls(conversationId, interactionStartJob)
         callEnded = true
         microphonePolicyJob?.cancel()
         microphonePolicyJob = null
@@ -727,15 +798,32 @@ class VoiceCallService : Service(), KoinComponent {
             microphone.update(VoiceCallStatus.Idle, muted = true, keepListeningDuringReply = false)
         } else if (::asr.isInitialized) asr.stop()
         if (::tts.isInitialized) tts.stop()
+        restoreCallAudioRoute()
         _uiState.update {
-            it.copy(status = VoiceCallStatus.Idle)
+            it.copy(status = VoiceCallStatus.Idle, isSpeakerOn = false)
         }
+        _startedAtMillis.value = 0L
         _activeConversationId.value = null
         try {
             stopForeground(STOP_FOREGROUND_REMOVE)
         } catch (e: Exception) {
             Log.e(TAG, "stopForeground 失败", e)
         }
+    }
+
+    private fun restoreCallAudioRoute() {
+        val audioManager = getSystemService(AudioManager::class.java) ?: return
+        runCatching {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                audioManager.clearCommunicationDevice()
+                initialCommunicationDevice = null
+            } else if (initialAudioMode != null) {
+                @Suppress("DEPRECATION")
+                run { audioManager.isSpeakerphoneOn = initialSpeakerphoneOn }
+            }
+            initialAudioMode?.let { audioManager.mode = it }
+            initialAudioMode = null
+        }.onFailure { Log.w(TAG, "恢复通话音频路由失败", it) }
     }
 
     /**

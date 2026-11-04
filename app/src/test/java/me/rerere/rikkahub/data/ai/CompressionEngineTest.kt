@@ -7,6 +7,25 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class CompressionEngineTest {
+    @Test fun `remote error naming another model preserves selected model and cause`() = runBlocking {
+        val remote = IllegalStateException("unknown provider for model gemini-3.8-flash-high")
+        val failure = runCatching {
+            withCompressionModelContext("test provider", "gpt-6-astra") { throw remote }
+        }.exceptionOrNull()!!
+        assertTrue(failure.message.orEmpty().contains("test provider / gpt-6-astra"))
+        assertTrue(failure.message.orEmpty().contains(remote.message!!))
+        assertSame(remote, failure.cause)
+    }
+
+    @Test fun `model context preserves successful summary and caller cancellation`() = runBlocking {
+        assertEquals("summary", withCompressionModelContext("provider", "model") { "summary" })
+        val cancelled = CancellationException("cancelled")
+        val failure = runCatching {
+            withCompressionModelContext("provider", "model") { throw cancelled }
+        }.exceptionOrNull()
+        assertSame(cancelled, failure)
+    }
+
     private fun delta(text: String = "", reason: String? = null, reasoning: Boolean = false) = MessageChunk(
         "test", "test", listOf(UIMessageChoice(0, UIMessage.assistant(text).let {
             if (reasoning) it.copy(parts = listOf(UIMessagePart.Reasoning(text))) else it

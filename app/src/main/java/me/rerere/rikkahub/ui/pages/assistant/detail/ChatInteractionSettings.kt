@@ -65,6 +65,39 @@ internal fun ChatInteractionSettings(
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         CardGroup(title = { Text("聊天互动") }) {
             item(
+                headlineContent = { Text("装个大的") },
+                supportingContent = { Text(if (assistant.pretendRich)
+                    "已开启：红包和转账使用虚拟金额，不影响小钱包。"
+                    else "已关闭：红包和转账关联小钱包，余额不足时不能发出。每天零花钱 5 元。") },
+                trailingContent = {
+                    Switch(checked = assistant.pretendRich, onCheckedChange = { enabled ->
+                        onEdit { it.copy(pretendRich = enabled) }
+                    })
+                },
+            )
+            item(
+                headlineContent = { Text("允许 AI 来电") },
+                supportingContent = { Text("AI 可以主动邀请你语音通话；接听后才会打开麦克风。") },
+                trailingContent = {
+                    Switch(checked = assistant.allowIncomingVoiceCalls, onCheckedChange = { enabled ->
+                        onEdit { it.copy(allowIncomingVoiceCalls = enabled) }
+                    })
+                },
+            )
+            item(
+                headlineContent = { Text("互动卡片配色") },
+                supportingContent = {
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        listOf("ice" to "浮光冰蓝", "sakura" to "流光樱粉", "lavender" to "星河浅紫").forEach { (value, label) ->
+                            InputChip(selected = assistant.chatInteractionTheme == value,
+                                onClick = { onEdit { it.copy(chatInteractionTheme = value) } },
+                                label = { Text(label) })
+                        }
+                    }
+                },
+            )
+
+            item(
                 headlineContent = { Text("允许 AI 自己设置") },
                 supportingContent = { Text("AI 可以修改自己的拍一拍、头像和此助手的聊天背景。你仍可在这里手动调整。") },
                 trailingContent = {

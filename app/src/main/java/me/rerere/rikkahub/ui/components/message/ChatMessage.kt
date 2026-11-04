@@ -263,6 +263,8 @@ internal fun androidx.compose.ui.graphics.drawscope.DrawScope.drawLiveBackground
 @Composable
 fun ChatMessage(
     node: MessageNode,
+    inlineCards: Map<String, me.rerere.ai.ui.UIMessageAnnotation.ChatInteraction> = emptyMap(),
+    conversationId: kotlin.uuid.Uuid? = null,
     readOnly: Boolean = false,
     modifier: Modifier = Modifier,
     loading: Boolean = false,
@@ -329,6 +331,54 @@ fun ChatMessage(
             else -> null
         }
         if (everyday && read != null) "$time ${if (read) "已读" else "未读"}" else time
+    }
+    message.annotations.filterIsInstance<me.rerere.ai.ui.UIMessageAnnotation.ChatInteraction>().firstOrNull()?.let { card ->
+        Column(modifier.fillMaxWidth()) {
+            if (!everyday) {
+                if (message.role == MessageRole.ASSISTANT) {
+                    ChatMessageAssistantAvatar(
+                        message = message, model = model, assistant = assistant, loading = loading,
+                        modifier = Modifier.fillMaxWidth(), interactionModifier = avatarGesture,
+                    )
+                } else if (message.role == MessageRole.USER) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                        ChatMessageUserAvatar(
+                            message = message, avatar = settings.userAvatar, nickname = settings.userNickname,
+                            interactionModifier = avatarGesture,
+                        )
+                    }
+                }
+            }
+            if (everyday) ChatBubbleRow(
+                enabled = true,
+                isUser = message.role == MessageRole.USER,
+                avatar = { ChatBubbleAvatar(message.role == MessageRole.USER, model, assistant, avatarGesture) },
+                timestamp = timestamp,
+            ) {
+                RichChatCard(card, conversationId, readOnly,
+                    senderName = if (card.actor == "user") settings.userNickname.ifBlank { "我" }
+                        else assistant?.name?.takeIf { it.isNotBlank() } ?: model?.displayName ?: "AI")
+            } else {
+                RichChatCard(card, conversationId, readOnly,
+                    senderName = if (card.actor == "user") settings.userNickname.ifBlank { "我" }
+                        else assistant?.name?.takeIf { it.isNotBlank() } ?: model?.displayName ?: "AI")
+                val headerShowsTime = settings.showDateBelowName && when (message.role) {
+                    MessageRole.USER -> settings.showUserAvatar
+                    MessageRole.ASSISTANT -> settings.showModelName && (model != null || assistant?.useAssistantAvatar == true)
+                    else -> false
+                }
+                if (!headerShowsTime) {
+                    Text(
+                        text = timestamp,
+                        modifier = Modifier.align(if (message.role == MessageRole.USER) Alignment.End else Alignment.Start)
+                            .padding(horizontal = 4.dp, vertical = 3.dp),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f),
+                    )
+                }
+            }
+        }
+        return
     }
     val quoteAuthor = if (message.role == MessageRole.USER) settings.userNickname.ifBlank { "我" }
         else assistant?.name?.takeIf { it.isNotBlank() } ?: model?.displayName ?: "AI"
@@ -406,6 +456,15 @@ fun ChatMessage(
                 }
             }
             MessagePartsBlock(
+                afterTools = { tools ->
+                    tools.mapNotNull { me.rerere.rikkahub.data.interaction.interactionToolId(it) }.distinct().forEach { id ->
+                        inlineCards[id]?.let { card ->
+                            ChatBubbleRow(everyday, false, avatar = { ChatBubbleAvatar(false, model, assistant, avatarGesture) }, timestamp = timestamp) {
+                                RichChatCard(card, conversationId, readOnly, senderName = assistant?.name?.takeIf { it.isNotBlank() } ?: "AI")
+                            }
+                        }
+                    }
+                },
                 assistant = assistant,
                 role = message.role,
                 parts = message.parts,
@@ -599,6 +658,7 @@ private fun MessagePartsBlock(
     onBubbleDoubleClick: (() -> Unit)? = null,
     onBubbleQuote: ((String) -> Unit)? = null,
     timestamp: String? = null,
+    afterTools: @Composable (List<UIMessagePart.Tool>) -> Unit = {},
 ) {
     val context = LocalContext.current
     val contentColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.65f)
@@ -678,6 +738,7 @@ private fun MessagePartsBlock(
                         }
                     }
                 }
+                afterTools(block.steps.filterIsInstance<ThinkingStep.ToolStep>().map { it.tool })
             }
  
             is MessagePartBlock.ChartBlock -> key("chart", block.index) {
@@ -1420,6 +1481,7 @@ internal fun VoiceMessageBubble(
     var isPlaying by remember { mutableStateOf(false) }
     var mediaPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
  
+    val voiceColors = interactionColors(if (isUser) "sakura" else "ice")
     val durationSec = (voiceMessage.duration / 1000).coerceAtLeast(1)
  
     DisposableEffect(voiceMessage.url) {
@@ -1465,11 +1527,11 @@ internal fun VoiceMessageBubble(
                 }
             }
         }),
-        shape = RoundedCornerShape(16.dp),
-        color = if (isUser) MaterialTheme.colorScheme.secondaryContainer
-        else MaterialTheme.colorScheme.tertiaryContainer,
+        shape = RoundedCornerShape(22.dp),
+        border = androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = .85f)),
+        color = Color.Transparent,
     ) {
-        Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+        Column(modifier = Modifier.background(Brush.linearGradient(listOf(voiceColors.top.copy(alpha = .88f), voiceColors.bottom.copy(alpha = .70f)))).padding(horizontal = 16.dp, vertical = 12.dp)) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -1477,8 +1539,7 @@ internal fun VoiceMessageBubble(
                 Icon(
                     imageVector = if (isPlaying) HugeIcons.PauseCircle else HugeIcons.PlayCircle,
                     contentDescription = if (isPlaying) "Pause" else "Play",
-                    tint = if (isUser) MaterialTheme.colorScheme.onPrimaryContainer
-                    else MaterialTheme.colorScheme.primary,
+                    tint = voiceColors.ink,
                     modifier = Modifier.size(24.dp)
                 )
                 // Waveform bars
@@ -1486,9 +1547,8 @@ internal fun VoiceMessageBubble(
                     val rnd = java.util.Random(voiceMessage.url.hashCode().toLong())
                     List(24) { 0.2f + rnd.nextFloat() * 0.8f }
                 }
-                val waveformColor = if (isUser) MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.5f)
-                else MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.5f)
-                Canvas(modifier = Modifier.width(60.dp).height(24.dp)) {
+                val waveformColor = voiceColors.accent
+                Canvas(modifier = Modifier.width(112.dp).height(24.dp)) {
                     val barCount = waveformBars.size
                     val barWidth = 2.5f
                     val gap = (size.width - barWidth * barCount) / (barCount - 1).coerceAtLeast(1)
@@ -1507,8 +1567,7 @@ internal fun VoiceMessageBubble(
                 Text(
                     text = "${durationSec}″",
                     style = MaterialTheme.typography.labelMedium,
-                    color = if (isUser) MaterialTheme.colorScheme.onPrimaryContainer
-                    else MaterialTheme.colorScheme.onSecondaryContainer,
+                    color = voiceColors.ink,
                 )
             }
             // Show transcript text below the voice bubble (like WeChat)
@@ -1516,8 +1575,7 @@ internal fun VoiceMessageBubble(
                 Text(
                     text = voiceMessage.transcript,
                     style = MaterialTheme.typography.bodySmall,
-                    color = if (isUser) MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
-                    else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                    color = voiceColors.ink.copy(alpha = .8f),
                     modifier = Modifier.padding(top = 4.dp),
                     maxLines = 3,
                     overflow = TextOverflow.Ellipsis,

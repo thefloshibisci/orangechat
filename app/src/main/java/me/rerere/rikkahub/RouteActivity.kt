@@ -803,18 +803,23 @@ class RouteActivity : ComponentActivity() {
                                 var assistantName by remember {
                                     mutableStateOf("")
                                 }
+                                var assistantTheme by remember { mutableStateOf("ice") }
                                 LaunchedEffect(key.conversationId) {
-                                    assistantName = runCatching {
+                                    val incomingAssistant = runCatching {
                                         conversationRepo.getConversationById(Uuid.parse(key.conversationId))
                                             ?.assistantId
-                                            ?.let { settings.getAssistantById(it)?.name }
-                                    }.getOrNull().orEmpty()
+                                            ?.let(settings::getAssistantById)
+                                    }.getOrNull()
+                                    assistantName = incomingAssistant?.name.orEmpty()
+                                    assistantTheme = incomingAssistant?.chatInteractionTheme ?: "ice"
                                 }
                                 IncomingCallPage(
                                     conversationId = key.conversationId,
                                     assistantName = assistantName,
+                                    theme = assistantTheme,
                                     onStartCall = {
                                         val convId = key.conversationId
+                                        chatService.respondIncomingInteraction(Uuid.parse(convId), "accept") {
                                         // 先停掉聊天侧的 TTS, 避免音频焦点抢占导致 ASR 识别质量下降
                                         // (AI 刚说完话触发主动来电时, 聊天页的 TTS 可能还在播放)
                                         runCatching { tts.stop() }
@@ -827,8 +832,10 @@ class RouteActivity : ComponentActivity() {
                                         // 替换来电页为通话页
                                         backStack.removeLastOrNull()
                                         backStack.add(Screen.VoiceCall(convId))
+                                        }
                                     },
                                     onDecline = {
+                                        chatService.respondIncomingInteraction(Uuid.parse(key.conversationId), "decline") { }
                                         backStack.removeLastOrNull()
                                         try {
                                             chatService.notifyVoiceCallDeclined(Uuid.parse(key.conversationId))

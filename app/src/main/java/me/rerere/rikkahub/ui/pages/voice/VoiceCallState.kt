@@ -31,6 +31,7 @@ data class VoiceCallUiState(
     val errorMessage: String? = null,
     val amplitudes: List<Float> = emptyList(),
     val isMuted: Boolean = false,
+    val isSpeakerOn: Boolean = false,
     val autoSendEnabled: Boolean = true,
 ) {
     val isActive: Boolean

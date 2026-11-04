@@ -167,8 +167,8 @@ private fun AssistantLocalToolContent(
                 supportingContent = { Text("允许 AI 在合适时机主动发起语音通话, 弹出来电界面邀请你接听。开启后 AI 可能会在觉得语音更合适时打来电话") },
                 trailingContent = {
                     Switch(
-                        checked = assistant.localTools.contains(LocalToolOption.RequestVoiceCall),
-                        onCheckedChange = { toggleLocalTool(LocalToolOption.RequestVoiceCall, it) }
+                        checked = assistant.allowIncomingVoiceCalls,
+                        onCheckedChange = { onUpdate(assistant.copy(allowIncomingVoiceCalls = it)) }
                     )
                 }
             )

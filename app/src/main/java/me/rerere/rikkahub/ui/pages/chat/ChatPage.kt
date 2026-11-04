@@ -73,6 +73,9 @@ import androidx.compose.ui.graphics.layer.drawLayer
 import androidx.compose.ui.graphics.rememberGraphicsLayer
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInWindow
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.padding
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
@@ -546,6 +549,7 @@ private fun ChatPageContent(
         Scaffold(
             modifier = Modifier.chatBottomFade(),
             topBar = {
+                Column {
                 TopBar(
                     settings = setting,
                     conversation = conversation,
@@ -562,21 +566,16 @@ private fun ChatPageContent(
                         vm.updateTitle(it)
                     },
                     onConversationSettings = { showConversationSettings = true },
-                    onVoiceCall = {
-                        val activeId = VoiceCallService.activeConversationId.value
-                        when {
-                            activeId == null -> navController.navigate(
-                                Screen.VoiceCall(conversation.id.toString())
-                            )
-                            activeId == conversation.id.toString() -> navController.navigate(
-                                Screen.VoiceCall(conversation.id.toString())
-                            )
-                            else -> {
-                                toaster.show("当前有通话进行中，请先挂断", type = ToastType.Warning)
-                            }
-                        }
-                    },
+
                 )
+                    val activeCall by VoiceCallService.activeConversationId.collectAsStateWithLifecycle()
+                    if (activeCall != null) {
+                        me.rerere.rikkahub.ui.pages.voice.FloatingCallPill(
+                            theme = (setting.getAssistantById(conversation.assistantId) ?: setting.getCurrentAssistant()).chatInteractionTheme,
+                            onOpen = { navController.navigate(Screen.VoiceCall(activeCall!!)) },
+                            onEnd = { VoiceCallService.stop(bubbleBlurContext) })
+                    }
+                }
             },
             bottomBar = {
                 Column {
@@ -857,7 +856,6 @@ private fun TopBar(
     onClickMenu: () -> Unit,
     onNewChat: () -> Unit,
     onUpdateTitle: (String) -> Unit,
-    onVoiceCall: () -> Unit,
     onConversationSettings: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
@@ -917,14 +915,6 @@ private fun TopBar(
             }
         },
         actions = {
-            IconButton(
-                onClick = {
-                    onVoiceCall()
-                }
-            ) {
-                Icon(HugeIcons.Voice, "Voice Call")
-            }
-
             Box {
                 IconButton(onClick = { showOptions = true }) {
                     Icon(if (previewMode) HugeIcons.Cancel01 else HugeIcons.LeftToRightListBullet, "会话菜单")

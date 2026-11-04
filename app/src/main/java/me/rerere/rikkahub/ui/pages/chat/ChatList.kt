@@ -342,10 +342,15 @@ private fun ChatListNormal(
         }
 
         // Filter out [SKIP] messages and proactive message context markers
+        val inlineCards = remember(conversation.messageNodes, showCompressedHistory) {
+            me.rerere.rikkahub.data.interaction.inlineInteractionCards(
+                (if (showCompressedHistory) conversation.messageNodes else conversation.visibleMessageNodes).map { it.currentMessage })
+        }
         val displayNodes = remember(conversation.messageNodes, conversation.compressionRevision, showCompressedHistory) {
             (if (showCompressedHistory) conversation.messageNodes else conversation.visibleMessageNodes).filter { node ->
                 val msg = node.currentMessage
                 val text = msg.toText().trim()
+                msg.annotations.filterIsInstance<me.rerere.ai.ui.UIMessageAnnotation.ChatInteraction>().none { it.id in inlineCards } &&
                 !(msg.role == MessageRole.ASSISTANT && text == "[SKIP]") &&
                 !(msg.role == MessageRole.USER && text.contains("[主动消息上下文]"))
             }
@@ -441,6 +446,8 @@ private fun ChatListNormal(
                     ) {
                         ChatMessage(
                             node = node,
+                            inlineCards = inlineCards,
+                            conversationId = conversation.id,
                             hasAssistantResponse = node.currentMessage.id in repliedUserIds,
                             hasUserRead = node.currentMessage.id in readAssistantIds,
                             onQuote = onQuote,

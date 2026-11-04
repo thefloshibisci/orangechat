@@ -6,6 +6,8 @@
 
 package me.rerere.rikkahub.data.ai.tools
  
+import me.rerere.rikkahub.service.createChatInteraction
+import kotlinx.serialization.encodeToString
 import android.content.Context
 import androidx.core.net.toUri
 import com.whl.quickjs.wrapper.QuickJSContext
@@ -161,6 +163,28 @@ class LocalTools(
     private val providerManager: ProviderManager,
     private val filesManager: FilesManager,
 ) {
+    suspend fun showIncomingChatCall(conversationId: String) {
+        eventBus.emit(AppEvent.RequestVoiceCall(conversationId))
+        // Notification opens the chat invitation; it never starts recording itself.
+        val manager = androidx.core.app.NotificationManagerCompat.from(context)
+        if (manager.areNotificationsEnabled() && (android.os.Build.VERSION.SDK_INT < 33 ||
+            androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.POST_NOTIFICATIONS) == android.content.pm.PackageManager.PERMISSION_GRANTED)) {
+            if (android.os.Build.VERSION.SDK_INT >= 26) {
+                manager.createNotificationChannel(android.app.NotificationChannel("chat_call_invites", "语音来电邀请", android.app.NotificationManager.IMPORTANCE_HIGH))
+            }
+            val intent = android.content.Intent(context, me.rerere.rikkahub.RouteActivity::class.java).apply {
+                putExtra("conversationId", conversationId)
+                addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            }
+            val pending = android.app.PendingIntent.getActivity(context, conversationId.hashCode(), intent,
+                android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT)
+            manager.notify(("invite:" + conversationId).hashCode(), androidx.core.app.NotificationCompat.Builder(context, "chat_call_invites")
+                .setSmallIcon(me.rerere.rikkahub.R.drawable.small_icon).setContentTitle("收到语音通话邀请")
+                .setContentText("点击查看来电，接听后开始通话").setContentIntent(pending).setAutoCancel(true)
+                .setTimeoutAfter(60000).build())
+        }
+    }
+
     fun imageGenerationTool(): Tool = Tool(
         name = "generate_image",
         description = "Generate an image from a prompt using the image model configured in My page. Use when the person asks for a picture.",
@@ -490,20 +514,14 @@ class LocalTools(
             )
         },
         execute = {
-            // 单通话守卫: 已有通话进行中就不重复发起
-            val active = VoiceCallService.activeConversationId.value
-            if (active != null) {
-                val payload = buildJsonObject {
-                    put("success", false)
-                    put("reason", "a voice call is already in progress")
-                }
-                return@Tool listOf(UIMessagePart.Text(payload.toString()))
-            }
-            eventBus.emit(AppEvent.RequestVoiceCall(conversationId))
-            val payload = buildJsonObject {
-                put("success", true)
-            }
-            listOf(UIMessagePart.Text(payload.toString()))
+            val service = org.koin.core.context.GlobalContext.get().get<me.rerere.rikkahub.service.ChatService>()
+            val id = Uuid.parse(conversationId)
+            val assistantId = service.getConversationFlow(id).value.assistantId
+            val card = service.createChatInteraction(id, assistantId, "assistant", "call",
+                note = it.jsonObject["reason"]?.jsonPrimitive?.contentOrNull.orEmpty(),
+                requestId = Uuid.random().toString())
+            if (card.status == "pending") showIncomingChatCall(conversationId)
+            listOf(UIMessagePart.Text(kotlinx.serialization.json.Json.encodeToString(card)))
         }
     )
  

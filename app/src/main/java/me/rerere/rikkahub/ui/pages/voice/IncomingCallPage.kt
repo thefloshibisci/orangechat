@@ -50,8 +50,8 @@ import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.CallIncoming01
 import me.rerere.hugeicons.stroke.Cancel01
 
-private val ColorIncoming = Color(0xFFFDAE4F) // 来电主色: 琥珀
-private val ColorBgIncoming = Color(0xFF241A0B) // 暖深褐底
+private val ColorIncoming = Color(0xFF5489AA) // 来电主色: 琥珀
+private val ColorBgIncoming = Color(0xFFE8F3FC) // 暖深褐底
 
 /**
  * 来电界面 (AI 主动发起语音通话时弹出)
@@ -66,9 +66,11 @@ private val ColorBgIncoming = Color(0xFF241A0B) // 暖深褐底
 fun IncomingCallPage(
     conversationId: String,
     assistantName: String,
+    theme: String = "ice",
     onStartCall: () -> Unit,
     onDecline: () -> Unit,
 ) {
+    val permission = me.rerere.rikkahub.ui.components.ui.permission.rememberPermissionState(me.rerere.rikkahub.ui.components.ui.permission.PermissionRecordAudio)
     val context = LocalContext.current
 
     // 来电震动: 进入页面开始, 离开页面停止
@@ -112,93 +114,16 @@ fun IncomingCallPage(
         label = "pulse"
     )
 
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(ColorBgIncoming)
-            .drawBehind {
-                drawRect(
-                    brush = Brush.radialGradient(
-                        colors = listOf(
-                            accentColor.copy(alpha = 0.4f),
-                            accentColor.copy(alpha = 0.15f),
-                            Color.Transparent
-                        ),
-                        center = androidx.compose.ui.geometry.Offset(
-                            size.width / 2f,
-                            size.height * 0.38f
-                        ),
-                        radius = size.maxDimension * 0.7f
-                    )
-                )
-            }
-    ) {
-        Column(
-            modifier = Modifier.fillMaxSize(),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.SpaceBetween
-        ) {
-            // 顶部: 来电提示
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                modifier = Modifier.padding(top = 90.dp)
-            ) {
-                Text(
-                    text = "语音通话来电",
-                    color = accentColor,
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.Medium
-                )
-                Spacer(modifier = Modifier.size(12.dp))
-                Text(
-                    text = assistantName.ifBlank { "AI 助手" },
-                    color = Color.White,
-                    fontSize = 28.sp,
-                    fontWeight = FontWeight.Medium
-                )
-            }
-
-            // 中部: 来电光球 (脉动)
-            VoiceOrb(
-                amplitudes = emptyList(),
-                status = VoiceCallStatus.Processing, // 借用琥珀色脉动节奏
-                baseColor = accentColor,
-                size = 220.dp,
-                modifier = Modifier
-                // VoiceOrb 内部已有呼吸动画, 这里再叠一层脉动缩放会更生动,
-                // 但为避免双重缩放导致抖动, 保持原样, 靠 Processing 状态的快速呼吸表达"在呼入"
-            )
-
-            // 底部: 接听 / 拒接
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(80.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.padding(bottom = 72.dp)
-            ) {
-                // 拒接
-                IncomingCallButton(
-                    icon = HugeIcons.Cancel01,
-                    contentDescription = "拒接",
-                    onClick = onDecline,
-                    backgroundColor = MaterialTheme.colorScheme.error,
-                    iconTint = Color.White,
-                    label = "拒接"
-                )
-
-                // 接听
-                IncomingCallButton(
-                    icon = HugeIcons.CallIncoming01,
-                    contentDescription = "接听",
-                    onClick = onStartCall,
-                    backgroundColor = Color(0xFF4CAF50),
-                    iconTint = Color.White,
-                    label = "接听",
-                    // 接听按钮放大一点, 强调主操作
-                    size = 76.dp
-                )
-            }
-        }
-    }
+    GlassCallPanel(
+        theme = theme,
+        name = assistantName,
+        status = "邀请你开始语音通话",
+        duration = "",
+        subtitle = "",
+        incoming = true,
+        onPrimary = { if (permission.allRequiredPermissionsGranted) onStartCall() else permission.requestPermissions() },
+        onEnd = onDecline,
+    )
 }
 
 @Composable
@@ -235,7 +160,7 @@ private fun IncomingCallButton(
         Spacer(modifier = Modifier.size(8.dp))
         Text(
             text = label,
-            color = Color.White.copy(alpha = 0.8f),
+            color = Color(0xFF27476E),
             fontSize = 13.sp
         )
     }

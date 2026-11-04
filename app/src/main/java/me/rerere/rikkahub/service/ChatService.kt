@@ -354,6 +354,34 @@ class ChatService(
 
     // ---- Session 管理 ----
 
+    fun beginInteractionCall(conversationId: Uuid, startedAt: Long) = appScope.launch {
+        runCatching { beginChatInteractionCall(conversationId, startedAt) }
+    }
+
+    fun finishInteractionCalls(conversationId: Uuid, startJob: Job? = null) {
+        appScope.launch { startJob?.join(); runCatching { endChatInteractionCalls(conversationId) } }
+    }
+    fun respondIncomingInteraction(conversationId: Uuid, action: String, onReady: () -> Unit) {
+        appScope.launch {
+            val pending = getConversationFlow(conversationId).value.currentMessages.flatMap { it.annotations }
+                .filterIsInstance<me.rerere.ai.ui.UIMessageAnnotation.ChatInteraction>()
+                .lastOrNull { it.kind == "call" && it.actor == "assistant" && it.status == "pending" }
+            if (pending != null) {
+                val result = runCatching { respondChatInteraction(conversationId, pending.id, "user", action) }
+                if (result.isFailure) return@launch
+            }
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) { onReady() }
+        }
+    }
+
+    fun answerChatGift(conversationId: Uuid) {
+        submitMessage(conversationId, listOf(UIMessagePart.Text("请查看我刚发来的红包或转账卡片。")))
+    }
+
+    internal val interactionSettings get() = settingsStore
+    internal val interactionPlugins get() = pluginToolProvider
+    internal suspend fun interactionConversationExists(id: Uuid) = conversationRepo.existsConversationById(id)
+
     internal fun getOrCreateSession(conversationId: Uuid): ConversationSession {
         return sessions.computeIfAbsent(conversationId) { id ->
             val settings = settingsStore.settingsFlow.value
@@ -1842,7 +1870,7 @@ class ChatService(
         }
         addAll(
             localTools.getTools(
-                assistant.localTools,
+                assistant.localTools.filterNot { it is me.rerere.rikkahub.data.ai.tools.LocalToolOption.RequestVoiceCall },
                 me.rerere.rikkahub.data.ai.tools.ToolInvocationContext(
                     callerAssistantId = assistant.id.toString(),
                     callerConversationId = conversationId.toString(),
@@ -1890,6 +1918,15 @@ class ChatService(
         addAll(buildAssistantSelfCustomizationTools(assistant) { patch ->
             customizeCurrentAssistant(conversationId, assistant.id, patch)
         })
+        addAll(me.rerere.rikkahub.data.interaction.buildRichChatTools(
+            allowCalls = assistant.allowIncomingVoiceCalls,
+            create = { kind, amount, note, requestId ->
+                createChatInteraction(conversationId, assistant.id, "assistant", kind, amount, note, requestId).also { card ->
+                    if (kind == "call" && card.status == "pending") localTools.showIncomingChatCall(conversationId.toString())
+                }
+            },
+            respond = { id, action -> respondChatInteraction(conversationId, id, "assistant", action) },
+        ))
         addAll(buildChatInteractionTools(
             assistant = assistant,
             reactionPresets = effectiveChatReactionPresets(settings.customReactionPresets),

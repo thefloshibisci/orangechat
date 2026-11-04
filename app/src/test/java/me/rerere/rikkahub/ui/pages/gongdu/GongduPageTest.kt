@@ -34,6 +34,7 @@ class GongduPageTest {
         assertNull(saved)
         compose.onNodeWithText("保存配置").performClick()
         assertEquals("https://example.test/mcp" to "test-token", saved)
-        compose.onNodeWithText("扫码登录").performScrollTo().assertIsNotEnabled()
+        compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("扫码登录"))
+        compose.onNodeWithText("扫码登录").assertIsDisplayed().assertIsNotEnabled()
     }
 }

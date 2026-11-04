@@ -814,6 +814,27 @@ fun <T> List<T>.migrateToolNodes(
 
 @Serializable
 sealed class UIMessageAnnotation {
+    /** Durable chat interaction; text parts carry a readable model/backup fallback. */
+    @Serializable
+    @SerialName("chat_interaction")
+    data class ChatInteraction(
+        val id: String,
+        val conversationId: String,
+        val assistantId: String,
+        val actor: String,
+        val kind: String,
+        val status: String = "pending",
+        val amountCents: Long = 0,
+        val note: String = "",
+        val theme: String = "ice",
+        val walletLinked: Boolean = false,
+        val createdAtMillis: Long = 0,
+        val pendingAction: String? = null,
+        val connectedAtMillis: Long? = null,
+        val endedAtMillis: Long? = null,
+        val error: String? = null,
+    ) : UIMessageAnnotation()
+
     /** Preserve sibling-fork backup metadata without turning it into a citation or model input. */
     @Serializable
     @SerialName("avatar_interaction")

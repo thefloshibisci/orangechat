@@ -44,7 +44,7 @@ class PluginToolProvider(
         // 等待插件初始化完成，避免竞态条件导致工具列表为空
         pluginManager.awaitInitialization()
         return availablePlugins().flatMap { plugin ->
-            plugin.manifest.tools.map { toolDef ->
+            plugin.manifest.tools.filterNot { plugin.manifest.id == "com.orangechat.plugin.ledger" && it.name == "chat_payment" }.map { toolDef ->
                 createTool(plugin, toolDef, recentMessages, conversationId)
             }
         }
@@ -56,7 +56,7 @@ class PluginToolProvider(
     suspend fun getPluginTools(pluginId: String): List<Tool> {
         pluginManager.awaitInitialization()
         val plugin = availablePlugins().find { it.manifest.id == pluginId } ?: return emptyList()
-        return plugin.manifest.tools.map { toolDef ->
+        return plugin.manifest.tools.filterNot { plugin.manifest.id == "com.orangechat.plugin.ledger" && it.name == "chat_payment" }.map { toolDef ->
             createTool(plugin, toolDef)
         }
     }
@@ -66,6 +66,17 @@ class PluginToolProvider(
      */
     private fun availablePlugins(): List<PluginInfo> = pluginManager.plugins.value.filter {
         it.isEnabled && it.loadError == null
+    }
+
+    suspend fun callChatWallet(params: JsonObject): JsonObject {
+        pluginManager.awaitInitialization()
+        val wallet = availablePlugins().firstOrNull { it.manifest.id == "com.orangechat.plugin.ledger" }
+            ?: error("请先安装并启用南枳的小钱包插件")
+        check(wallet.manifest.tools.any { it.name == "chat_payment" }) {
+            "关联红包需要钱包 3.3.0 和随包的数据库升级脚本"
+        }
+        return pluginLoader.callTool(wallet.manifest.id, "chat_payment", params).getOrThrow() as? JsonObject
+            ?: error("钱包返回了无法识别的回执")
     }
 
     private fun createTool(

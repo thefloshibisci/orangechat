@@ -12,7 +12,16 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.layout.width
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.staticCompositionLocalOf
+import me.rerere.hugeicons.stroke.Voice
+import me.rerere.rikkahub.service.VoiceCallService
+import me.rerere.rikkahub.ui.context.LocalToaster
+import com.dokar.sonner.ToastType
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -29,10 +38,17 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.ProvideTextStyle
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import me.rerere.rikkahub.ui.components.message.SendChatGiftDialog
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -45,8 +61,10 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import me.rerere.ai.provider.ProviderSetting
+import me.rerere.ai.provider.supportsDirectAudio
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.Camera01
+import me.rerere.hugeicons.stroke.ArrowRight01
 import me.rerere.hugeicons.stroke.Files02
 import me.rerere.hugeicons.stroke.Image02
 import me.rerere.hugeicons.stroke.MusicNote03
@@ -59,18 +77,20 @@ import me.rerere.rikkahub.Screen
 import me.rerere.rikkahub.data.ai.mcp.McpManager
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.findProvider
+import me.rerere.rikkahub.data.datastore.getChatModelForAssistant
+import me.rerere.rikkahub.data.ai.compressionModelLabelFor
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.ui.components.ui.ExtensionSelector
 import me.rerere.rikkahub.ui.components.ui.permission.PermissionCamera
 import me.rerere.rikkahub.ui.components.ui.permission.PermissionManager
 import me.rerere.rikkahub.ui.components.ui.permission.rememberPermissionState
-import me.rerere.rikkahub.ui.context.LocalCurrentChatModel
 import me.rerere.rikkahub.ui.context.LocalMcpServers
 import me.rerere.rikkahub.ui.context.LocalNavController
-import me.rerere.rikkahub.ui.context.LocalProviders
 import me.rerere.rikkahub.ui.context.LocalSettings
 import me.rerere.rikkahub.ui.hooks.ChatInputState
+
+private val LocalActionTileWidth = staticCompositionLocalOf { 80.dp }
 
 @Composable
 internal fun FilesPicker(
@@ -90,13 +110,20 @@ internal fun FilesPicker(
     onPickVideo: () -> Unit,
     onPickAudio: () -> Unit,
     onPickFile: () -> Unit,
+    onSendGift: (String) -> Unit,
 ) {
     // settings 仍保留给 InjectionQuickConfigSheet -> ExtensionSelector 使用（它需要完整 Settings）
+    val toaster = LocalToaster.current
     val settings = LocalSettings.current
-    val currentChatModel = LocalCurrentChatModel.current
-    val providers = LocalProviders.current
+    val currentChatModel = settings.getChatModelForAssistant(conversation.assistantId)
     val mcpServers = LocalMcpServers.current
-    val provider = currentChatModel?.findProvider(providers = providers)
+    val provider = currentChatModel?.findProvider(providers = settings.providers)
+    val audioInputAvailable = currentChatModel?.supportsDirectAudio(provider) == true
+    val videoInputAvailable = provider is ProviderSetting.Google
+    val actionsScrollState = rememberScrollState()
+    val scope = rememberCoroutineScope()
+    val hasMoreActions by remember { derivedStateOf { actionsScrollState.maxValue > 0 } }
+    val compressionModelLabel = settings.compressionModelLabelFor(assistant.id)
     val navController = LocalNavController.current
 
     Column(
@@ -104,29 +131,54 @@ internal fun FilesPicker(
             .fillMaxWidth()
             .padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        FlowRow(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(16.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            TakePicButton(onLaunchCamera = onTakePic)
-
-            ImagePickButton(onClick = onPickImage)
-
-            if (provider != null && provider is ProviderSetting.Google) {
-                VideoPickButton(onClick = onPickVideo)
-
-                AudioPickButton(onClick = onPickAudio)
+        BoxWithConstraints(Modifier.fillMaxWidth()) {
+            val tileWidth = (maxWidth - 12.dp * 3) / 4
+            CompositionLocalProvider(LocalActionTileWidth provides tileWidth) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().horizontalScroll(actionsScrollState),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    TakePicButton(onLaunchCamera = onTakePic)
+                    ImagePickButton(onClick = onPickImage)
+                    FilePickButton(onClick = onPickFile)
+                    GongduButton(onClick = {
+                        onDismiss()
+                        navController.navigate(Screen.Gongdu(conversationId = conversation.id.toString()))
+                    })
+                    if (videoInputAvailable) VideoPickButton(onClick = onPickVideo)
+                    if (audioInputAvailable) AudioPickButton(onClick = onPickAudio)
+                    BigIconTextButton(
+                        icon = { Icon(HugeIcons.Voice, null) },
+                        text = { Text("语音通话") },
+                    ) {
+                        val activeId = VoiceCallService.activeConversationId.value
+                        if (activeId == null || activeId == conversation.id.toString()) {
+                            onDismiss()
+                            navController.navigate(Screen.VoiceCall(conversation.id.toString()))
+                        } else {
+                            toaster.show("当前有通话进行中，请先挂断", type = ToastType.Warning)
+                        }
+                    }
+                    BigIconTextButton(icon = { Icon(androidx.compose.ui.res.painterResource(R.drawable.action_red_packet), null) }, text = { Text("红包") }) { onSendGift("red_packet") }
+                    BigIconTextButton(icon = { Icon(androidx.compose.ui.res.painterResource(R.drawable.action_transfer), null) }, text = { Text("转账") }) { onSendGift("transfer") }
+                }
             }
+        }
 
-            FilePickButton(onClick = onPickFile)
-
-            GongduButton(onClick = {
-                onDismiss()
-                navController.navigate(
-                    Screen.Gongdu(conversationId = conversation.id.toString())
-                )
-            })
+        BoxWithConstraints(Modifier.fillMaxWidth()) {
+            if (hasMoreActions) {
+                val mediaOffset = with(androidx.compose.ui.platform.LocalDensity.current) {
+                    (((maxWidth - 12.dp * 3) / 4 + 12.dp).toPx() * 4).toInt()
+                }
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    TextButton(onClick = {
+                        scope.launch { actionsScrollState.animateScrollTo(mediaOffset.coerceAtMost(actionsScrollState.maxValue)) }
+                    }) {
+                        Text("音视频及更多")
+                        Icon(HugeIcons.ArrowRight01, contentDescription = null)
+                    }
+                }
+            }
         }
 
         HorizontalDivider(
@@ -199,6 +251,7 @@ internal fun FilesPicker(
         )
     }
 
+
     // Injection Bottom Sheet
     if (showInjectionSheet) {
         InjectionQuickConfigSheet(
@@ -210,7 +263,7 @@ internal fun FilesPicker(
 
     // Compress Context Dialog
     if (showCompressDialog) {
-        CompressContextDialog(onDismiss = {
+        CompressContextDialog(compressionModelLabel = compressionModelLabel, onDismiss = {
             onShowCompressDialogChange(false)
             onDismiss()
         }, onConfirm = { additionalPrompt, targetTokens, keepRecentMessages, mergeWithPrevious, onProgress ->
@@ -362,14 +415,16 @@ private fun BigIconTextButton(
             .semantics {
                 role = Role.Button
             }
-            .wrapContentWidth(),
+            .width(LocalActionTileWidth.current),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(2.dp)) {
         Surface(
+            modifier = Modifier.fillMaxWidth(),
             tonalElevation = 2.dp, shape = RoundedCornerShape(8.dp)
         ) {
             Box(
-                modifier = Modifier.padding(horizontal = 32.dp, vertical = 16.dp)
+                modifier = Modifier.fillMaxWidth().height(56.dp),
+                contentAlignment = Alignment.Center
             ) {
                 icon()
             }

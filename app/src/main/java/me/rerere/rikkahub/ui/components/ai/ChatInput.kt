@@ -206,6 +206,10 @@ fun ChatInput(
     }
 
     var expand by remember { mutableStateOf(ExpandState.Collapsed) }
+    var giftKind by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf<String?>(null) }
+    giftKind?.let { kind ->
+        me.rerere.rikkahub.ui.components.message.SendChatGiftDialog(conversation.id, assistant, kind) { giftKind = null }
+    }
     var showStickerPicker by remember { mutableStateOf(false) }
     var showInjectionSheet by remember { mutableStateOf(false) }
     var showCompressDialog by remember { mutableStateOf(false) }
@@ -865,6 +869,7 @@ fun ChatInput(
                             onPickVideo = { videoPickerLauncher.launch("video/*") },
                             onPickAudio = { audioPickerLauncher.launch("audio/*") },
                             onPickFile = { filePickerLauncher.launch(arrayOf("*/*")) },
+                            onSendGift = { kind -> dismissExpand(); giftKind = kind },
                         )
                     }
                 }

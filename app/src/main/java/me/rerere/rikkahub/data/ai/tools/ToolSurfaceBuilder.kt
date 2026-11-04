@@ -6,6 +6,8 @@
 
 package me.rerere.rikkahub.data.ai.tools
 
+import me.rerere.rikkahub.service.createChatInteraction
+import me.rerere.rikkahub.service.respondChatInteraction
 import kotlinx.serialization.json.JsonObject
 import me.rerere.rikkahub.data.ai.mcp.normalizeMcpArguments
 
@@ -77,7 +79,7 @@ class ToolSurfaceBuilder(
         if (settings.enableWebSearch) {
             addAll(createSearchTools(settings))
         }
-        addAll(localTools.getTools(assistant.localTools, invocationContext))
+        addAll(localTools.getTools(assistant.localTools.filterNot { it is LocalToolOption.RequestVoiceCall }, invocationContext))
         val systemToolsOptions = settings.systemToolsSetting.getEnabledOptions()
         if (systemToolsOptions.isNotEmpty()) {
             addAll(SystemTools(context, settings).getTools(systemToolsOptions, recentMessages, filesManager))
@@ -102,5 +104,19 @@ class ToolSurfaceBuilder(
             )
         }
         addAll(pluginToolProvider.getTools(recentMessages, invocationContext.callerConversationId))
+        invocationContext.callerConversationId?.let { conversationId ->
+            addAll(me.rerere.rikkahub.data.interaction.buildRichChatTools(assistant.allowIncomingVoiceCalls,
+                create = { kind, amount, note, requestId ->
+                    val service = org.koin.core.context.GlobalContext.get().get<me.rerere.rikkahub.service.ChatService>()
+                    service.createChatInteraction(kotlin.uuid.Uuid.parse(conversationId), assistant.id, "assistant", kind, amount, note, requestId).also {
+                        if (kind == "call" && it.status == "pending") localTools.showIncomingChatCall(conversationId)
+                    }
+                },
+                respond = { id, action ->
+                    org.koin.core.context.GlobalContext.get().get<me.rerere.rikkahub.service.ChatService>()
+                        .respondChatInteraction(kotlin.uuid.Uuid.parse(conversationId), id, "assistant", action)
+                }))
+        }
+
     }
 }

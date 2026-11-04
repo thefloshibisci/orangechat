@@ -1,6 +1,7 @@
 package me.rerere.rikkahub.data.ai
 
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.withTimeoutOrNull
 import me.rerere.ai.provider.ProviderManager
@@ -16,6 +17,19 @@ import kotlin.uuid.Uuid
 
 internal const val COMPRESSION_REQUEST_TIMEOUT_MS = 180_000L
 internal const val COMPRESSION_OPERATION_TIMEOUT_MS = 600_000L
+
+/** Keep the selected request identity beside the remote error; never infer it from error text. */
+internal suspend fun <T> withCompressionModelContext(
+    providerName: String,
+    modelId: String,
+    block: suspend () -> T,
+): T = try {
+    block()
+} catch (e: CancellationException) {
+    throw e
+} catch (e: Exception) {
+    throw IllegalStateException("压缩选用：$providerName / $modelId\n${e.message ?: e.javaClass.simpleName}", e)
+}
 
 /** Turn our own timeout into an actionable failure; caller cancellation still propagates. */
 internal suspend fun <T : Any> withCompressionDeadline(
@@ -67,12 +81,14 @@ internal class CompressionEngine(
         val language = Locale.getDefault().displayName
         return { content ->
             val prompt = buildCompressionPrompt(settings.compressPrompt, content, targetTokens, additionalPrompt, language)
-            collectCompressionSummary {
-                handler.streamText(
-                    providerSetting = provider,
-                    messages = listOf(UIMessage.user(prompt)),
-                    params = TextGenerationParams(model = model),
-                )
+            withCompressionModelContext(provider.name, model.modelId) {
+                collectCompressionSummary {
+                    handler.streamText(
+                        providerSetting = provider,
+                        messages = listOf(UIMessage.user(prompt)),
+                        params = TextGenerationParams(model = model),
+                    )
+                }
             }
         }
     }

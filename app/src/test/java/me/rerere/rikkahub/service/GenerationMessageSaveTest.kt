@@ -14,6 +14,15 @@ import org.junit.Test
 import kotlin.uuid.Uuid
 
 class GenerationMessageSaveTest {
+    @Test fun `stale generation snapshot cannot revert a received payment`() {
+        val annotation = me.rerere.ai.ui.UIMessageAnnotation.ChatInteraction("id", "conversation", "assistant", "user", "transfer", status = "accepted")
+        val saved = UIMessage.user("已领取").copy(annotations = listOf(annotation))
+        val stale = saved.copy(parts = listOf(UIMessagePart.Text("待领取")), annotations = listOf(annotation.copy(status = "pending")))
+        val current = Conversation(assistantId = Uuid.random(), messageNodes = listOf(MessageNode.of(saved)))
+        val result = current.generationMessageMutation(listOf(stale))
+        assertEquals(saved, result.conversation.currentMessages.single())
+    }
+
     private val tool = UIMessagePart.Tool("call", "write", "{}")
 
     @Test

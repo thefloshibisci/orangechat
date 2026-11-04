@@ -32,6 +32,9 @@ data class Assistant(
     val maxContextVoices: Int = 0, // 0 = 不限制；超出后较早的语音在请求里换成转写
     val streamOutput: Boolean = true,
     val enableAvatarInteractions: Boolean = true,
+    val pretendRich: Boolean = false,
+    val chatInteractionTheme: String = "ice",
+    val allowIncomingVoiceCalls: Boolean = true,
     val enableMessageReactions: Boolean = true,
     val userInteractionAction: String = "拍了拍",
     val userInteractionSuffix: String = "",

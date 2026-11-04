@@ -5,11 +5,20 @@ import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.findModelById
+import me.rerere.rikkahub.data.datastore.findProvider
 import me.rerere.rikkahub.data.datastore.getChatModelForAssistant
 import kotlin.uuid.Uuid
 
 internal fun Settings.compressionModelFor(assistantId: Uuid): Model? =
     compressModelId?.let { findModelById(it) } ?: getChatModelForAssistant(assistantId)
+
+internal fun Settings.compressionModelLabelFor(assistantId: Uuid): String {
+    val selectedOverride = compressModelId?.let(::findModelById)
+    val model = selectedOverride ?: getChatModelForAssistant(assistantId) ?: return "未配置可用压缩模型"
+    val provider = model.findProvider(providers)?.name ?: "未知服务商"
+    val source = if (selectedOverride != null) "指定压缩模型" else "当前助手模型"
+    return "$source：$provider / ${model.modelId}"
+}
 
 @Suppress("DEPRECATION")
 private fun UIMessagePart.compressionText(): String = when (this) {
