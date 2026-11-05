@@ -26,6 +26,7 @@ import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.graphics.lerp as lerpColor
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.platform.LocalContext
@@ -194,10 +195,12 @@ private fun RoomCard(room: GongduRoom, paper: GongduPaper, modifier: Modifier, o
             }
             Box(Modifier.fillMaxWidth().weight(0.56f), contentAlignment = Alignment.Center) {
                 if (room.illustration != null) {
+                    // Transparent white line art (drawable-nodpi); the tint sets the paper ink colour.
                     Image(
                         painter = painterResource(room.illustration), contentDescription = null,
                         colorFilter = ColorFilter.tint(paper.line),
-                        modifier = Modifier.fillMaxWidth(0.8f).aspectRatio(1f),
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier.fillMaxSize().padding(vertical = 6.dp),
                     )
                 } else ComingSoonMark(paper)
             }
