@@ -399,15 +399,16 @@ internal fun InboxTab(
         }
         item {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                val unread = setting.inbox.events.count { !it.acknowledged }
-                SectionTitle("消息", if (unread > 0) "$unread 条未读" else "都看过啦", Modifier.weight(1f))
+                val pending = setting.inbox.events.count { !it.acknowledged }
+                SectionTitle("消息", if (pending > 0) "$pending 条待送到聊天" else "暂无待送到聊天的消息", Modifier.weight(1f))
                 TextButton(enabled = configured && !busy, onClick = onRefresh) {
                     Icon(HugeIcons.Refresh, null, Modifier.size(16.dp)); Spacer(Modifier.width(4.dp)); Text("检查新消息")
                 }
             }
         }
         item {
-            // Newest first, with anything unread lifted above what has already been seen.
+            // Acknowledged means delivered to chat (or initial sync), not read by the user.
+            // Keep pending deliveries first, newest first within each group.
             val events = setting.inbox.events.asReversed().sortedBy { it.acknowledged }
             Card(shape = RoundedCornerShape(14.dp), colors = roomCardColors(), border = roomCardBorder()) {
                 when {
@@ -444,11 +445,9 @@ internal fun InboxRow(event: GongduEvent) {
         }
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
-            // The upstream summary often already reads "赞了你的笔记"; only add the verb when it is missing.
-            // Show the verb only for recognised kinds whose summary does not already say it.
-            val action = kindAction(kind).takeIf { it.isNotBlank() && it.take(3) !in body }.orEmpty()
+            // Badges group related events; they cannot invent a verb (e.g. 收藏 is not 赞).
             Text(
-                listOf(name, action).filter(String::isNotBlank).joinToString(" ").ifBlank { "小红书互动" },
+                name.ifBlank { "小红书互动" },
                 style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis,
             )
             if (body.isNotBlank()) Text(cleanSummary(body), style = MaterialTheme.typography.bodySmall,
@@ -458,13 +457,6 @@ internal fun InboxRow(event: GongduEvent) {
             Modifier.padding(start = 8.dp, top = 6.dp).size(8.dp).clip(CircleShape).background(MaterialTheme.colorScheme.error)
         )
     }
-}
-
-private fun kindAction(kind: InboxKind) = when (kind) {
-    InboxKind.Follow -> "关注了你"
-    InboxKind.Like -> "赞了你"
-    InboxKind.Comment -> "评论了你"
-    InboxKind.Other -> ""
 }
 
 @Composable

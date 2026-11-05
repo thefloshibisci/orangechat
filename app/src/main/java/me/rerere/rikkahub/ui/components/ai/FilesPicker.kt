@@ -179,7 +179,12 @@ internal fun FilesPicker(
             if (hasMoreActions) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                     TextButton(onClick = {
-                        scope.launch { actionsScrollState.animateScrollTo(actionsScrollState.maxValue) }
+                        scope.launch {
+                            actionsScrollState.animateScrollTo(
+                                (actionsScrollState.value + actionsScrollState.viewportSize)
+                                    .coerceAtMost(actionsScrollState.maxValue)
+                            )
+                        }
                     }) {
                         Text("更多")
                         Icon(HugeIcons.ArrowRight01, contentDescription = null)

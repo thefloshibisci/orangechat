@@ -42,11 +42,15 @@ class PluginChatImages(private val context: Context) {
     private fun attachmentRoots() = listOf("images", "upload").map { File(context.filesDir, it).canonicalFile }
 
     /** True only for file: URIs that resolve inside the app's own chat image/upload directories. */
-    private fun isAppAttachmentFile(uri: String): Boolean {
+    private fun isAppAttachmentFile(uri: String): Boolean = try {
         val parsed = uri.toUri()
-        if (parsed.scheme != "file") return false
-        val file = File(parsed.path ?: return false).canonicalFile
-        return attachmentRoots().any { file.path.startsWith(it.path + File.separator) }
+        if (parsed.scheme != "file" || parsed.path == null) false else {
+            val file = File(requireNotNull(parsed.path)).canonicalFile
+            attachmentRoots().any { file.path.startsWith(it.path + File.separator) }
+        }
+    } catch (_: Exception) {
+        // One malformed tool URI must not prevent listing the other chat images.
+        false
     }
 
     /**

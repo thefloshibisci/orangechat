@@ -169,10 +169,29 @@ class GongduHubUiTest {
 
     @Test fun roomInboxScreen() {
         roomScreen("screen-inbox", 2) { InboxTab(true, sampleInbox, null, null, false, onDoorbell = {}, onRefresh = {}) }
-        // Unread rows come before the read one even though the read one is newest.
+        compose.onNodeWithText("3 条待送到聊天").assertIsDisplayed()
+        compose.onNodeWithText("3 条未读").assertDoesNotExist()
+        // Pending deliveries come first even though the acknowledged event is newest.
         val top = compose.onNodeWithText("评论了你的笔记：小鸡小鸡，知道我是谁嘛～", substring = true).fetchSemanticsNode().boundsInRoot.top
         val read = compose.onNodeWithText("好喜欢这篇").fetchSemanticsNode().boundsInRoot.top
         assertTrue(top < read)
+    }
+
+    @Test fun inboxDoesNotTurnCollectionsAndRepliesIntoDifferentActions() {
+        compose.setContent {
+            Themed(false) {
+                Column {
+                    InboxRow(GongduEvent("saved", "小雨：收藏了你的笔记"))
+                    InboxRow(GongduEvent("reply", "阿木：回复了你的评论：好看"))
+                }
+            }
+        }
+        compose.onNodeWithText("小雨").assertIsDisplayed()
+        compose.onNodeWithText("收藏了你的笔记").assertIsDisplayed()
+        compose.onNodeWithText("阿木").assertIsDisplayed()
+        compose.onNodeWithText("回复了你的评论：好看").assertIsDisplayed()
+        compose.onNodeWithText("小雨 赞了你").assertDoesNotExist()
+        compose.onNodeWithText("阿木 评论了你").assertDoesNotExist()
     }
 
     @Test fun roomInboxScreenDark() = roomScreen("screen-inbox-dark", 2, dark = true) {

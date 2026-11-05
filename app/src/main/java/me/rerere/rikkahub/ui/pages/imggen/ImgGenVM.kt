@@ -72,13 +72,16 @@ class ImgGenVM(
     private val _numberOfImages = MutableStateFlow(1)
     val numberOfImages: StateFlow<Int> = _numberOfImages
 
-    private val _aspectRatio = MutableStateFlow(ImageAspectRatio.SQUARE)
+    private val _aspectRatio = MutableStateFlow(settingsStore.settingsFlow.value.imageGenerationAspectRatio)
     val aspectRatio: StateFlow<ImageAspectRatio> = _aspectRatio
+    private var aspectRatioChanged = false
 
     init {
         // The chosen ratio is a saved default shared with the chat generate_image tool.
         viewModelScope.launch {
-            _aspectRatio.value = settingsStore.settingsFlowRaw.first().imageGenerationAspectRatio
+            val saved = settingsStore.settingsFlowRaw.first().imageGenerationAspectRatio
+            // A delayed disk read must not undo a choice already made on this screen.
+            if (!aspectRatioChanged) _aspectRatio.value = saved
         }
     }
 
@@ -114,6 +117,7 @@ class ImgGenVM(
     }
 
     fun updateAspectRatio(aspectRatio: ImageAspectRatio) {
+        aspectRatioChanged = true
         _aspectRatio.value = aspectRatio
         viewModelScope.launch {
             settingsStore.update { it.copy(imageGenerationAspectRatio = aspectRatio) }

@@ -222,6 +222,19 @@ class PluginChatImagesTest {
         assertEquals(1, service.gallerySources(listOf(user, assistant), "branch-A").size)
     }
 
+    @Test fun malformedToolImageDoesNotHideValidChatImages() {
+        val service = PluginChatImages(context)
+        val imageRoot = File(context.filesDir, "images/gallery-malformed").apply { mkdirs() }
+        val valid = File(imageRoot, "valid.png").apply { writeBytes(byteArrayOf(1)) }
+        val assistant = UIMessage(role = MessageRole.ASSISTANT, parts = listOf(
+            UIMessagePart.Tool("malformed", "draw_image", "{}", listOf(
+                UIMessagePart.Image("file:///images/bad%00.png"),
+                UIMessagePart.Image(valid.toURI().toString()),
+            )),
+        ))
+        assertEquals(valid.toURI().toString(), service.gallerySources(listOf(assistant), "branch-A").single().uri)
+    }
+
     @Test fun hostImageSelectionRejectsForeignIdsAndMalformedParameters() = runBlocking {
         val service = PluginChatImages(context)
         val image = registerImage("selection.png", 32, 32, Bitmap.CompressFormat.PNG)
