@@ -31,6 +31,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil3.compose.AsyncImage
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.ui.graphics.Brush
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.*
@@ -138,7 +140,7 @@ internal fun GongduLookRoom(conversationId: String, onNavigateBack: () -> Unit) 
     }
     val openNote: (GongduFeed) -> Unit = { feed -> runAction { selected = repo.detail(feed) } }
 
-    Scaffold(topBar = { RoomHeader("一起逛", "小红书 · 一起看，也一起聊", connected, onNavigateBack) }) { padding ->
+    Scaffold(containerColor = MaterialTheme.colorScheme.surfaceContainerLow, topBar = { RoomHeader("一起逛", "小红书 · 一起看，也一起聊", connected, onNavigateBack) }) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
             RoomTabs(GongduTabs, tab, onSelect = { tab = it }, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
             if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
@@ -150,7 +152,7 @@ internal fun GongduLookRoom(conversationId: String, onNavigateBack: () -> Unit) 
                 0 -> if (!config.configured) EmptyServiceBox { tab = 3 } else FeedGrid(
                     feeds, busy, header = {
                         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                            Text("一起逛逛", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                            SectionTitle("一起逛逛", "挑一篇，带回聊天", Modifier.weight(1f))
                             FilledTonalButton(enabled = !busy, onClick = { runAction { feeds = repo.feeds() } },
                                 contentPadding = PaddingValues(horizontal = 12.dp), modifier = Modifier.height(32.dp)) {
                                 Icon(HugeIcons.Refresh, null, Modifier.size(16.dp)); Spacer(Modifier.width(4.dp))
@@ -216,7 +218,7 @@ internal fun GongduLookRoom(conversationId: String, onNavigateBack: () -> Unit) 
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun RoomHeader(title: String, subtitle: String, connected: Boolean, onBack: () -> Unit) {
+internal fun RoomHeader(title: String, subtitle: String, connected: Boolean, onBack: () -> Unit) {
     TopAppBar(
         navigationIcon = { IconButton(onClick = onBack) { Icon(HugeIcons.ArrowLeft01, contentDescription = "返回大厅") } },
         title = {
@@ -272,7 +274,7 @@ private fun EmptyServiceBox(onConfigure: () -> Unit) {
 }
 
 @Composable
-private fun FeedGrid(
+internal fun FeedGrid(
     feeds: List<GongduFeed>, busy: Boolean, header: @Composable () -> Unit, empty: String, onOpen: (GongduFeed) -> Unit,
 ) {
     LazyVerticalStaggeredGrid(
@@ -295,19 +297,19 @@ private fun FeedGrid(
 internal fun FeedCard(feed: GongduFeed, enabled: Boolean, onClick: () -> Unit) {
     Card(
         onClick = onClick, enabled = enabled, shape = RoundedCornerShape(14.dp),
-        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-            disabledContainerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface,
+            disabledContainerColor = MaterialTheme.colorScheme.surface),
+        border = roomCardBorder(),
         modifier = Modifier.fillMaxWidth(),
     ) {
         if (feed.cover.isNotBlank()) {
             // Covers keep their own aspect ratio; the cap stops very tall images from dominating a column.
             AsyncImage(feed.cover, contentDescription = feed.title, contentScale = ContentScale.FillWidth,
                 modifier = Modifier.fillMaxWidth().heightIn(max = 280.dp))
-        }
+        } else CoverPlaceholder(feed.title)
         Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(cleanSummary(feed.title), style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium,
-                maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Text(cleanSummary(feed.title), style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold,
+                lineHeight = 19.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
             if (feed.author.isNotBlank()) Row(verticalAlignment = Alignment.CenterVertically) {
                 InitialAvatar(feed.author, 18.dp)
                 Spacer(Modifier.width(6.dp))
@@ -377,13 +379,13 @@ internal fun cleanSummary(text: String): String = text
     .trim()
 
 @Composable
-private fun InboxTab(
+internal fun InboxTab(
     configured: Boolean, setting: GongduSetting, conversationId: Uuid?, assistantId: Uuid?, busy: Boolean,
     onDoorbell: (Boolean) -> Unit, onRefresh: () -> Unit,
 ) {
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
-            Card(shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)) {
+            Card(shape = RoundedCornerShape(14.dp), colors = roomCardColors(), border = roomCardBorder()) {
                 Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text("新消息告诉当前聊天", style = MaterialTheme.typography.titleSmall)
@@ -397,7 +399,8 @@ private fun InboxTab(
         }
         item {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text("消息", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                val unread = setting.inbox.events.count { !it.acknowledged }
+                SectionTitle("消息", if (unread > 0) "$unread 条未读" else "都看过啦", Modifier.weight(1f))
                 TextButton(enabled = configured && !busy, onClick = onRefresh) {
                     Icon(HugeIcons.Refresh, null, Modifier.size(16.dp)); Spacer(Modifier.width(4.dp)); Text("检查新消息")
                 }
@@ -405,7 +408,7 @@ private fun InboxTab(
         }
         item {
             val events = setting.inbox.events.asReversed()
-            Card(shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)) {
+            Card(shape = RoundedCornerShape(14.dp), colors = roomCardColors(), border = roomCardBorder()) {
                 when {
                     !configured -> InboxNote("配置小红书服务后可以接收互动消息。")
                     !setting.inbox.supported -> InboxNote("连接后将检查通知能力；服务不支持通知时，浏览和搜索仍可使用。")
@@ -501,7 +504,7 @@ internal fun GongduSetup(
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { AccountCard(connected, login, busy, onQr, onLoginStatus) }
         item {
-            Card(shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)) {
+            Card(shape = RoundedCornerShape(14.dp), colors = roomCardColors(), border = roomCardBorder()) {
                 Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text("让当前助手使用小红书", style = MaterialTheme.typography.titleSmall)
@@ -513,7 +516,7 @@ internal fun GongduSetup(
             }
         }
         item {
-            Card(shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)) {
+            Card(shape = RoundedCornerShape(14.dp), colors = roomCardColors(), border = roomCardBorder()) {
                 Column {
                     Row(
                         Modifier.fillMaxWidth().clickable { advanced = !advanced }.padding(16.dp),
@@ -549,7 +552,7 @@ internal fun GongduSetup(
 
 @Composable
 private fun AccountCard(connected: Boolean, login: String, busy: Boolean, onQr: () -> Unit, onLoginStatus: () -> Unit) {
-    Card(shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)) {
+    Card(shape = RoundedCornerShape(14.dp), colors = roomCardColors(), border = roomCardBorder()) {
         Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 InitialAvatar("红", 44.dp)
@@ -566,5 +569,37 @@ private fun AccountCard(connected: Boolean, login: String, busy: Boolean, onQr: 
                 OutlinedButton(enabled = connected && !busy, onClick = onLoginStatus) { Text("检查登录状态") }
             }
         }
+    }
+}
+
+
+/** Room cards: plain surface with a hairline, sitting on the tinted room background. */
+@Composable
+internal fun roomCardColors() = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+
+@Composable
+internal fun roomCardBorder() = BorderStroke(0.6.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
+
+@Composable
+internal fun SectionTitle(title: String, subtitle: String, modifier: Modifier = Modifier) {
+    Column(modifier) {
+        Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+        Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+/** Soft gradient stand-in for notes without a cover; height varies a little so the grid stays staggered. */
+@Composable
+internal fun CoverPlaceholder(title: String) {
+    val colors = MaterialTheme.colorScheme
+    val height = 150 + (title.hashCode().mod(5)) * 18
+    Box(
+        Modifier.fillMaxWidth().height(height.dp)
+            .background(Brush.linearGradient(listOf(colors.primaryContainer, colors.tertiaryContainer))),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(cleanSummary(title).take(6), color = colors.onPrimaryContainer.copy(alpha = 0.55f),
+            style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, maxLines = 1,
+            modifier = Modifier.padding(horizontal = 12.dp))
     }
 }

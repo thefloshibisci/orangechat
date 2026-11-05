@@ -24,6 +24,12 @@ import androidx.compose.ui.unit.dp
 import me.rerere.rikkahub.data.gongdu.GongduConfiguration
 import me.rerere.rikkahub.data.gongdu.GongduEvent
 import me.rerere.rikkahub.data.gongdu.GongduFeed
+import me.rerere.rikkahub.data.gongdu.GongduInbox
+import me.rerere.rikkahub.data.gongdu.GongduSetting
+import me.rerere.rikkahub.ui.theme.PresetThemes
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
 import me.rerere.rikkahub.ui.theme.LocalDarkMode
 import org.junit.Assert.*
 import org.junit.Rule
@@ -122,6 +128,56 @@ class GongduHubUiTest {
         assertEquals(InboxKind.Like, inboxKind("阿木：赞了你的笔记"))
         assertEquals(InboxKind.Comment, inboxKind("阿木：回复了你的评论"))
         assertEquals("周末去爬山 好开心", cleanSummary("周末去爬山\$\$ **好开心**[笑哭R]"))
+    }
+
+    // Full room screens in the app's real default theme, for visual review in CI artifacts.
+    @Composable private fun AppThemed(dark: Boolean, content: @Composable () -> Unit) {
+        CompositionLocalProvider(LocalDarkMode provides dark) {
+            MaterialTheme(colorScheme = PresetThemes.first().getColorScheme(dark)) { Surface { content() } }
+        }
+    }
+
+    private val sampleFeeds = listOf(
+        GongduFeed("1", "char查user手机，想捉奸却翻出更糟的事", "t", "羽落"),
+        GongduFeed("2", "毛玻璃恋爱小组件，一套可以直接抄", "t", "Amber"),
+        GongduFeed("3", "堆堆前端美化 手账风聊天界面", "t", "青山劝月"),
+        GongduFeed("4", "小猫第一次见雪，原地愣住三秒", "t", "momo"),
+    )
+
+    private fun roomScreen(name: String, tab: Int, dark: Boolean = false, body: @Composable () -> Unit) {
+        compose.setContent {
+            AppThemed(dark) {
+                Column(Modifier.width(360.dp).height(780.dp).background(MaterialTheme.colorScheme.surfaceContainerLow)) {
+                    RoomHeader("一起逛", "小红书 · 一起看，也一起聊", true) {}
+                    RoomTabs(listOf("推荐", "搜索", "消息", "设置"), tab, {}, Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
+                    body()
+                }
+            }
+        }
+        compose.waitForIdle()
+        snapshot(name)
+    }
+
+    @Test fun roomRecommendScreen() = roomScreen("screen-recommend", 0) {
+        FeedGrid(sampleFeeds, false, header = { SectionTitle("一起逛逛", "挑一篇，带回聊天") }, empty = "", onOpen = {})
+    }
+
+    private val sampleInbox = GongduSetting(inbox = GongduInbox(initialized = true, supported = true, events = listOf(
+        GongduEvent("a", "momo：关注了你"), GongduEvent("b", "小雨：赞了你的笔记《南枳的小相册开张啦》"),
+        GongduEvent("c", "阿木：评论了你的笔记：小鸡小鸡，知道我是谁嘛～"), GongduEvent("d", "小雨：好喜欢这篇", acknowledged = true),
+    )))
+
+    @Test fun roomInboxScreen() = roomScreen("screen-inbox", 2) {
+        InboxTab(true, sampleInbox, null, null, false, onDoorbell = {}, onRefresh = {})
+    }
+
+    @Test fun roomInboxScreenDark() = roomScreen("screen-inbox-dark", 2, dark = true) {
+        InboxTab(true, sampleInbox, null, null, false, onDoorbell = {}, onRefresh = {})
+    }
+
+    @Test fun roomSettingsScreen() = roomScreen("screen-settings", 3) {
+        GongduSetup(GongduConfiguration("https://example.test/mcp"), "已连接", true, "已登录：南枳", false,
+            true, { _, _ -> }, {}, {}, {}, {})
     }
 
     @Test fun roomPiecesRenderAtPhoneWidthLight() = roomPieces(dark = false)
