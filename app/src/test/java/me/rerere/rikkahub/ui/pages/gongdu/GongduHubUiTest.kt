@@ -47,7 +47,7 @@ class GongduHubUiTest {
     }
 
     private fun snapshot(name: String) {
-        val output = File("build/test-screenshots/gongdu/$name.png")
+        val output = File("build/reports/tests/gongdu-screenshots/$name.png")
         output.parentFile?.mkdirs()
         compose.runOnIdle {
             val view = compose.activity.window.decorView
@@ -64,6 +64,12 @@ class GongduHubUiTest {
         assertEquals(-5f, coverflowTransform(-1f).rotation, 0.001f)
         val far = coverflowTransform(3f)
         assertEquals(0.8f, far.scale, 0.001f); assertEquals(7f, far.rotation, 0.001f); assertEquals(0.35f, far.alpha, 0.001f)
+        // The card to the right of the centre has a positive offset, so it tilts clockwise like a fanned hand.
+        assertEquals(1f, hubPageOffset(page = 3, currentPage = 2, fraction = 0f), 0.001f)
+        assertTrue(coverflowTransform(hubPageOffset(3, 2, 0f)).rotation > 0f)
+        assertTrue(coverflowTransform(hubPageOffset(1, 2, 0f)).rotation < 0f)
+        // Swiping toward the next page brings it to the centre.
+        assertEquals(0.6f, hubPageOffset(3, 2, 0.4f), 0.001f)
         // Halfway through a swipe the values are interpolated, not stepped.
         assertEquals(0.93f, coverflowTransform(0.5f).scale, 0.001f)
     }

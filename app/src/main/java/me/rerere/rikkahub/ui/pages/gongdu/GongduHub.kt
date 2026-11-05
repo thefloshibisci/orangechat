@@ -160,7 +160,10 @@ fun GongduHub(
     }
 }
 
-private fun PagerState.pageOffsetOf(page: Int): Float = (currentPage - page) + currentPageOffsetFraction
+/** Signed distance from the centre card: pages to the right are positive, so they tilt clockwise (fan outward). */
+internal fun hubPageOffset(page: Int, currentPage: Int, fraction: Float): Float = (page - currentPage) - fraction
+
+private fun PagerState.pageOffsetOf(page: Int): Float = hubPageOffset(page, currentPage, currentPageOffsetFraction)
 
 /** Opens on the room the person last stopped at. */
 @Composable
