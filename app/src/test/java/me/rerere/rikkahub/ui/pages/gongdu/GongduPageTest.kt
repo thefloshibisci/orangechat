@@ -28,11 +28,12 @@ class GongduPageTest {
         var saved: Pair<String, String>? = null
         compose.setContent { MaterialTheme { Surface { GongduSetup(GongduConfiguration(), "尚未连接", false, "", false,
             false, { url, token -> saved = url to token }, {}, {}, {}, {}) } } }
-        compose.onNodeWithText("保存配置").assertIsNotEnabled()
-        compose.onNodeWithText("服务地址").performTextInput("https://example.test/mcp")
-        compose.onNodeWithText("访问令牌（如服务需要）").performTextInput("test-token")
+        // Unconfigured setup opens the advanced section so the address is reachable at once.
+        compose.onNodeWithText("保存配置").performScrollTo().assertIsNotEnabled()
+        compose.onNodeWithText("服务地址").performScrollTo().performTextInput("https://example.test/mcp")
+        compose.onNodeWithText("访问令牌（如服务需要）").performScrollTo().performTextInput("test-token")
         assertNull(saved)
-        compose.onNodeWithText("保存配置").performClick()
+        compose.onNodeWithText("保存配置").performScrollTo().performClick()
         assertEquals("https://example.test/mcp" to "test-token", saved)
         compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("扫码登录"))
         compose.onNodeWithText("扫码登录").assertIsDisplayed().assertIsNotEnabled()

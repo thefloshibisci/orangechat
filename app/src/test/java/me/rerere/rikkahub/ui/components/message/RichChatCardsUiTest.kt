@@ -154,15 +154,15 @@ class RichChatCardsUiTest {
         compose.setContent { MaterialTheme {
             Column(Modifier.fillMaxSize().padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
                 androidx.compose.material3.Text("一起逛逛", style = MaterialTheme.typography.headlineSmall)
-                me.rerere.rikkahub.ui.pages.gongdu.GongduFeedCard(
+                me.rerere.rikkahub.ui.pages.gongdu.FeedCard(
                     me.rerere.rikkahub.data.gongdu.GongduFeed("preview", "把今天的小风景，带回我们的聊天里", "", "一起记录生活"), enabled
                 ) { opens++; enabled = false }
                 me.rerere.rikkahub.ui.pages.gongdu.GongduEmptyService {}
             }
         } }
         capture("gongdu-cards")
-        compose.onNodeWithText("一起看看 ›").performClick()
-        compose.onNodeWithText("一起看看 ›").performClick()
+        compose.onNodeWithText("把今天的小风景，带回我们的聊天里").performClick()
+        compose.onNodeWithText("把今天的小风景，带回我们的聊天里").performClick()
         org.junit.Assert.assertEquals(1, opens)
     }
 
