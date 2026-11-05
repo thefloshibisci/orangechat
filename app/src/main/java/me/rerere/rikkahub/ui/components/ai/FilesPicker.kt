@@ -52,6 +52,7 @@ import androidx.compose.runtime.derivedStateOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
@@ -62,6 +63,8 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import me.rerere.ai.provider.ProviderSetting
 import me.rerere.ai.provider.supportsDirectAudio
+import me.rerere.ai.provider.AudioInputMode
+import me.rerere.ai.provider.Model
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.Camera01
 import me.rerere.hugeicons.stroke.ArrowRight01
@@ -118,8 +121,8 @@ internal fun FilesPicker(
     val currentChatModel = settings.getChatModelForAssistant(conversation.assistantId)
     val mcpServers = LocalMcpServers.current
     val provider = currentChatModel?.findProvider(providers = settings.providers)
-    val audioInputAvailable = currentChatModel?.supportsDirectAudio(provider) == true
-    val videoInputAvailable = provider is ProviderSetting.Google
+    val videoUnavailableReason = videoInputUnavailableReason(currentChatModel, provider)
+    val audioUnavailableReason = audioInputUnavailableReason(currentChatModel, provider)
     val actionsScrollState = rememberScrollState()
     val scope = rememberCoroutineScope()
     val hasMoreActions by remember { derivedStateOf { actionsScrollState.maxValue > 0 } }
@@ -141,12 +144,19 @@ internal fun FilesPicker(
                     TakePicButton(onLaunchCamera = onTakePic)
                     ImagePickButton(onClick = onPickImage)
                     FilePickButton(onClick = onPickFile)
+                    // Always shown so the entries never silently disappear; tap explains why when unavailable.
+                    VideoPickButton(enabled = videoUnavailableReason == null) {
+                        if (videoUnavailableReason == null) onPickVideo()
+                        else toaster.show(videoUnavailableReason, type = ToastType.Info)
+                    }
+                    AudioPickButton(enabled = audioUnavailableReason == null) {
+                        if (audioUnavailableReason == null) onPickAudio()
+                        else toaster.show(audioUnavailableReason, type = ToastType.Info)
+                    }
                     GongduButton(onClick = {
                         onDismiss()
                         navController.navigate(Screen.Gongdu(conversationId = conversation.id.toString()))
                     })
-                    if (videoInputAvailable) VideoPickButton(onClick = onPickVideo)
-                    if (audioInputAvailable) AudioPickButton(onClick = onPickAudio)
                     BigIconTextButton(
                         icon = { Icon(HugeIcons.Voice, null) },
                         text = { Text("语音通话") },
@@ -167,14 +177,11 @@ internal fun FilesPicker(
 
         BoxWithConstraints(Modifier.fillMaxWidth()) {
             if (hasMoreActions) {
-                val mediaOffset = with(androidx.compose.ui.platform.LocalDensity.current) {
-                    (((maxWidth - 12.dp * 3) / 4 + 12.dp).toPx() * 4).toInt()
-                }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                     TextButton(onClick = {
-                        scope.launch { actionsScrollState.animateScrollTo(mediaOffset.coerceAtMost(actionsScrollState.maxValue)) }
+                        scope.launch { actionsScrollState.animateScrollTo(actionsScrollState.maxValue) }
                     }) {
-                        Text("音视频及更多")
+                        Text("更多")
                         Icon(HugeIcons.ArrowRight01, contentDescription = null)
                     }
                 }
@@ -354,9 +361,36 @@ fun TakePicButton(onLaunchCamera: () -> Unit = {}) {
     }
 }
 
+private fun ProviderSetting?.typeLabel(): String = when (this) {
+    null -> "未找到"
+    is ProviderSetting.Google -> "Google"
+    is ProviderSetting.OpenAI -> if (useResponseApi) "OpenAI（Responses API）" else "OpenAI"
+    is ProviderSetting.Claude -> "Claude"
+    is ProviderSetting.Codex -> "Codex"
+}
+
+/** Null when the current chat model can take video; otherwise a user-facing reason naming the resolved provider. */
+internal fun videoInputUnavailableReason(model: Model?, provider: ProviderSetting?): String? = when {
+    model == null -> "当前助手没有可用的聊天模型，无法发送视频"
+    provider is ProviderSetting.Google -> null
+    else -> "视频仅支持 Google 类型供应商。当前模型 ${model.modelId} 实际使用的供应商类型：${provider.typeLabel()}" +
+        if (model.providerOverwrite != null) "（该模型设置了单独的供应商覆盖）" else ""
+}
+
+/** Null when the current chat model can take raw audio; otherwise a user-facing reason. */
+internal fun audioInputUnavailableReason(model: Model?, provider: ProviderSetting?): String? = when {
+    model == null -> "当前助手没有可用的聊天模型，无法发送音频"
+    model.supportsDirectAudio(provider) -> null
+    model.audioInputMode == AudioInputMode.ASR -> "当前模型 ${model.modelId} 的音频输入设为“语音转写”，不能直接发送音频文件"
+    provider !is ProviderSetting.Google && !(provider is ProviderSetting.OpenAI && !provider.useResponseApi) ->
+        "当前模型 ${model.modelId} 实际使用的供应商类型（${provider.typeLabel()}）不支持直接发送音频" +
+            if (model.providerOverwrite != null) "（该模型设置了单独的供应商覆盖）" else ""
+    else -> "无法确认模型 ${model.modelId} 支持音频。可在模型设置里把音频输入改为“直接发送音频”"
+}
+
 @Composable
-fun VideoPickButton(onClick: () -> Unit = {}) {
-    BigIconTextButton(icon = {
+fun VideoPickButton(enabled: Boolean = true, onClick: () -> Unit = {}) {
+    BigIconTextButton(enabled = enabled, icon = {
         Icon(HugeIcons.Video01, null)
     }, text = {
         Text(stringResource(R.string.video))
@@ -366,8 +400,8 @@ fun VideoPickButton(onClick: () -> Unit = {}) {
 }
 
 @Composable
-fun AudioPickButton(onClick: () -> Unit = {}) {
-    BigIconTextButton(icon = {
+fun AudioPickButton(enabled: Boolean = true, onClick: () -> Unit = {}) {
+    BigIconTextButton(enabled = enabled, icon = {
         Icon(HugeIcons.MusicNote03, null)
     }, text = {
         Text(stringResource(R.string.audio))
@@ -401,6 +435,7 @@ fun GongduButton(onClick: () -> Unit = {}) {
 @Composable
 private fun BigIconTextButton(
     modifier: Modifier = Modifier,
+    enabled: Boolean = true,
     icon: @Composable () -> Unit,
     text: @Composable () -> Unit,
     onClick: () -> Unit,
@@ -415,7 +450,8 @@ private fun BigIconTextButton(
             .semantics {
                 role = Role.Button
             }
-            .width(LocalActionTileWidth.current),
+            .width(LocalActionTileWidth.current)
+            .alpha(if (enabled) 1f else 0.45f),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(2.dp)) {
         Surface(
