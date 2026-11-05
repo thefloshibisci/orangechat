@@ -148,9 +148,8 @@ class GongduHubUiTest {
                 }
             }
         }
-        // "好喜欢" has no explicit verb, so the badge verb is added; "评论了你的笔记" already has one.
-        // "好喜欢这篇" is a plain message, not a like: no badge verb is invented.
-        compose.onNodeWithText("小雨").assertIsDisplayed()
+        // "好喜欢这篇" is a plain message, not a like: the row shows the name and text, no invented verb.
+        compose.onNodeWithText("好喜欢这篇").assertIsDisplayed()
         compose.onNodeWithText("小雨 赞了你").assertDoesNotExist()
         compose.onNodeWithText("阿木").assertIsDisplayed()
         compose.onNodeWithText("高级设置").assertIsDisplayed()
