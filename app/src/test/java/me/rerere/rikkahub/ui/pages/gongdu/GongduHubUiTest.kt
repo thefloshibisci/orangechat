@@ -108,6 +108,13 @@ class GongduHubUiTest {
         compose.activity.getSharedPreferences("gongdu_hub", 0).edit().clear().commit()
     }
 
+    @Test fun inboxKindNeedsAnExplicitVerb() {
+        assertEquals(InboxKind.Other, inboxKind("小雨：好喜欢这篇"))
+        assertEquals(InboxKind.Like, inboxKind("小雨：赞了你的笔记"))
+        assertEquals(InboxKind.Comment, inboxKind("阿木：评论了你的笔记：好看"))
+        assertEquals(InboxKind.Follow, inboxKind("momo：关注了你"))
+    }
+
     @Test fun summariesAreSplitBadgedAndCleaned() {
         assertEquals("小雨" to "评论了你的笔记：好看", splitInboxSummary("小雨：评论了你的笔记：好看"))
         assertEquals("" to "收到新的小红书互动", splitInboxSummary("收到新的小红书互动"))
@@ -142,7 +149,9 @@ class GongduHubUiTest {
             }
         }
         // "好喜欢" has no explicit verb, so the badge verb is added; "评论了你的笔记" already has one.
-        compose.onNodeWithText("小雨 赞了你").assertIsDisplayed()
+        // "好喜欢这篇" is a plain message, not a like: no badge verb is invented.
+        compose.onNodeWithText("小雨").assertIsDisplayed()
+        compose.onNodeWithText("小雨 赞了你").assertDoesNotExist()
         compose.onNodeWithText("阿木").assertIsDisplayed()
         compose.onNodeWithText("高级设置").assertIsDisplayed()
         // Configured services keep address/token folded away.

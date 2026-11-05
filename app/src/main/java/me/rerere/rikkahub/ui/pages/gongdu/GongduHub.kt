@@ -126,12 +126,12 @@ fun GongduHub(
             }
             BoxWithConstraints(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                 // Card keeps the 236x392 proportion and shrinks on short or narrow screens.
-                val cardHeight = minOf(392.dp, maxHeight * 0.88f, (maxWidth * 0.62f) * (392f / 236f))
+                val cardHeight = minOf(430.dp, maxHeight * 0.9f, (maxWidth * 0.64f) * (392f / 236f))
                 val cardWidth = cardHeight * (236f / 392f)
                 HorizontalPager(
                     state = pager,
                     contentPadding = PaddingValues(horizontal = (maxWidth - cardWidth) / 2),
-                    pageSpacing = (-cardWidth * 0.12f),
+                    pageSpacing = (-cardWidth * 0.2f),
                     beyondViewportPageCount = 2,
                     modifier = Modifier.fillMaxWidth(),
                 ) { page ->

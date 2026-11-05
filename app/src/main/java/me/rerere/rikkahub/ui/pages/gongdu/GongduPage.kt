@@ -352,11 +352,15 @@ private fun SearchHeader(keyword: String, onKeywordChange: (String) -> Unit, bus
 internal enum class InboxKind { Follow, Like, Comment, Other }
 
 /** The service only returns a summary line; infer the badge from its wording. */
-internal fun inboxKind(summary: String): InboxKind = when {
-    listOf("关注").any { it in summary } -> InboxKind.Follow
-    listOf("赞", "收藏", "喜欢").any { it in summary } -> InboxKind.Like
-    listOf("评论", "回复", "@").any { it in summary } -> InboxKind.Comment
-    else -> InboxKind.Other
+/** Only explicit verbs decide the kind; a comment such as "好喜欢这篇" must not be shown as a like. */
+internal fun inboxKind(summary: String): InboxKind {
+    val body = splitInboxSummary(summary).second
+    return when {
+        listOf("关注了", "关注你").any { it in body } -> InboxKind.Follow
+        listOf("赞了", "收藏了").any { it in body } -> InboxKind.Like
+        listOf("评论了", "回复了", "@了").any { it in body } -> InboxKind.Comment
+        else -> InboxKind.Other
+    }
 }
 
 /** Split "名字：内容" produced by the codec into name and body. */
@@ -437,7 +441,8 @@ internal fun InboxRow(event: GongduEvent) {
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             // The upstream summary often already reads "赞了你的笔记"; only add the verb when it is missing.
-            val action = kindAction(kind).takeIf { it.isNotBlank() && it.take(2) !in body }.orEmpty()
+            // Show the verb only for recognised kinds whose summary does not already say it.
+            val action = kindAction(kind).takeIf { it.isNotBlank() && it.take(3) !in body }.orEmpty()
             Text(
                 listOf(name, action).filter(String::isNotBlank).joinToString(" ").ifBlank { "小红书互动" },
                 style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis,
