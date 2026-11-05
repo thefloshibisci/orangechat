@@ -407,7 +407,8 @@ internal fun InboxTab(
             }
         }
         item {
-            val events = setting.inbox.events.asReversed()
+            // Newest first, with anything unread lifted above what has already been seen.
+            val events = setting.inbox.events.asReversed().sortedBy { it.acknowledged }
             Card(shape = RoundedCornerShape(14.dp), colors = roomCardColors(), border = roomCardBorder()) {
                 when {
                     !configured -> InboxNote("配置小红书服务后可以接收互动消息。")
@@ -598,8 +599,7 @@ internal fun CoverPlaceholder(title: String) {
             .background(Brush.linearGradient(listOf(colors.primaryContainer, colors.tertiaryContainer))),
         contentAlignment = Alignment.Center,
     ) {
-        Text(cleanSummary(title).take(6), color = colors.onPrimaryContainer.copy(alpha = 0.55f),
-            style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, maxLines = 1,
-            modifier = Modifier.padding(horizontal = 12.dp))
+        // A quiet mark only: the title is already shown right below the cover.
+        Text("✦", color = colors.onPrimaryContainer.copy(alpha = 0.35f), fontSize = 28.sp)
     }
 }

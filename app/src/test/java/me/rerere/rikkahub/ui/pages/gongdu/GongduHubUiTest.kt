@@ -167,8 +167,12 @@ class GongduHubUiTest {
         GongduEvent("c", "阿木：评论了你的笔记：小鸡小鸡，知道我是谁嘛～"), GongduEvent("d", "小雨：好喜欢这篇", acknowledged = true),
     )))
 
-    @Test fun roomInboxScreen() = roomScreen("screen-inbox", 2) {
-        InboxTab(true, sampleInbox, null, null, false, onDoorbell = {}, onRefresh = {})
+    @Test fun roomInboxScreen() {
+        roomScreen("screen-inbox", 2) { InboxTab(true, sampleInbox, null, null, false, onDoorbell = {}, onRefresh = {}) }
+        // Unread rows come before the read one even though the read one is newest.
+        val top = compose.onNodeWithText("评论了你的笔记：小鸡小鸡，知道我是谁嘛～", substring = true).fetchSemanticsNode().boundsInRoot.top
+        val read = compose.onNodeWithText("好喜欢这篇").fetchSemanticsNode().boundsInRoot.top
+        assertTrue(top < read)
     }
 
     @Test fun roomInboxScreenDark() = roomScreen("screen-inbox-dark", 2, dark = true) {
