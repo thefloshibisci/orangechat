@@ -11,7 +11,7 @@ package me.rerere.rikkahub.ui.pages.voice
  *
  * 状态流转:
  * Idle -> Listening -> Processing -> Speaking -> Listening -> ...
- *                                    |-> Error -> Idle
+ * Model reply failure -> Listening; microphone/initialization failure -> Error.
  */
 enum class VoiceCallStatus {
     Idle,
@@ -20,6 +20,12 @@ enum class VoiceCallStatus {
     Speaking,
     Error
 }
+
+/** Recover the next utterance without replaying the failed one or changing audio controls. */
+internal fun VoiceCallUiState.listeningAfterReply(message: String? = null): VoiceCallUiState = copy(
+    status = VoiceCallStatus.Listening, userTranscript = "", assistantText = "",
+    amplitudes = emptyList(), errorMessage = message,
+)
 
 /**
  * 语音通话 UI 状态

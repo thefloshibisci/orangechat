@@ -568,13 +568,7 @@ private fun ChatPageContent(
                     onConversationSettings = { showConversationSettings = true },
 
                 )
-                    val activeCall by VoiceCallService.activeConversationId.collectAsStateWithLifecycle()
-                    if (activeCall != null) {
-                        me.rerere.rikkahub.ui.pages.voice.FloatingCallPill(
-                            theme = (setting.getAssistantById(conversation.assistantId) ?: setting.getCurrentAssistant()).chatInteractionTheme,
-                            onOpen = { navController.navigate(Screen.VoiceCall(activeCall!!)) },
-                            onEnd = { VoiceCallService.stop(bubbleBlurContext) })
-                    }
+                    me.rerere.rikkahub.ui.pages.voice.ChatCallOverlay(conversation)
                 }
             },
             bottomBar = {

@@ -22,7 +22,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
@@ -37,10 +36,12 @@ import me.rerere.hugeicons.stroke.Cancel01
 import me.rerere.hugeicons.stroke.Mic01
 import me.rerere.hugeicons.stroke.MicOff01
 import me.rerere.hugeicons.stroke.VolumeHigh
+import androidx.compose.ui.res.vectorResource
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.ui.components.message.ReferenceGlass
 import me.rerere.rikkahub.ui.components.message.interactionColors
 import me.rerere.rikkahub.ui.components.message.themeMascot
+import me.rerere.rikkahub.ui.components.message.interactionIconColorFilter
 
 /** Original 315 x 530 glass phone card; controls retain the app's actual call capabilities. */
 @Composable
@@ -63,7 +64,7 @@ internal fun GlassCallPanel(
                     else Spacer(Modifier.size(20.dp))
                     Text(if (incoming) "语音来电" else "语音通话", Modifier.background(Color.White.copy(alpha = .65f), CircleShape)
                         .border(1.dp, Color.White, CircleShape).padding(horizontal = 12.dp, vertical = 6.dp), fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
-                    Spacer(Modifier.size(20.dp))
+                    Spacer(Modifier.size(if (onCollapse != null) 36.dp else 20.dp))
                 }
                 Box(Modifier.padding(top = 18.dp).size(156.dp), contentAlignment = Alignment.Center) {
                     Canvas(Modifier.matchParentSize()) {
@@ -75,7 +76,7 @@ internal fun GlassCallPanel(
                     }
                     Box(Modifier.size(96.dp).background(Brush.linearGradient(listOf(Color.White, Color(0xFFF2EAF9), colors.bottom)), CircleShape)
                         .border(2.dp, Color.White, CircleShape), contentAlignment = Alignment.Center) {
-                        Image(painterResource(themeMascot(theme)), null, Modifier.size(54.dp), colorFilter = ColorFilter.tint(colors.accent))
+                        Image(painterResource(themeMascot(theme)), null, Modifier.size(54.dp), colorFilter = interactionIconColorFilter(themeMascot(theme), colors.accent))
                     }
                 }
                 Text(name.ifBlank { "AI 助手" }, Modifier.padding(top = 8.dp), fontSize = 22.sp, lineHeight = 28.sp, fontWeight = FontWeight.Bold)
@@ -98,12 +99,12 @@ internal fun GlassCallPanel(
                     .border(1.dp, Color.White.copy(alpha = .8f), RoundedCornerShape(28.dp)).padding(vertical = 14.dp),
                     horizontalArrangement = Arrangement.SpaceEvenly) {
                     if (incoming) {
-                        GlassCallButton(theme, HugeIcons.Cancel01, "拒接", Color(0xFFFFA6BE), true, onEnd)
-                        GlassCallButton(theme, HugeIcons.CallIncoming01, "接听", Color(0xFF8EE0C3), true, onPrimary)
+                        GlassCallButton(theme, HugeIcons.Cancel01, "拒接", Color(0xFFFFA6BE), canControl, onEnd)
+                        GlassCallButton(theme, HugeIcons.CallIncoming01, "接听", Color(0xFF8EE0C3), canControl, onPrimary)
                     } else {
                         GlassCallButton(theme, if (muted) HugeIcons.MicOff01 else HugeIcons.Mic01, if (muted) "取消静音" else "静音", colors.accent.copy(alpha = .28f), canControl, onPrimary)
-                        GlassCallButton(theme, HugeIcons.VolumeHigh,
-                            if (speakerOn) "免提" else "扬声器", colors.accent.copy(alpha = .48f), true, onSpeaker)
+                        GlassCallButton(theme, if (speakerOn) HugeIcons.VolumeHigh else ImageVector.vectorResource(R.drawable.interaction_phone),
+                            if (speakerOn) "扬声器" else "听筒", colors.accent.copy(alpha = .48f), true, onSpeaker)
                         GlassCallButton(theme, HugeIcons.Cancel01, "挂断", Color(0xFFFFA6BE), true, onEnd)
                     }
                 }
@@ -128,7 +129,8 @@ private fun GlassCallButton(theme: String, icon: ImageVector, label: String, tin
 
 
 @Composable
-internal fun FloatingCallPill(theme: String, name: String = "AI 助手", onOpen: () -> Unit, onEnd: () -> Unit) {
+internal fun FloatingCallPill(theme: String, name: String = "对方", incoming: Boolean = false,
+    busy: Boolean = false, onAccept: () -> Unit = {}, onOpen: () -> Unit, onEnd: () -> Unit) {
     val start by me.rerere.rikkahub.service.VoiceCallService.startedAtMillis.collectAsState()
     val callState by me.rerere.rikkahub.service.VoiceCallService.activeUiState.collectAsState()
     var seconds by remember { mutableStateOf(0L) }
@@ -141,17 +143,19 @@ internal fun FloatingCallPill(theme: String, name: String = "AI 助手", onOpen:
     val colors = interactionColors(theme)
     val context = androidx.compose.ui.platform.LocalContext.current
     Box(Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 6.dp), contentAlignment = Alignment.Center) {
-        ReferenceGlass(theme, Modifier.widthIn(max = 380.dp).fillMaxWidth().heightIn(min = 60.dp), radius = 32.dp, onClick = onOpen) {
-            Row(Modifier.padding(horizontal = 13.dp, vertical = 7.dp), verticalAlignment = Alignment.CenterVertically,
+        ReferenceGlass(theme, Modifier.widthIn(max = 380.dp).fillMaxWidth().testTag("floating-call-pill"), radius = 32.dp, onClick = onOpen) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 13.dp, vertical = 7.dp), verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(9.dp)) {
-                Box(Modifier.size(34.dp).background(Color.White.copy(alpha = .78f), CircleShape)
-                    .border(1.dp, Color.White, CircleShape), contentAlignment = Alignment.Center) {
-                    Image(painterResource(themeMascot(theme)), null, Modifier.size(24.dp), colorFilter = ColorFilter.tint(colors.accent))
-                    Box(Modifier.align(Alignment.BottomEnd).size(9.dp).background(Color(0xFF76C9A2), CircleShape)
+                Box(Modifier.size(34.dp).testTag("floating-call-avatar"), contentAlignment = Alignment.Center) {
+                    Box(Modifier.matchParentSize().background(Color.White.copy(alpha = .78f), CircleShape)
+                        .border(1.dp, Color.White, CircleShape))
+                    Image(painterResource(themeMascot(theme)), null, Modifier.size(24.dp), colorFilter = interactionIconColorFilter(themeMascot(theme), colors.accent))
+                    Box(Modifier.align(Alignment.BottomEnd).offset(x = 1.dp, y = 1.dp).size(9.dp).testTag("floating-call-status")
+                        .background(Color(0xFF76C9A2), CircleShape)
                         .border(1.dp, Color.White, CircleShape))
                 }
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Text("${name.ifBlank { "AI 助手" }} · ${when (callState.status) {
+                    Text(if (incoming) name.ifBlank { "对方" } + " · 等待接通" else "${name.ifBlank { "对方" }} · ${when (callState.status) {
                         VoiceCallStatus.Listening -> "正在聆听"
                         VoiceCallStatus.Processing -> "正在思考"
                         VoiceCallStatus.Speaking -> "正在说话"
@@ -159,25 +163,27 @@ internal fun FloatingCallPill(theme: String, name: String = "AI 助手", onOpen:
                         else -> "通话中"
                     }}  %02d:%02d".format(seconds / 60, seconds % 60),
                         fontSize = 11.sp, lineHeight = 14.sp, fontWeight = FontWeight.Bold, color = colors.ink, maxLines = 1)
-                    Text(if (callState.isMuted) "麦克风已静音" else "点击返回通话", fontSize = 9.sp,
+                    Text(if (incoming) "点击查看来电" else if (callState.isMuted) "麦克风已静音" else "点击返回通话", fontSize = 9.sp,
                         lineHeight = 12.sp, color = colors.ink.copy(alpha = .72f), maxLines = 1)
                 }
-                Row(Modifier.width(30.dp).height(22.dp), horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.CenterVertically) {
+                if (!incoming) Row(Modifier.width(30.dp).height(22.dp), horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.CenterVertically) {
                     (0..3).forEach { index ->
                         val amplitude = callState.amplitudes.getOrNull(callState.amplitudes.size - 4 + index)?.coerceIn(0f, 1f) ?: .22f
                         Box(Modifier.width(3.dp).height((4 + amplitude * 14).dp).background(colors.ink.copy(alpha = .7f), CircleShape))
                     }
                 }
-                IconButton(onClick = { me.rerere.rikkahub.service.VoiceCallService.toggleMute(context) },
+                if (!incoming) IconButton(onClick = { me.rerere.rikkahub.service.VoiceCallService.toggleMute(context) },
                     modifier = Modifier.size(30.dp)) {
                     Icon(if (callState.isMuted) HugeIcons.MicOff01 else HugeIcons.Mic01, if (callState.isMuted) "取消静音" else "静音",
                         tint = colors.ink, modifier = Modifier.size(17.dp))
                 }
-                IconButton(onClick = { me.rerere.rikkahub.service.VoiceCallService.toggleSpeaker(context) }, modifier = Modifier.size(30.dp)) {
-                    Icon(HugeIcons.VolumeHigh,
-                        if (callState.isSpeakerOn) "免提" else "扬声器", tint = colors.accent, modifier = Modifier.size(17.dp))
+                if (incoming) IconButton(onClick = onAccept, enabled = !busy, modifier = Modifier.size(30.dp)) {
+                    Box(Modifier.size(30.dp).background(Color(0xFF8EE0C3).copy(alpha = .7f), CircleShape),
+                        contentAlignment = Alignment.Center) {
+                        Icon(HugeIcons.CallIncoming01, "接听", tint = colors.ink, modifier = Modifier.size(17.dp))
+                    }
                 }
-                IconButton(onClick = onEnd, modifier = Modifier.size(30.dp)) {
+                IconButton(onClick = onEnd, enabled = !busy, modifier = Modifier.size(30.dp)) {
                     Icon(HugeIcons.Cancel01, "挂断", tint = colors.ink, modifier = Modifier.size(17.dp))
                 }
             }

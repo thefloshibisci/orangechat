@@ -150,6 +150,7 @@ import me.rerere.rikkahub.data.repository.ConversationRepository
 import me.rerere.rikkahub.data.repository.FolderRepository
 import me.rerere.rikkahub.data.repository.MemoryRepository
 import me.rerere.rikkahub.data.interaction.ChatInteractionRepository
+import me.rerere.rikkahub.data.interaction.withoutJumpControl
 import me.rerere.rikkahub.data.interaction.ReactionContextTurn
 import me.rerere.rikkahub.data.interaction.rebaseReactionReceipts
 import me.rerere.rikkahub.data.interaction.MAX_CUSTOM_CHAT_REACTION_PRESETS
@@ -208,6 +209,7 @@ private val outputTransformers by lazy {
         ThinkTagTransformer,
         Base64ImageToLocalFileTransformer,
         RegexOutputTransformer,
+        me.rerere.rikkahub.data.ai.transformers.InteractionOutputTransformer,
         SpeechOutputTransformer,
     )
 }
@@ -358,8 +360,18 @@ class ChatService(
         runCatching { beginChatInteractionCall(conversationId, startedAt) }
     }
 
-    fun finishInteractionCalls(conversationId: Uuid, startJob: Job? = null) {
-        appScope.launch { startJob?.join(); runCatching { endChatInteractionCalls(conversationId) } }
+    internal val pendingIncomingCall = MutableStateFlow<me.rerere.ai.ui.UIMessageAnnotation.ChatInteraction?>(null)
+
+    fun finishInteractionCalls(conversationId: Uuid, startJob: Job? = null, startedAt: Long? = null,
+        transcript: List<me.rerere.ai.ui.CallTranscriptEntry>? = null) {
+        val endedAt = System.currentTimeMillis()
+        val connectingIds = getConversationFlow(conversationId).value.currentMessages.flatMap { it.annotations }
+            .filterIsInstance<me.rerere.ai.ui.UIMessageAnnotation.ChatInteraction>()
+            .filter { it.kind == "call" && it.status == "connecting" }.map { it.id }.toSet()
+        appScope.launch {
+            startJob?.join()
+            runCatching { endChatInteractionCalls(conversationId, startedAt, endedAt, transcript, connectingIds) }
+        }
     }
     fun respondIncomingInteraction(conversationId: Uuid, action: String, onReady: () -> Unit) {
         appScope.launch {
@@ -374,8 +386,13 @@ class ChatService(
         }
     }
 
-    fun answerChatGift(conversationId: Uuid) {
-        submitMessage(conversationId, listOf(UIMessagePart.Text("请查看我刚发来的红包或转账卡片。")))
+    fun answerChatGift(conversationId: Uuid, cardId: String) {
+        val message = getOrCreateSession(conversationId).state.value.currentMessages.firstOrNull { message ->
+            message.role == MessageRole.USER && message.annotations.any {
+                it is me.rerere.ai.ui.UIMessageAnnotation.ChatInteraction && it.id == cardId && it.actor == "user"
+            }
+        } ?: return
+        submitMessage(conversationId, emptyList(), existingMessageId = message.id)
     }
 
     internal val interactionSettings get() = settingsStore
@@ -593,15 +610,16 @@ class ChatService(
         transientSystemPrompt: String? = null,
         enableTools: Boolean = true,
         interaction: UIMessageAnnotation.AvatarInteraction? = null,
+        existingMessageId: Uuid? = null,
     ): QueuedMessage? {
-        if (content.isEmptyInputMessage() || conversationId in deletedConversationIds) return null
+        if ((content.isEmptyInputMessage() && existingMessageId == null) || conversationId in deletedConversationIds) return null
         val session = getOrCreateSession(conversationId)
         val queued = synchronized(session) {
             if (session.isDeleted) return null
             // A fresh send after stopping an empty queue is explicit intent to continue.
             // A manually paused backlog remains paused until the user resumes it.
             if (session.messageQueue.state.value.messages.isEmpty()) session.messageQueue.resume()
-            session.messageQueue.enqueue(content, answer, interaction, transientSystemPrompt, enableTools)
+            session.messageQueue.enqueue(content, answer, interaction, transientSystemPrompt, enableTools, existingMessageId)
         } ?: return null
         queued.completion.invokeOnCompletion { cause ->
             if (cause is CancellationException && !queued.reply.isCompleted) cancelQueuedMessage(conversationId, queued.id)
@@ -668,6 +686,9 @@ class ChatService(
                 initializeConversation(conversationId, updateSelectedAssistant = false)
                 val settings = settingsStore.settingsFlow.first()
 
+                // A gift is already a durable user message. Reply through the normal queue
+                // without appending a fabricated sentence or duplicating user event hooks.
+                if (queued.existingMessageId == null) {
                 // 读取最新状态 -> 追加用户消息 -> 落库，整体加锁。
                 // 防止跟同一时刻可能在跑的标题生成/建议生成/语音通话挂断反馈互相覆盖对方刚写入的消息。
                 trace.stage("waiting for conversation state lock")
@@ -753,6 +774,13 @@ class ChatService(
                 } catch (e: Exception) {
                     Log.w(TAG, "Failed to save user message to external memory", e)
                 }
+                } else {
+                    session.withStateLock {
+                        check(session.state.value.currentMessages.any { it.id == queued.existingMessageId && it.role == MessageRole.USER }) {
+                            "红包或转账已不在当前分支，未继续生成"
+                        }
+                    }
+                }
 
                 // 开始补全
                 if (answer) {
@@ -789,7 +817,7 @@ class ChatService(
             } finally {
                 session.messageQueue.complete(
                     queued.id,
-                    result = queuedReplyText(session.state.value.currentMessages, queued.id),
+                    result = queuedReplyText(session.state.value.currentMessages, queued.existingMessageId ?: queued.id),
                     error = failure,
                 )
                 activeQueueGenerations.computeIfPresent(conversationId) { _, owner ->
@@ -809,7 +837,7 @@ class ChatService(
             trace.close()
             // A lazy request can be cancelled before its body (and finally block) ever starts.
             session.messageQueue.complete(queued.id,
-                result = queuedReplyText(session.state.value.currentMessages, queued.id), error = cause)
+                result = queuedReplyText(session.state.value.currentMessages, queued.existingMessageId ?: queued.id), error = cause)
             activeQueueGenerations.computeIfPresent(conversationId) { _, owner ->
                     owner.takeUnless { it.message.id == queued.id }
                 }
@@ -1492,6 +1520,18 @@ class ChatService(
 
             // start generating
             diagnosticTrace?.stage("building generation tools and context")
+            val availableTools = if (enableTools) buildAvailableTools(
+                settings = settings, assistant = assistant, conversationId = conversationId,
+                conversation = conversation, allowAppUsage = true,
+            ) else emptyList()
+            val paymentToolsUnavailableReason = me.rerere.rikkahub.data.interaction.paymentToolUnavailableReason(
+                model, model.findProvider(settings.providers))
+            val paymentToolsAvailable = paymentToolsUnavailableReason == null &&
+                availableTools.any { it.name == "respond_to_payment" }
+            if (enableTools && paymentToolsUnavailableReason != null && conversation.currentMessages.any { message ->
+                message.annotations.any { it is me.rerere.ai.ui.UIMessageAnnotation.ChatInteraction &&
+                    it.kind in setOf("red_packet", "transfer") && it.status == "pending" }
+            }) addError(IllegalStateException(paymentToolsUnavailableReason), conversationId, title = "红包/转账工具不可用")
             generationHandler.generateText(
                 settings = settings,
                 model = model,
@@ -1517,15 +1557,29 @@ class ChatService(
                     add(requireNotNull(activityTransformer))
                     add(ExtraInfoRequestTransformer(extraInfoSnapshots))
                     hookTransformer?.let { add(it) }
+                    add(object : me.rerere.rikkahub.data.ai.transformers.InputMessageTransformer {
+                        override suspend fun transform(ctx: me.rerere.rikkahub.data.ai.transformers.TransformerContext, messages: List<UIMessage>): List<UIMessage> {
+                            val current = session.state.value
+                            val prompt = me.rerere.rikkahub.data.interaction.interactionStatePrompt(
+                                current.currentMessages, assistant.pretendRich,
+                                VoiceCallService.activeConversationId.value == conversationId.toString() &&
+                                    VoiceCallService.activeUiState.value.status in setOf(
+                                        me.rerere.rikkahub.ui.pages.voice.VoiceCallStatus.Listening,
+                                        me.rerere.rikkahub.ui.pages.voice.VoiceCallStatus.Processing,
+                                        me.rerere.rikkahub.ui.pages.voice.VoiceCallStatus.Speaking),
+                                paymentToolsAvailable = paymentToolsAvailable,
+                                paymentToolsUnavailableReason = paymentToolsUnavailableReason,
+                                paymentMessageIds = requestMessageIds.takeIf { messageRange != null })
+                            val systemIndex = messages.indexOfFirst { it.role == MessageRole.SYSTEM }
+                            return if (systemIndex < 0) listOf(UIMessage(role = MessageRole.SYSTEM, parts = listOf(UIMessagePart.Text(prompt)))) + messages
+                            else messages.mapIndexed { index, message ->
+                                if (index == systemIndex) message.copy(parts = message.parts + UIMessagePart.Text(prompt)) else message
+                            }
+                        }
+                    })
                 },
                 outputTransformers = outputTransformers,
-                tools = if (enableTools) buildAvailableTools(
-                    settings = settings,
-                    assistant = assistant,
-                    conversationId = conversationId,
-                    conversation = conversation,
-                    allowAppUsage = true,
-                ) else emptyList(),
+                tools = availableTools,
                 pluginPromptInjections = buildList {
                     diagnosticTrace?.stage("loading plugin prompt injections")
                     addAll(pluginToolProvider.getPluginPromptInjections())
@@ -1679,30 +1733,16 @@ class ChatService(
                 val rawText = lastAssistantMessage?.parts?.filterIsInstance<UIMessagePart.Text>()
                     ?.joinToString("\n") { it.text } ?: ""
                 if (rawText.contains("[JUMP]", ignoreCase = true)) {
-                    // 从展示给用户的消息文本中移除 [JUMP] 标记
-                    val cleanedText = rawText.replace("\\[JUMP]".toRegex(RegexOption.IGNORE_CASE), "").trim()
-                    if (lastAssistantMessage != null && cleanedText != rawText) {
-                        val cleanedMessage = lastAssistantMessage.copy(
-                            parts = lastAssistantMessage.parts.map { part ->
-                                if (part is UIMessagePart.Text) {
-                                    part.copy(text = part.text.replace("\\[JUMP]".toRegex(RegexOption.IGNORE_CASE), "").trim())
-                                } else {
-                                    part
-                                }
-                            }
-                        )
-                        // 更新对话状态并持久化
-                        val cleanedConversation = finalConversation.copy(
-                            messageNodes = finalConversation.messageNodes.map { node ->
-                                node.copy(
-                                    messages = node.messages.map { msg ->
-                                        if (msg.id == cleanedMessage.id) cleanedMessage else msg
-                                    }
-                                )
-                            }
-                        )
-                        updateConversation(conversationId, cleanedConversation)
-                        saveConversation(conversationId, cleanedConversation)
+                    // Merge into the live state under its lock: an older reply snapshot must not
+                    // overwrite a payment receipt or hang-up that arrived during generation.
+                    if (lastAssistantMessage != null) session.withStateLock {
+                        val current = session.state.value
+                        val cleanedConversation = current.copy(messageNodes = current.messageNodes.map { node ->
+                            node.copy(messages = node.messages.map { msg ->
+                                if (msg.id == lastAssistantMessage.id) msg.withoutJumpControl() else msg
+                            })
+                        })
+                        saveConversationLocked(conversationId, cleanedConversation)
                     }
                     // 拉起 RouteActivity 切屏（正常聊天中不受时间阈值限制）
                     val jumpIntent = Intent(context, RouteActivity::class.java).apply {
@@ -1920,8 +1960,10 @@ class ChatService(
         })
         addAll(me.rerere.rikkahub.data.interaction.buildRichChatTools(
             allowCalls = assistant.allowIncomingVoiceCalls,
+            pretendRich = assistant.pretendRich,
             create = { kind, amount, note, requestId ->
-                createChatInteraction(conversationId, assistant.id, "assistant", kind, amount, note, requestId).also { card ->
+                createChatInteraction(conversationId, assistant.id, "assistant", kind, amount, note, requestId,
+                    walletLinked = if (kind == "call") null else !assistant.pretendRich).also { card ->
                     if (kind == "call" && card.status == "pending") localTools.showIncomingChatCall(conversationId.toString())
                 }
             },
@@ -2118,7 +2160,7 @@ class ChatService(
         }
         val settings = settingsStore.settingsFlow.first()
         val compressor = me.rerere.rikkahub.data.ai.CompressionEngine(providerManager, usageRecorder)
-            .request(settings, base.assistantId, targetTokens, additionalPrompt, conversationId)
+            .request(settings.withConversationConfig(base), base.assistantId, targetTokens, additionalPrompt, conversationId)
         suspend fun compressContent(content: String): String = compressor(content)
 
         val summaries = withCompressionDeadline {
@@ -2158,7 +2200,7 @@ class ChatService(
         val draft = mergeExistingSummaryDraft(summaries, enabled) { content ->
             val settings = settingsStore.settingsFlow.first()
             val compressor = me.rerere.rikkahub.data.ai.CompressionEngine(providerManager, usageRecorder)
-                .request(settings, session.state.value.assistantId, targetTokens, additionalPrompt, conversationId)
+                .request(settings.withConversationConfig(session.state.value), session.state.value.assistantId, targetTokens, additionalPrompt, conversationId)
             compressTextOnce(listOf(content), compressor)
         }
         check(session.state.value.compressionRevision == revision) { "摘要已变更，请关闭后重新打开。" }

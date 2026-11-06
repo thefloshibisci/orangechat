@@ -268,6 +268,8 @@ internal fun AssistantBasicContent(
                 }
             )
 
+            HorizontalDivider()
+
             FormItem(
                 modifier = Modifier.padding(8.dp),
                 label = {

@@ -7,6 +7,22 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class MessageQueueTest {
+    @Test fun giftReplyQueuesTheExistingMessageWithoutInventingUserTextOrDuplicatingIt() {
+        val queue = MessageQueue()
+        try {
+            val giftId = kotlin.uuid.Uuid.random()
+            assertNull(queue.enqueue(emptyList()))
+            val reply = queue.enqueue(emptyList(), existingMessageId = giftId)!!
+            assertTrue(reply.parts.isEmpty())
+            assertEquals(giftId, reply.existingMessageId)
+            assertNull(queue.enqueue(emptyList(), existingMessageId = giftId))
+            assertNull(queue.beginEdit(reply.id))
+            assertSame(reply, queue.takeNext())
+            assertNull(queue.enqueue(emptyList(), existingMessageId = giftId))
+            queue.complete(reply.id, "收到了")
+            assertFalse(queue.hasPendingOrInFlight)
+        } finally { queue.clear() }
+    }
     private fun text(value: String) = listOf(UIMessagePart.Text(value))
 
     @Test fun fifoPreservesAllLocalRequestExtras() {

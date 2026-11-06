@@ -796,53 +796,14 @@ class RouteActivity : ComponentActivity() {
                             }
 
                             entry<Screen.IncomingCall> { key ->
-                                // 来电界面: 接听 -> 启动通话并跳转到通话页; 拒接 -> 返回
-                                // 通过 conversationId 查会话 -> assistantId -> 助手名
-                                val conversationRepo = koinInject<ConversationRepository>()
-                                val chatService = koinInject<ChatService>()
-                                var assistantName by remember {
-                                    mutableStateOf("")
-                                }
-                                var assistantTheme by remember { mutableStateOf("ice") }
-                                LaunchedEffect(key.conversationId) {
-                                    val incomingAssistant = runCatching {
-                                        conversationRepo.getConversationById(Uuid.parse(key.conversationId))
-                                            ?.assistantId
-                                            ?.let(settings::getAssistantById)
-                                    }.getOrNull()
-                                    assistantName = incomingAssistant?.name.orEmpty()
-                                    assistantTheme = incomingAssistant?.chatInteractionTheme ?: "ice"
-                                }
-                                IncomingCallPage(
-                                    conversationId = key.conversationId,
-                                    assistantName = assistantName,
-                                    theme = assistantTheme,
-                                    onStartCall = {
-                                        val convId = key.conversationId
-                                        chatService.respondIncomingInteraction(Uuid.parse(convId), "accept") {
-                                        // 先停掉聊天侧的 TTS, 避免音频焦点抢占导致 ASR 识别质量下降
-                                        // (AI 刚说完话触发主动来电时, 聊天页的 TTS 可能还在播放)
-                                        runCatching { tts.stop() }
-                                        if (VoiceCallService.activeConversationId.value == null) {
-                                            VoiceCallService.start(
-                                                this@RouteActivity,
-                                                convId
-                                            )
-                                        }
-                                        // 替换来电页为通话页
+                                me.rerere.rikkahub.ui.pages.voice.IncomingCallRoute(
+                                    conversationId = Uuid.parse(key.conversationId), interactionId = key.interactionId,
+                                    onCollapse = { backStack.removeLastOrNull() },
+                                    stopSpeech = { runCatching { tts.stop() } },
+                                    onConnected = {
                                         backStack.removeLastOrNull()
-                                        backStack.add(Screen.VoiceCall(convId))
-                                        }
+                                        backStack.add(Screen.VoiceCall(key.conversationId))
                                     },
-                                    onDecline = {
-                                        chatService.respondIncomingInteraction(Uuid.parse(key.conversationId), "decline") { }
-                                        backStack.removeLastOrNull()
-                                        try {
-                                            chatService.notifyVoiceCallDeclined(Uuid.parse(key.conversationId))
-                                        } catch (e: Exception) {
-                                            Log.e(TAG, "onDecline 触发 notifyVoiceCallDeclined 失败, conversationId=${key.conversationId}", e)
-                                        }
-                                    }
                                 )
                             }
 
@@ -1140,7 +1101,7 @@ sealed interface Screen : NavKey {
      * conversationId 用于接听后跳转到对应会话的通话页.
      */
     @Serializable
-    data class IncomingCall(val conversationId: String) : Screen
+    data class IncomingCall(val conversationId: String, val interactionId: String? = null) : Screen
 
     @Serializable
     data object MiniAppManager : Screen

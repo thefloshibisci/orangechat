@@ -54,6 +54,7 @@ import me.rerere.rikkahub.ui.hooks.CustomTtsState
 import me.rerere.rikkahub.ui.hooks.createCustomAsrState
 import me.rerere.rikkahub.ui.hooks.createCustomTtsState
 import me.rerere.rikkahub.ui.pages.voice.VoiceCallStatus
+import me.rerere.rikkahub.ui.pages.voice.listeningAfterReply
 import me.rerere.rikkahub.ui.pages.voice.VoiceCallUiState
 import okhttp3.OkHttpClient
 import org.koin.core.component.KoinComponent
@@ -90,6 +91,7 @@ class VoiceCallService : Service(), KoinComponent {
     private var microphonePolicyJob: Job? = null
     private var callEnded = false
     private var interactionStartJob: Job? = null
+    private val callTranscript = VoiceCallTranscript()
 
     private val _uiState = MutableStateFlow(VoiceCallUiState())
     val uiState: StateFlow<VoiceCallUiState> = _uiState.asStateFlow()
@@ -233,6 +235,7 @@ class VoiceCallService : Service(), KoinComponent {
 
         _activeConversationId.value = convIdStr
         callEnded = false
+        callTranscript.clear()
 
         // 关键修复: 必须先同步调用 startForeground, 用一个初始状态的通知占位.
         // Android 要求 startForegroundService() 调用后 5 秒内必须调用 startForeground(),
@@ -358,19 +361,14 @@ class VoiceCallService : Service(), KoinComponent {
      * 从别的状态切回 Listening 时复位状态 + VAD 计时器.
      * 恢复监听策略，尊重当前静音状态。
      */
-    private fun startListening() {
+    private fun startListening(recoveryMessage: String? = null) {
+        if (callEnded) return
         tts.stop()
         ttsSentLength = 0
         lastAssistantText = ""
         hasSentCurrentMessage = false
 
-        _uiState.update {
-            it.copy(
-                status = VoiceCallStatus.Listening,
-                userTranscript = "",
-                errorMessage = null
-            )
-        }
+        _uiState.update { it.listeningAfterReply(recoveryMessage) }
 
         // 停止"打断检测"协程 (Speaking 状态才需要它)
         interruptDetectJob?.cancel()
@@ -455,7 +453,8 @@ class VoiceCallService : Service(), KoinComponent {
         _uiState.update {
             it.copy(
                 status = VoiceCallStatus.Processing,
-                assistantText = ""
+                assistantText = "",
+                errorMessage = null
             )
         }
         syncMicrophone()
@@ -470,6 +469,8 @@ class VoiceCallService : Service(), KoinComponent {
                 transientSystemPrompt = speechDeliveryPrompt(settingsStore.settingsFlow.value.getSelectedTTSProvider()),
             )) { "语音内容为空或会话已删除" }
             activeVoiceMessage = entry
+            callTranscript.record("user:" + entry.id, "user",
+                settingsStore.settingsFlow.value.displaySetting.userNickname.ifBlank { "我" }, transcript)
             voiceRequestIds += entry.id
             speakingMonitorJob?.cancel()
             speakingMonitorJob = serviceScope.launch {
@@ -504,12 +505,7 @@ class VoiceCallService : Service(), KoinComponent {
                 "发送语音消息失败, conversationId=$conversationId",
                 e
             )
-            _uiState.update {
-                it.copy(
-                    status = VoiceCallStatus.Error,
-                    errorMessage = "发送失败: ${e.message}"
-                )
-            }
+            recoverAfterReplyFailure("发送失败: ${e.message}")
         }
     }
 
@@ -538,6 +534,9 @@ class VoiceCallService : Service(), KoinComponent {
         if (activeVoiceMessage !== entry || _uiState.value.status !in
             setOf(VoiceCallStatus.Processing, VoiceCallStatus.Speaking)) return
         _uiState.update { it.copy(assistantText = SpeechMarkup.transcript(currentText)) }
+        callTranscript.record("assistant:" + entry.id, "assistant",
+            settingsStore.settingsFlow.value.assistants.firstOrNull { it.id == conversation.value.assistantId }
+                ?.name?.ifBlank { "对方" } ?: "对方", currentText)
         if (currentText.length > ttsSentLength) {
             val newText = currentText.substring(ttsSentLength)
             val ready = SpeechMarkup.readyPrefixLength(newText)
@@ -553,10 +552,16 @@ class VoiceCallService : Service(), KoinComponent {
 
     private fun failVoiceReply(entry: QueuedMessage, message: String) {
         if (activeVoiceMessage !== entry) return
+        recoverAfterReplyFailure(message)
+    }
+
+    private fun recoverAfterReplyFailure(message: String) {
+        if (callEnded) return
         activeVoiceMessage = null
         interruptDetectJob?.cancel()
-        tts.stop()
-        _uiState.update { it.copy(status = VoiceCallStatus.Error, errorMessage = message) }
+        // Invalidate partial ASR text from the failed turn, even with reply-listening enabled.
+        microphone.update(VoiceCallStatus.Idle, muted = true, keepListeningDuringReply = false)
+        startListening(message + "；已恢复聆听，请重新说。")
     }
 
     private suspend fun onGenerationDone(entry: QueuedMessage) {
@@ -780,7 +785,8 @@ class VoiceCallService : Service(), KoinComponent {
      * 额外复位 _activeConversationId 和移除前台通知.
      */
     fun endCall() {
-        if (!callEnded && ::conversationId.isInitialized) chatService.finishInteractionCalls(conversationId, interactionStartJob)
+        if (!callEnded && ::conversationId.isInitialized) chatService.finishInteractionCalls(
+            conversationId, interactionStartJob, _startedAtMillis.value, callTranscript.snapshot())
         callEnded = true
         microphonePolicyJob?.cancel()
         microphonePolicyJob = null

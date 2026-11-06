@@ -17,10 +17,29 @@ import me.rerere.rikkahub.data.ai.prompts.buildCompressionPrompt
 import me.rerere.rikkahub.data.ai.prompts.resolveCompressPrompt
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.model.Assistant
+import me.rerere.rikkahub.data.model.Conversation
+import me.rerere.rikkahub.data.model.ConversationConfig
+import me.rerere.rikkahub.data.model.withConversationConfig
 import org.junit.Assert.*
 import org.junit.Test
 
 class CompressionInputTest {
+    @Test fun conversationModelSurvivesMissingAssistantDefault() {
+        val model = Model(modelId = "gemini-3.8-flash")
+        val override = Model(modelId = "compression")
+        val assistant = Assistant(chatModelId = Model().id)
+        val settings = Settings(assistantId = assistant.id, assistants = listOf(assistant),
+            providers = listOf(ProviderSetting.Google(models = listOf(model, override))))
+        val conversation = Conversation(assistantId = assistant.id, messageNodes = emptyList(), config = ConversationConfig(chatModelId = model.id))
+        assertNull(settings.compressionModelFor(assistant.id))
+        val resolved = settings.withConversationConfig(conversation)
+        assertEquals(model.id, resolved.compressionModelFor(assistant.id)?.id)
+        assertTrue(resolved.compressionModelLabelFor(assistant.id).contains("gemini-3.8-flash"))
+        assertEquals(override.id, settings.copy(compressModelId = override.id).withConversationConfig(conversation)
+            .compressionModelFor(assistant.id)?.id)
+        assertEquals(assistant.chatModelId, settings.assistants.single().chatModelId)
+    }
+
     @Test fun `tool-only responses and voice transcripts survive compression input`() {
         val message = UIMessage(role = MessageRole.ASSISTANT, parts = listOf(
             UIMessagePart.Tool("call1", "workspace_shell", "{\"command\":\"pwd\"}",

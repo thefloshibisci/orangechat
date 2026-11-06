@@ -60,13 +60,16 @@ private val ColorBgIncoming = Color(0xFFE8F3FC) // 暖深褐底
  * - 底部两个按钮: 接听 / 拒接
  * - 接听: 调用 onStartCall 启动 VoiceCallService 并跳到通话页
  * - 拒接: 调用 onDecline 关闭
- * - 返回键 = 拒接
+ * - 返回键/收起 = 回到聊天，邀请保留在灵动岛
  */
 @Composable
 fun IncomingCallPage(
     conversationId: String,
     assistantName: String,
     theme: String = "ice",
+    onCollapse: () -> Unit,
+    busy: Boolean = false,
+    error: String? = null,
     onStartCall: () -> Unit,
     onDecline: () -> Unit,
 ) {
@@ -93,8 +96,7 @@ fun IncomingCallPage(
         }
     }
 
-    // 返回键 = 拒接
-    BackHandler { onDecline() }
+    BackHandler { onCollapse() }
 
     val accentColor by animateColorAsState(
         targetValue = ColorIncoming,
@@ -121,6 +123,9 @@ fun IncomingCallPage(
         duration = "",
         subtitle = "",
         incoming = true,
+        onCollapse = onCollapse,
+        canControl = !busy,
+        error = error,
         onPrimary = { if (permission.allRequiredPermissionsGranted) onStartCall() else permission.requestPermissions() },
         onEnd = onDecline,
     )

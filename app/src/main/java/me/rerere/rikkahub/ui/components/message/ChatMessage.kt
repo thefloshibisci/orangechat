@@ -6,6 +6,8 @@
 
 package me.rerere.rikkahub.ui.components.message
 
+import me.rerere.rikkahub.data.interaction.withoutJumpControl
+
 import me.rerere.rikkahub.utils.quotedBubbleSelection
 import kotlinx.datetime.toJavaLocalDateTime
 import java.time.format.DateTimeFormatter
@@ -292,7 +294,7 @@ fun ChatMessage(
     hasAssistantResponse: Boolean? = null,
     hasUserRead: Boolean? = null,
 ) {
-    val message = node.messages[node.selectIndex].let { original ->
+    val message = me.rerere.rikkahub.data.ai.transformers.interactionTranscript(node.messages[node.selectIndex], streaming = loading).withoutJumpControl().let { original ->
         if (original.role == MessageRole.USER && original.parts.any {
                 it is UIMessagePart.Text && it.text.startsWith("\u2063[orange-watch-auto]")
             }
@@ -375,6 +377,12 @@ fun ChatMessage(
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f),
                     )
+                }
+            }
+            if (message.role == MessageRole.USER && !everyday) {
+                Column(Modifier.align(Alignment.End).padding(top = 4.dp)) {
+                    InteractionMessageActions(message, node, readOnly, model, onUpdate, onRegenerate,
+                        onEdit, onDelete, onShare, onFork, isFavorite, onToggleFavorite)
                 }
             }
         }

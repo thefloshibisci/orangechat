@@ -813,6 +813,14 @@ fun <T> List<T>.migrateToolNodes(
 }
 
 @Serializable
+data class CallTranscriptEntry(
+    val role: String,
+    val speaker: String,
+    val text: String,
+    val timestampMillis: Long,
+)
+
+@Serializable
 sealed class UIMessageAnnotation {
     /** Durable chat interaction; text parts carry a readable model/backup fallback. */
     @Serializable
@@ -833,6 +841,8 @@ sealed class UIMessageAnnotation {
         val connectedAtMillis: Long? = null,
         val endedAtMillis: Long? = null,
         val error: String? = null,
+        // Null marks legacy calls whose words must be recovered from their time window.
+        val callTranscript: List<CallTranscriptEntry>? = null,
     ) : UIMessageAnnotation()
 
     /** Preserve sibling-fork backup metadata without turning it into a citation or model input. */

@@ -1,0 +1,129 @@
+{
+  "sourceArchive": "共度_原稿花纹_保真修正版.zip",
+  "selection": "Original transparent PNG extraction; vintage-lace-v2 inspected but its heavier redesigned frame differs from the selected screenshot.",
+  "records": [
+    {
+      "resource": "app/src/main/res/drawable-nodpi/gongdu_lace_page_top.png",
+      "extractedFile": "01.png",
+      "crop": null,
+      "sourceSha256": "51f97f0f5a2190b37b297618831a093a009fd8d01507dec7b640270551ae2cb4",
+      "resourceSha256": "a4aa6c605106fe57e411e68cb3e168148fc32c72ee26b46bb9dedf61c1d406d8"
+    },
+    {
+      "resource": "app/src/main/res/drawable-nodpi/gongdu_lace_page_bottom.png",
+      "extractedFile": "16.png",
+      "crop": null,
+      "sourceSha256": "3cab434607c9248b86c931f05a00c406f4274e6b09fae1183d0987647002bcc6",
+      "resourceSha256": "95ea849600ab91f7a804e6f50d7af880e24c0598c1b49abcb55c5ce04cb1bac8",
+      "repair": {
+        "reason": "Source extraction masks the lower halves of the central crescent and stars below y=84.",
+        "method": "Preserve source pixels; reflect x=330..497, y=64..83 across y=84 into y=85..104; append transparent bottom clearance.",
+        "outputSize": [
+          832,
+          110
+        ],
+        "seamCleanup": "Match moon seam row y=84, x=398..425 to adjacent row y=83 to remove the extraction edge bump; preserve the rest of the original texture."
+      }
+    },
+    {
+      "resource": "app/src/main/res/drawable-nodpi/gongdu_lace_cloud_moon.png",
+      "extractedFile": "02.png",
+      "crop": null,
+      "sourceSha256": "b9998403b3a2badbb974c50dcc34b68a5161d62b6f7b119fecabe0d944e0512c",
+      "resourceSha256": "d4714d794552a4035938fc4d38aff50edc92bfdad681813cecf65f3b8e1147f9"
+    },
+    {
+      "resource": "app/src/main/res/drawable-nodpi/gongdu_lace_cloud_left.png",
+      "extractedFile": "14.png",
+      "crop": [
+        30,
+        45,
+        279,
+        197
+      ],
+      "sourceSha256": "145e7400d60ed1a24d3c90928d7be53b7c529935f47c88c6f2c9fec6c597000e",
+      "resourceSha256": "48990c7533dd51e690d2fc70ab63ce8b17630afb4ae1c23a4e9531f9a500efce"
+    },
+    {
+      "resource": "app/src/main/res/drawable-nodpi/gongdu_lace_flower_left.png",
+      "extractedFile": "08.png",
+      "crop": [
+        0,
+        0,
+        265,
+        310
+      ],
+      "sourceSha256": "6efa55b1f2a1ac8049f900efea2b75566f8ba15796ef2980a3d418e4656a3cb3",
+      "resourceSha256": "053ac8a40abb4df6fa3e294783777271568ddfc03fc246c07bf524376b29fe92"
+    },
+    {
+      "resource": "app/src/main/res/drawable-nodpi/gongdu_lace_flower_right.png",
+      "extractedFile": "17.png",
+      "crop": null,
+      "sourceSha256": "08cc5e1e2e8c10b40fb24f7d06092b6e7b8b37d2b44c5ff8e1ba7b0cb4fca48d",
+      "resourceSha256": "6445d50bc16e945a7767c3879e9b2d7fdf684b39b98893e8f8fe63680c76dba8"
+    },
+    {
+      "resource": "app/src/main/res/drawable-nodpi/gongdu_lace_paper.png",
+      "extractedFile": "36.jpg",
+      "crop": null,
+      "sourceSha256": "1c3904fd4b99455352aadb395bcf2bcf54763a264b12e873dbe4c1bdf8468da9",
+      "resourceSha256": "777da3c7a214f1facb4172e0ac3aa9408b2ccbb3139604e269c7f0d579d43b5a"
+    },
+    {
+      "resource": "app/src/main/res/drawable-nodpi/gongdu_lace_card_top.png",
+      "extractedFile": "07.png",
+      "crop": [
+        0,
+        0,
+        511,
+        180
+      ],
+      "sourceSha256": "1e7b57be6eda3432772da7c03ba5d0b431a38dd11dea27bf02123a2fbd60d2dc",
+      "resourceSha256": "791de01ed92a29892a01d6fbe495584ea8e006d7303c61b583eefc18be8664e4"
+    },
+    {
+      "resource": "app/src/main/res/drawable-nodpi/gongdu_lace_card_bottom.png",
+      "extractedFile": "07.png",
+      "crop": [
+        0,
+        720,
+        511,
+        873
+      ],
+      "sourceSha256": "1e7b57be6eda3432772da7c03ba5d0b431a38dd11dea27bf02123a2fbd60d2dc",
+      "resourceSha256": "1f00ab13ad2b56f844c8ba0bf552537647bffb64998e5d832e36af54560a7018"
+    },
+    {
+      "resource": "app/src/main/res/drawable-nodpi/gongdu_lace_card_left.png",
+      "extractedFile": "07.png",
+      "crop": [
+        0,
+        180,
+        24,
+        720
+      ],
+      "sourceSha256": "1e7b57be6eda3432772da7c03ba5d0b431a38dd11dea27bf02123a2fbd60d2dc",
+      "resourceSha256": "6d11c26db7bc4c56130a48afd56e6b4c987200da39dd8e590f31b85d13b8d923"
+    },
+    {
+      "resource": "app/src/main/res/drawable-nodpi/gongdu_lace_card_right.png",
+      "extractedFile": "07.png",
+      "crop": [
+        487,
+        180,
+        511,
+        720
+      ],
+      "sourceSha256": "1e7b57be6eda3432772da7c03ba5d0b431a38dd11dea27bf02123a2fbd60d2dc",
+      "resourceSha256": "9854d127a6c0a0991156a48cee0882e54ea64b20f1373b2353e5f03233d739bd"
+    },
+    {
+      "resource": "app/src/main/res/drawable-nodpi/gongdu_lace_star.png",
+      "extractedFile": "04.png",
+      "crop": null,
+      "sourceSha256": "6e38076e08fb92f1d17d8209f54fba5c9d3864d923b3ebd921754a7402c0bdf3",
+      "resourceSha256": "935c549f306c6d2d019e26c3bed22b6426b85edf17e53b72fc802075aa084324"
+    }
+  ]
+}

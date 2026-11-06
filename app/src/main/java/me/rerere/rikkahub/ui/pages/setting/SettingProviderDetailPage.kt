@@ -88,6 +88,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalResources
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
@@ -554,15 +555,15 @@ private fun ModelList(
 }
 
 @Composable
-private fun ModelSettingsForm(
+internal fun ModelSettingsForm(
     model: Model,
     onModelChange: (Model) -> Unit,
     isEdit: Boolean,
-    parentProvider: ProviderSetting? = null
+    parentProvider: ProviderSetting? = null,
+    enableAutomatic: (ProviderSetting, Model) -> Model = koinInject<ModelCapabilitySync>()::enableAutomatic,
 ) {
     val pagerState = rememberPagerState { 3 }
     val scope = rememberCoroutineScope()
-    val capabilitySync = koinInject<ModelCapabilitySync>()
 
     fun setModelId(id: String) {
         val inputModality = ModelRegistry.MODEL_INPUT_MODALITIES.getData(id)
@@ -617,7 +618,7 @@ private fun ModelSettingsForm(
 
         HorizontalPager(
             state = pagerState,
-            modifier = Modifier.fillMaxWidth()
+            modifier = Modifier.fillMaxWidth().weight(1f)
         ) { page ->
             when (page) {
                 0 -> {
@@ -626,7 +627,7 @@ private fun ModelSettingsForm(
                         verticalArrangement = Arrangement.spacedBy(16.dp),
                         modifier = Modifier
                             .fillMaxSize()
-                            .padding(vertical = 16.dp)
+                            .padding(top = 12.dp)
                             .verticalScroll(rememberScrollState())
                     ) {
                         OutlinedTextField(
@@ -686,7 +687,7 @@ private fun ModelSettingsForm(
                                     checked = model.capabilityMode == ModelCapabilityMode.AUTO,
                                     onCheckedChange = { enabled ->
                                         onModelChange(
-                                            if (enabled && parentProvider != null) capabilitySync.enableAutomatic(parentProvider, model)
+                                            if (enabled && parentProvider != null) enableAutomatic(parentProvider, model)
                                             else model.copy(capabilityMode = ModelCapabilityMode.MANUAL, capabilitySource = null)
                                         )
                                     },
@@ -911,54 +912,20 @@ private fun AddModelButton(
                     }
                 }
             ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .fillMaxHeight(0.95f)
-                        .padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(16.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    Text(
-                        text = stringResource(R.string.setting_provider_page_add_model),
-                        style = MaterialTheme.typography.titleLarge
-                    )
-                    Column(
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                        modifier = Modifier
-                            .weight(1f)
-                            .fillMaxWidth()
-                    ) {
-                        ModelSettingsForm(
-                            model = modelState,
-                            onModelChange = { dialogState.currentState = it },
-                            isEdit = false,
-                            parentProvider = parentProvider
-                        )
-                    }
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
-                    ) {
-                        TextButton(
-                            onClick = {
-                                dialogState.dismiss()
-                            },
-                        ) {
-                            Text(stringResource(R.string.cancel))
-                        }
-                        TextButton(
-                            onClick = {
-                                if (modelState.modelId.isNotBlank() && modelState.displayName.isNotBlank()) {
-                                    dialogState.confirm()
-                                }
-                            },
-                        ) {
-                            Text(stringResource(R.string.setting_provider_page_add))
-                        }
-                    }
-                }
+                ModelEditorLayout(
+                    modifier = Modifier.fillMaxHeight(0.95f),
+                    title = { Text(stringResource(R.string.setting_provider_page_add_model), style = MaterialTheme.typography.titleLarge) },
+                    content = {
+                        ModelSettingsForm(model = modelState,
+                            onModelChange = { dialogState.currentState = it }, isEdit = false, parentProvider = parentProvider)
+                    },
+                    actions = {
+                        TextButton(onClick = { dialogState.dismiss() }) { Text(stringResource(R.string.cancel)) }
+                        TextButton(onClick = {
+                            if (modelState.modelId.isNotBlank() && modelState.displayName.isNotBlank()) dialogState.confirm()
+                        }) { Text(stringResource(R.string.setting_provider_page_add)) }
+                    },
+                )
             }
         }
     }
@@ -1257,7 +1224,7 @@ fun ModalAbilitySelector(
         style = MaterialTheme.typography.titleSmall
     )
     MultiChoiceSegmentedButtonRow(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().testTag("model-ability-controls"),
     ) {
         ModelAbility.entries.forEachIndexed { index, ability ->
             SegmentedButton(
@@ -1312,70 +1279,30 @@ private fun ModelCard(
                 sheetGesturesEnabled = false,
                 dragHandle = null,
             ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .fillMaxHeight(0.95f)
-                        .padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(16.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    Box(
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        IconButton(
-                            onClick = {
-                                scope.launch {
-                                    sheetState.hide()
-                                    dialogState.dismiss()
-                                }
-                            },
-                            modifier = Modifier.align(Alignment.CenterStart)
-                        ) {
-                            Icon(HugeIcons.Cancel01, null)
+                ModelEditorLayout(
+                    modifier = Modifier.fillMaxHeight(0.95f),
+                    title = {
+                        Box(Modifier.fillMaxWidth()) {
+                            IconButton(onClick = {
+                                scope.launch { sheetState.hide(); dialogState.dismiss() }
+                            }, modifier = Modifier.align(Alignment.CenterStart)) {
+                                Icon(HugeIcons.Cancel01, null)
+                            }
+                            Text(stringResource(R.string.setting_provider_page_edit_model),
+                                style = MaterialTheme.typography.titleLarge, modifier = Modifier.align(Alignment.Center))
                         }
-                        Text(
-                            text = stringResource(R.string.setting_provider_page_edit_model),
-                            style = MaterialTheme.typography.titleLarge,
-                            modifier = Modifier.align(Alignment.Center),
-                        )
-                    }
-                    Column(
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                        modifier = Modifier
-                            .weight(1f)
-                            .fillMaxWidth()
-                    ) {
-                        ModelSettingsForm(
-                            model = editingModel,
-                            onModelChange = { dialogState.currentState = it },
-                            isEdit = true,
-                            parentProvider = parentProvider
-                        )
-                    }
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
-                    ) {
-                        TextButton(
-                            onClick = {
-                                dialogState.dismiss()
-                            },
-                        ) {
-                            Text(stringResource(R.string.cancel))
-                        }
-                        TextButton(
-                            onClick = {
-                                if (editingModel.displayName.isNotBlank()) {
-                                    dialogState.confirm()
-                                }
-                            },
-                        ) {
-                            Text(stringResource(R.string.confirm))
-                        }
-                    }
-                }
+                    },
+                    content = {
+                        ModelSettingsForm(model = editingModel,
+                            onModelChange = { dialogState.currentState = it }, isEdit = true, parentProvider = parentProvider)
+                    },
+                    actions = {
+                        TextButton(onClick = { dialogState.dismiss() }) { Text(stringResource(R.string.cancel)) }
+                        TextButton(onClick = {
+                            if (editingModel.displayName.isNotBlank()) dialogState.confirm()
+                        }) { Text(stringResource(R.string.confirm)) }
+                    },
+                )
             }
         }
     }

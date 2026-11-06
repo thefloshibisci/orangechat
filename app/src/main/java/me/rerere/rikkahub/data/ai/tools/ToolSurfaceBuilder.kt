@@ -106,9 +106,11 @@ class ToolSurfaceBuilder(
         addAll(pluginToolProvider.getTools(recentMessages, invocationContext.callerConversationId))
         invocationContext.callerConversationId?.let { conversationId ->
             addAll(me.rerere.rikkahub.data.interaction.buildRichChatTools(assistant.allowIncomingVoiceCalls,
+                pretendRich = assistant.pretendRich,
                 create = { kind, amount, note, requestId ->
                     val service = org.koin.core.context.GlobalContext.get().get<me.rerere.rikkahub.service.ChatService>()
-                    service.createChatInteraction(kotlin.uuid.Uuid.parse(conversationId), assistant.id, "assistant", kind, amount, note, requestId).also {
+                    service.createChatInteraction(kotlin.uuid.Uuid.parse(conversationId), assistant.id, "assistant", kind, amount, note, requestId,
+                        walletLinked = if (kind == "call") null else !assistant.pretendRich).also {
                         if (kind == "call" && it.status == "pending") localTools.showIncomingChatCall(conversationId)
                     }
                 },

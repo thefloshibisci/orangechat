@@ -6,6 +6,8 @@
 
 package me.rerere.rikkahub.data.service
 
+import me.rerere.rikkahub.data.interaction.withInteractionRequestScope
+
 import me.rerere.rikkahub.data.ai.UsageRecorder
 import me.rerere.rikkahub.data.ai.UsageSource
 import me.rerere.rikkahub.data.ai.UsageTag
@@ -1809,7 +1811,7 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 } else {
                     executeGenerationToolBatch(
                         approval = GenerationToolApproval(listOf(toolCall)),
-                        definitions = listOfNotNull(toolDef),
+                        definitions = listOfNotNull(toolDef?.withInteractionRequestScope(messages.last().id)),
                         json = json,
                         onCheckpoint = ::persistToolCheckpoint,
                     ).singleOrNull() ?: toolCall

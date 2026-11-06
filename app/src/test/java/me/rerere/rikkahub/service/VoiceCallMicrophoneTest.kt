@@ -8,11 +8,50 @@ import me.rerere.asr.ASRState
 import me.rerere.asr.ASRStatus
 import me.rerere.rikkahub.ui.hooks.CustomAsrState
 import me.rerere.rikkahub.ui.pages.voice.VoiceCallStatus
+import me.rerere.rikkahub.ui.pages.voice.VoiceCallUiState
+import me.rerere.rikkahub.ui.pages.voice.listeningAfterReply
 import org.junit.Assert.*
 import org.junit.Test
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class VoiceCallMicrophoneTest {
+    @Test fun modelFailureResumesFreshSpeechWithBothReplyListeningSettings() = runTest {
+        for (keepListening in listOf(false, true)) {
+            val asr = FakeAsr()
+            val received = mutableListOf<String>()
+            val microphone = VoiceCallMicrophone(asr, backgroundScope, received::add)
+            microphone.update(VoiceCallStatus.Listening, false, keepListening)
+            val oldCallback = asr.callbacks.single()
+            microphone.update(VoiceCallStatus.Processing, false, keepListening)
+            val failed = VoiceCallUiState(status = VoiceCallStatus.Processing, userTranscript = "失败的一句",
+                assistantText = "部分回复", isSpeakerOn = true)
+            microphone.update(VoiceCallStatus.Idle, true, false)
+            val recovered = failed.listeningAfterReply("本次回复失败；已恢复聆听，请重新说。")
+            microphone.update(recovered.status, recovered.isMuted, keepListening)
+            asr.complete("旧识别结果")
+            assertNull(microphone.completedTranscript(asr.state.value))
+            microphone.resumeIfPending()
+            oldCallback("不能重发")
+            asr.callbacks.last()("下一句可以录入")
+            runCurrent()
+            assertEquals(listOf("下一句可以录入"), received)
+            assertEquals("", recovered.userTranscript)
+            assertEquals("", recovered.assistantText)
+            assertTrue(recovered.isSpeakerOn)
+            assertTrue(microphone.isListening)
+        }
+    }
+
+    @Test fun modelFailureRecoveryPreservesMuteAndManualSendChoice() = runTest {
+        val asr = FakeAsr()
+        val microphone = VoiceCallMicrophone(asr, backgroundScope) {}
+        val recovered = VoiceCallUiState(status = VoiceCallStatus.Error, isMuted = true, autoSendEnabled = false)
+            .listeningAfterReply("失败")
+        microphone.update(recovered.status, recovered.isMuted, true)
+        assertFalse(microphone.isListening)
+        assertEquals(0, asr.startAttempts)
+        assertFalse(recovered.autoSendEnabled)
+    }
     @Test fun muteAndInactiveStatesAlwaysOverrideReplyListening() {
         VoiceCallStatus.entries.forEach { status ->
             assertFalse(voiceCallShouldListen(status, muted = true, keepListeningDuringReply = true))

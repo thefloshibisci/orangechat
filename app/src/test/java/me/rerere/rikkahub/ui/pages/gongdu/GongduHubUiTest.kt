@@ -46,6 +46,52 @@ import java.io.File
 class GongduHubUiTest {
     @get:Rule val compose = createAndroidComposeRule<ComponentActivity>()
 
+    @Test @Config(qualifiers = "w400dp-h890dp-xxhdpi")
+    fun tallPhoneUsesAvailableSpaceAndScalesCardType() {
+        compose.activity.getSharedPreferences("gongdu_hub", 0).edit().clear().commit()
+        compose.setContent { Themed(false) { GongduHub({}, {}, {}) } }
+        val bounds = compose.onNodeWithTag("gongdu-card-look").fetchSemanticsNode().boundsInRoot
+        val screenWidth = compose.activity.resources.displayMetrics.widthPixels.toFloat()
+        assertTrue("Tall phone card must occupy at least 69% of the width", bounds.width / screenWidth >= .69f)
+        assertDividerAtTwoThirds("look")
+        compose.onNodeWithText("轻点进入 →").assertIsDisplayed()
+        val layouts = mutableListOf<androidx.compose.ui.text.TextLayoutResult>()
+        compose.onNodeWithText("一起逛", useUnmergedTree = true).performSemanticsAction(
+            androidx.compose.ui.semantics.SemanticsActions.GetTextLayoutResult) { it(layouts) }
+        assertTrue(layouts.single().layoutInput.style.fontSize.value >= 23f)
+        snapshot("hub-tall-phone")
+    }
+
+    @Test @Config(qualifiers = "w320dp-h640dp-xxhdpi")
+    fun compactHubKeepsNavigationAndCardActionsVisible() {
+        compose.activity.getSharedPreferences("gongdu_hub", 0).edit().clear().commit()
+        var entered = false
+        compose.setContent { Themed(false) { GongduHub({}, { entered = true }, {}) } }
+        compose.onNodeWithContentDescription("返回").assertIsDisplayed()
+        compose.onNodeWithText("共度").assertIsDisplayed()
+        compose.onNodeWithText("轻点进入 →").assertIsDisplayed()
+        assertDividerAtTwoThirds("look")
+        val entryLayouts = mutableListOf<androidx.compose.ui.text.TextLayoutResult>()
+        compose.onNodeWithText("轻点进入 →", useUnmergedTree = true)
+            .performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.GetTextLayoutResult) { it(entryLayouts) }
+        assertTrue(entryLayouts.isNotEmpty())
+        snapshot("hub-compact")
+        // The paragraph retains its max width when Text wraps to its intrinsic width;
+        // compare actual line bounds rather than didOverflowWidth for this end-aligned hint.
+        entryLayouts.forEach { layout ->
+            assertFalse("Entry hint must not be clipped vertically", layout.didOverflowHeight)
+            for (line in 0 until layout.lineCount) {
+                assertTrue("Entry line must fit its measured width",
+                    layout.getLineRight(line) - layout.getLineLeft(line) <= layout.size.width + 1f)
+                assertTrue("Entry line must fit its measured height",
+                    layout.getLineBottom(line) <= layout.size.height + 1f)
+            }
+        }
+        compose.onNodeWithText("左右滑动挑一间 · 轻点进入").assertIsDisplayed()
+        compose.onNodeWithContentDescription("一起逛，轻点进入").performClick()
+        assertTrue(entered)
+    }
+
     @Composable private fun Themed(dark: Boolean, content: @Composable () -> Unit) {
         CompositionLocalProvider(LocalDarkMode provides dark) {
             MaterialTheme(colorScheme = if (dark) darkColorScheme() else lightColorScheme()) { Surface { content() } }
@@ -61,6 +107,14 @@ class GongduHubUiTest {
             view.draw(Canvas(bitmap))
             output.outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
         }
+    }
+
+    private fun assertDividerAtTwoThirds(roomId: String) {
+        val card = compose.onNodeWithTag("gongdu-card-$roomId").fetchSemanticsNode().boundsInRoot
+        val divider = compose.onNodeWithTag("gongdu-divider-$roomId", useUnmergedTree = true)
+            .fetchSemanticsNode().boundsInRoot
+        assertEquals("Divider should sit two thirds down the whole card",
+            2f / 3f, (divider.center.y - card.top) / card.height, .01f)
     }
 
     @Test fun coverflowCentreIsFlatAndNeighboursShrinkTiltAndFade() {
@@ -93,17 +147,24 @@ class GongduHubUiTest {
         }
         compose.onNodeWithText("共度").assertIsDisplayed()
         compose.onNodeWithText("01 / 04").assertIsDisplayed()
+        assertDividerAtTwoThirds("look")
         snapshot("hub-light")
         compose.onNodeWithContentDescription("一起逛，轻点进入").performClick()
         assertEquals("look", entered)
         compose.runOnIdle { runBlocking { pager.scrollToPage(1) } }
         compose.waitForIdle()
         compose.onNodeWithText("02 / 04").assertIsDisplayed()
+        assertDividerAtTwoThirds("read")
+        snapshot("hub-fish")
         // Tapping a side card does not enter it; only the centred card responds.
         compose.onNodeWithContentDescription("一起逛，轻点进入").performClick()
         assertEquals("look", entered)
         compose.onNodeWithContentDescription("一起读，筹备中").performClick()
         assertEquals("read", unavailable)
+        compose.runOnIdle { runBlocking { pager.scrollToPage(2) } }
+        compose.waitForIdle()
+        assertDividerAtTwoThirds("listen")
+        snapshot("hub-jellyfish")
     }
 
     @Test fun hubReopensOnTheLastRoom() {

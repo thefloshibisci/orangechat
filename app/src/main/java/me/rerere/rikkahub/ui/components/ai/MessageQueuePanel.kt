@@ -89,14 +89,14 @@ internal fun MessageQueuePanel(
                             horizontalArrangement = Arrangement.spacedBy(4.dp),
                         ) {
                             Text(
-                                "${index + 1}. ${queuedMessagePreview(message.parts)}",
+                                "${index + 1}. ${if (message.existingMessageId != null) "等待回复红包或转账" else queuedMessagePreview(message.parts)}",
                                 modifier = Modifier.weight(1f),
                                 maxLines = 2,
                                 overflow = TextOverflow.Ellipsis,
                                 style = MaterialTheme.typography.bodySmall,
                             )
                             TextButton(
-                                enabled = !message.isEditing,
+                                enabled = !message.isEditing && message.existingMessageId == null,
                                 onClick = { onBeginEdit(message.id)?.let { editing = QueueEditDraft(it) } },
                                 modifier = Modifier.testTag("queue_edit_${message.id}"),
                             ) { Text(if (message.isEditing) "编辑中" else "编辑") }

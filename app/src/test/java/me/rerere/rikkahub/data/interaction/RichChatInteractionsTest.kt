@@ -28,8 +28,8 @@ class RichChatInteractionsTest {
     }
     @Test fun `model cannot dispatch an over limit packet even to a virtual creation callback`() = runBlocking {
         var creates = 0
-        val tools = buildRichChatTools(false, { _, _, _, _ -> creates++; card(kind="red_packet").copy(walletLinked=false) }, { _, _ -> error("unexpected") })
-        val result = runCatching { tools.single { it.name == "send_red_packet" }.execute(buildJsonObject {
+        val tools = buildRichChatTools(false, { _, _, _, _ -> creates++; card(kind="red_packet").copy(walletLinked=false) }, { _, _ -> error("unexpected") }, pretendRich = true)
+        val result = runCatching { tools.single { it.name == "send_virtual_red_packet" }.execute(buildJsonObject {
             put("amount", "200.01"); put("request_id", "over-limit")
         }) }
         assertTrue(result.isFailure)
@@ -53,7 +53,7 @@ class RichChatInteractionsTest {
             card().copy(status="unconfirmed",note=note)
         }, { _, _ -> error("unexpected") })
         assertFalse(tools.any { it.name == "request_voice_call" })
-        val result = tools.single { it.name == "send_transfer" }.execute(buildJsonObject {
+        val result = tools.single { it.name == "send_wallet_transfer" }.execute(buildJsonObject {
             put("amount","5.01");put("request_id","once")
         })
         assertTrue(result.toString().contains("unconfirmed"))

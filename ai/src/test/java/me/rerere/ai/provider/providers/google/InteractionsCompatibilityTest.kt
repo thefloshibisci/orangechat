@@ -201,6 +201,49 @@ class InteractionsCompatibilityTest {
         }
     }
 
+    @Test fun extractedDocumentsDoNotBreakLaterInteractionTurns() {
+        val input = api.buildInput(listOf(UIMessage(role = MessageRole.USER, parts = listOf(
+            UIMessagePart.Text("Extracted document: meeting notes"),
+            UIMessagePart.Document("file:///upload/notes.pdf", "notes.pdf", "application/pdf"),
+            UIMessagePart.Text("summarize this"),
+        )), UIMessage.user("follow-up question")))
+        val content = input.first().jsonObject["content"]!!.jsonArray
+        assertEquals(listOf("Extracted document: meeting notes", "summarize this"),
+            content.map { it.jsonObject["text"]!!.jsonPrimitive.content })
+        assertEquals(2, input.size)
+    }
+
+    @Test fun toolVideosAreUserMediaInsteadOfInvalidFunctionResultContent() {
+        val input = api.buildInput(listOf(UIMessage(role = MessageRole.ASSISTANT, parts = listOf(
+            UIMessagePart.Tool("video", "read_video", "{}", listOf(
+                UIMessagePart.Text("clip fetched"), UIMessagePart.Video("https://example.com/clip.mp4"),
+            )),
+        ))))
+        assertEquals(listOf("function_call", "function_result", "user_input"),
+            input.map { it.jsonObject["type"]!!.jsonPrimitive.content })
+        assertEquals("text", input[1].jsonObject["result"]!!.jsonArray.single().jsonObject["type"]!!.jsonPrimitive.content)
+        assertEquals("video", input[2].jsonObject["content"]!!.jsonArray.single().jsonObject["type"]!!.jsonPrimitive.content)
+    }
+
+    @Test fun httpErrorsExposeProviderReasonAndRouteWithoutLeakingKeys() {
+        val failing = InteractionsAPI(OkHttpClient.Builder().addInterceptor { chain ->
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(404).message("Not Found")
+                .body("""{"error":{"message":"Interactions route unavailable; credential test-key"}}"""
+                    .toResponseBody("application/json".toMediaType())).build()
+        }.build())
+        for (stream in listOf(false, true)) {
+            val failure = assertThrows(java.io.IOException::class.java) { runBlocking {
+                val provider = ProviderSetting.Google(apiKey = "test-key")
+                if (stream) failing.streamText(provider, listOf(UIMessage.user("hi")), TextGenerationParams(model)).toList()
+                else failing.generateText(provider, listOf(UIMessage.user("hi")), TextGenerationParams(model))
+            } }
+            assertTrue(failure.message!!.contains("Interactions route unavailable"))
+            assertTrue(failure.message!!.contains("generativelanguage.googleapis.com/v1beta/interactions"))
+            assertTrue(failure.message!!.contains("404"))
+            assertFalse(failure.message!!.contains("test-key"))
+        }
+    }
+
     @Test fun failedUnknownAndEmptyResponsesCannotCompleteSuccessfully() {
         for (status in listOf("failed", "cancelled", "in_progress", "unknown")) {
             assertThrows(IllegalStateException::class.java) {

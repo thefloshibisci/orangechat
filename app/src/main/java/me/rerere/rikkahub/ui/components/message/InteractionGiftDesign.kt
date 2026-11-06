@@ -1,12 +1,10 @@
 package me.rerere.rikkahub.ui.components.message
 
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.scaleIn
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.keyframes
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -30,6 +28,8 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.*
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.SemanticsPropertyKey
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -66,6 +66,10 @@ internal fun themeMascot(theme: String) = when (theme) {
     else -> R.drawable.interaction_fish
 }
 
+// Filled mascots already carry their theme palette. A flat tint erases their faces.
+internal fun interactionIconColorFilter(icon: Int, tint: Color): ColorFilter? =
+    if (icon == R.drawable.interaction_bear || icon == R.drawable.interaction_fish) null else ColorFilter.tint(tint)
+
 private fun giftCaption(theme: String) = when (theme) {
     "sakura" -> "水晶礼盒"
     "lavender" -> "星河契约"
@@ -76,25 +80,17 @@ private fun giftCaption(theme: String) = when (theme) {
 internal fun ReferenceGlass(
     theme: String, modifier: Modifier = Modifier, radius: Dp = 22.dp,
     settled: Boolean = false, onClick: (() -> Unit)? = null,
-    confirmation: Boolean = false,
+    pressFeedback: Boolean = true, receiptScale: Float = 1f,
     content: @Composable BoxScope.() -> Unit,
 ) {
     val colors = interactionColors(theme)
     val shape = RoundedCornerShape(radius)
     val source = remember { MutableInteractionSource() }
     val pressed by source.collectIsPressedAsState()
-    val scale by animateFloatAsState(if (pressed) .97f else 1f, label = "glassPress")
-    val confirmationScale = remember { Animatable(1f) }
-    LaunchedEffect(confirmation) {
-        if (confirmation) {
-            confirmationScale.snapTo(.92f)
-            confirmationScale.animateTo(1.045f, spring(dampingRatio = .42f, stiffness = 480f))
-            confirmationScale.animateTo(1f, spring(dampingRatio = .58f, stiffness = 360f))
-        }
-    }
-    Box(modifier.graphicsLayer {
-        scaleX = scale * confirmationScale.value
-        scaleY = scale * confirmationScale.value
+    val scale by animateFloatAsState(if (pressed && pressFeedback) .97f else 1f, label = "glassPress")
+    Box(modifier.semantics { this[GlassScale] = scale * receiptScale }.graphicsLayer {
+        scaleX = scale * receiptScale
+        scaleY = scale * receiptScale
         alpha = if (settled) .82f else 1f
     }
         .shadow(12.dp, shape, clip = false, ambientColor = colors.accent.copy(alpha = .15f), spotColor = colors.accent.copy(alpha = .22f))
@@ -131,7 +127,7 @@ private fun ThemeStar(theme: String, modifier: Modifier = Modifier) {
 private fun GiftBadge(icon: Int, size: Dp = 50.dp, round: Dp = 16.dp, tint: Color? = null) {
     Box(Modifier.size(size).background(Color.White.copy(alpha = .65f), RoundedCornerShape(round))
         .border(1.5.dp, Color.White.copy(alpha = .95f), RoundedCornerShape(round)), contentAlignment = Alignment.Center) {
-        Image(painterResource(icon), null, Modifier.size(28.dp), colorFilter = tint?.let(ColorFilter::tint))
+        Image(painterResource(icon), null, Modifier.size(28.dp), colorFilter = tint?.let { interactionIconColorFilter(icon, it) })
     }
 }
 
@@ -139,10 +135,26 @@ private fun GiftBadge(icon: Int, size: Dp = 50.dp, round: Dp = 16.dp, tint: Colo
 internal fun GiftChatBubble(card: ChatInteraction, state: String, senderName: String, onClick: () -> Unit) {
     val packet = card.kind == "red_packet"
     val settled = card.status in setOf("accepted", "returned")
+    // Observe live state changes only. Mounting an already accepted card (including scrolling
+    // back into view) must never replay the receipt, nor may a touch/drag start it.
+    var previousStatus by remember(card.id) { mutableStateOf(card.status) }
+    var receiptPlayed by rememberSaveable(card.id) { mutableStateOf(card.status == "accepted") }
+    val receiptMotion = remember(card.id) { Animatable(1f) }
+    LaunchedEffect(card.id, card.status) {
+        val acceptedNow = previousStatus != "accepted" && card.status == "accepted"
+        previousStatus = card.status
+        if (card.actor == "user" && acceptedNow && !receiptPlayed) {
+            receiptPlayed = true
+            receiptMotion.animateTo(1f, keyframes {
+                durationMillis = 480
+                1f at 0; .96f at 80; 1.045f at 210; .992f at 350; 1f at 480
+            })
+        } else receiptMotion.snapTo(1f)
+    }
     if (packet) {
-        ReferenceGlass(card.theme, Modifier.widthIn(max = 280.dp).fillMaxWidth().heightIn(min = 136.dp)
-            .testTag("packet-bubble"), radius = 24.dp, settled = settled, onClick = onClick,
-            confirmation = card.status == "accepted") {
+        ReferenceGlass(card.theme, Modifier.widthIn(max = 280.dp).fillMaxWidth().heightIn(min = 94.dp)
+            .testTag("packet-bubble"), radius = 22.dp, settled = settled, onClick = onClick, pressFeedback = false,
+            receiptScale = receiptMotion.value) {
             ThemeStar(card.theme, Modifier.align(Alignment.TopEnd).padding(top = 10.dp, end = 14.dp))
             Row(Modifier.padding(horizontal = 18.dp, vertical = 15.dp).heightIn(min = 64.dp),
                 verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -156,12 +168,11 @@ internal fun GiftChatBubble(card: ChatInteraction, state: String, senderName: St
             }
             Text(giftCaption(card.theme), Modifier.align(Alignment.BottomEnd).padding(end = 16.dp, bottom = 6.dp),
                 fontSize = 10.sp, lineHeight = 12.sp, color = LocalContentColor.current.copy(alpha = .55f))
-            if (card.status == "accepted") ReceiptSeal(card.theme, Modifier.align(Alignment.BottomStart).padding(start = 16.dp, bottom = 6.dp))
         }
     } else {
         ReferenceGlass(card.theme, Modifier.widthIn(max = 280.dp).fillMaxWidth().heightIn(min = 136.dp)
-            .testTag("transfer-bubble"), radius = 24.dp, settled = settled, onClick = onClick,
-            confirmation = card.status == "accepted") {
+            .testTag("transfer-bubble"), radius = 24.dp, settled = settled, onClick = onClick, pressFeedback = false,
+            receiptScale = receiptMotion.value) {
             val ink = LocalContentColor.current
             Canvas(Modifier.align(Alignment.BottomEnd).offset(20.dp, 16.dp).size(112.dp)) {
                 val center = Offset(size.width * .7f, size.height * .7f)
@@ -181,7 +192,7 @@ internal fun GiftChatBubble(card: ChatInteraction, state: String, senderName: St
                     }
                 }
                 Row(Modifier.padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    GiftBadge(giftIcon(card.theme, false))
+                    TransferBunnyBadge(card)
                     Column(Modifier.weight(1f)) {
                         Text("￥${displayGiftAmount(card.amountCents)}", fontSize = 20.sp, lineHeight = 25.sp,
                             fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -203,13 +214,11 @@ internal fun GiftChatBubble(card: ChatInteraction, state: String, senderName: St
 @Composable
 private fun ReceiptSeal(theme: String, modifier: Modifier = Modifier) {
     val colors = interactionColors(theme)
-    AnimatedVisibility(visible = true, enter = fadeIn(tween(220)) + scaleIn(spring(dampingRatio = .48f, stiffness = 420f), initialScale = .45f)) {
-        Row(modifier.background(Color.White.copy(alpha = .86f), CircleShape)
+    Row(modifier.background(Color.White.copy(alpha = .86f), CircleShape)
             .border(1.dp, Color.White, CircleShape).padding(horizontal = 7.dp, vertical = 3.dp),
             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(3.dp)) {
             Image(painterResource(R.drawable.interaction_check), null, Modifier.size(12.dp), colorFilter = ColorFilter.tint(colors.accent))
             Text("已收下", fontSize = 9.sp, lineHeight = 12.sp, fontWeight = FontWeight.SemiBold, color = colors.ink)
-        }
     }
 }
 
@@ -245,36 +254,47 @@ internal fun GiftDetailCard(card: ChatInteraction, state: String, interactive: B
     val recipient = card.actor == "assistant"
     val claimable = interactive && recipient && card.status == "pending"
     val amountVisible = !packet || card.status == "accepted" || !recipient
-    val opened by animateFloatAsState(if (card.status == "accepted") 1f else 0f, animationSpec = androidx.compose.animation.core.tween(500, easing = androidx.compose.animation.core.CubicBezierEasing(.4f, 0f, .2f, 1f)), label = "packetFlap")
+    val opening = remember(card.id) { androidx.compose.animation.core.Animatable(if (card.status == "accepted") 1f else 0f) }
+    LaunchedEffect(card.status) {
+        // Only a confirmed receipt starts the reveal; a pending wallet response is not success.
+        if (card.status == "accepted") opening.animateTo(1f, tween(500))
+    }
+    val opened = opening.value
+    val openingPacket = packet && card.status == "accepted" && opened < 1f
+    val flap = androidx.compose.animation.core.CubicBezierEasing(.4f, 0f, .2f, 1f).transform(opened)
+    val buttonProgress = (opened / .7f).coerceIn(0f, 1f)
     ReferenceGlass(card.theme, Modifier.widthIn(max = 286.dp).fillMaxWidth()
         .heightIn(min = if (packet) 400.dp else 395.dp).testTag(if (packet) "packet-detail" else "transfer-detail"), radius = 32.dp) {
         if (packet) Box(Modifier.align(Alignment.TopCenter).offset(y = (-92).dp)
-            .requiredSize(350.dp, 315.dp).graphicsLayer { translationY = -28.dp.toPx() * opened; scaleY = 1f - .08f * opened }
+            .requiredSize(350.dp, 315.dp).graphicsLayer { translationY = -28.dp.toPx() * flap; scaleY = 1f - .08f * flap }
             .clip(CircleShape).background(Brush.verticalGradient(listOf(Color.White.copy(alpha = .62f), Color.White.copy(alpha = .22f))))
             .border(1.5.dp, Color.White.copy(alpha = .9f), CircleShape))
         ThemeStar(card.theme, Modifier.align(Alignment.TopEnd).padding(top = 24.dp, end = 24.dp))
-        Column(Modifier.fillMaxWidth().padding(start = 22.dp, end = 22.dp, top = if (packet) 32.dp else 28.dp, bottom = 22.dp),
+        Column(Modifier.fillMaxWidth().padding(start = 22.dp, end = 22.dp, top = if (packet) 32.dp else 28.dp,
+            bottom = if (!packet && claimable) 4.dp else 22.dp),
             horizontalAlignment = Alignment.CenterHorizontally) {
-            GiftBadge(if (packet) themeMascot(card.theme) else if (card.status == "accepted") R.drawable.interaction_check else R.drawable.interaction_hourglass,
-                size = 56.dp, round = if (packet) 28.dp else 16.dp, tint = if (packet) interactionColors(card.theme).accent else null)
+            if (packet) GiftBadge(themeMascot(card.theme), size = 56.dp, round = 28.dp, tint = interactionColors(card.theme).accent)
+            else TransferBunnyBadge(card, size = 56.dp)
             Spacer(Modifier.height(8.dp))
             Text(if (packet) "$senderName 发出的专属红包" else (if (claimable) "待你确认收款" else state),
                 fontSize = 12.sp, lineHeight = 17.sp, fontWeight = FontWeight.Medium)
             if (packet) {
                 Text("“${card.note.ifBlank { "给你的小心意" }}”", Modifier.padding(top = 6.dp), fontSize = 17.sp, lineHeight = 23.sp,
                     fontWeight = FontWeight.Bold, textAlign = TextAlign.Center, maxLines = 3, overflow = TextOverflow.Ellipsis)
-                if (claimable) {
-                    Box(Modifier.padding(top = 34.dp).size(78.dp), contentAlignment = Alignment.Center) {
-                        Box(Modifier.requiredSize(92.dp).border(1.5.dp, Color.White.copy(alpha = .75f), CircleShape))
-                        PearlAction(card.theme, "拆", !busy, round = true) { respond("accept") }
+                if (claimable || openingPacket || (busy && recipient) || amountVisible) {
+                    Box(Modifier.fillMaxWidth().height(112.dp).semantics { this[PacketOpeningProgress] = opened }, contentAlignment = Alignment.TopCenter) {
+                        if ((claimable || busy || openingPacket) && opened < .7f) Box(Modifier.padding(top = 34.dp).size(78.dp)
+                            .testTag("packet-open-button").graphicsLayer {
+                                scaleX = 1f - buttonProgress; scaleY = 1f - buttonProgress
+                                rotationZ = 180f * buttonProgress; alpha = 1f - buttonProgress
+                            }, contentAlignment = Alignment.Center) {
+                            Box(Modifier.requiredSize(92.dp).border(1.5.dp, Color.White.copy(alpha = .75f), CircleShape))
+                            PearlAction(card.theme, if (busy) "…" else "拆", claimable && !busy, round = true) { respond("accept") }
+                        }
+                        if (amountVisible && (card.status != "accepted" || opened >= .56f)) Column(Modifier.padding(top = 28.dp).testTag("packet-amount-reveal"), horizontalAlignment = Alignment.CenterHorizontally) {
+                            PacketAmount(card, state)
+                        }
                     }
-                } else if (amountVisible) {
-                    Row(Modifier.padding(top = 28.dp), verticalAlignment = Alignment.Bottom) {
-                        Text(formatChatAmount(card.amountCents), fontSize = 36.sp, lineHeight = 42.sp, fontWeight = FontWeight.Bold)
-                        Text("元", Modifier.padding(start = 4.dp, bottom = 4.dp), fontSize = 14.sp)
-                    }
-                    Text(state, Modifier.padding(top = 8.dp).background(Color.White.copy(alpha = .55f), CircleShape)
-                        .border(1.dp, Color.White.copy(alpha = .8f), CircleShape).padding(horizontal = 12.dp, vertical = 4.dp), fontSize = 11.sp)
                 } else Text(state, Modifier.padding(top = 34.dp), fontSize = 14.sp)
             } else {
                 Text("￥${displayGiftAmount(card.amountCents)}", Modifier.padding(top = 4.dp, bottom = 16.dp), fontSize = 30.sp, lineHeight = 36.sp, fontWeight = FontWeight.Bold)
@@ -285,16 +305,32 @@ internal fun GiftDetailCard(card: ChatInteraction, state: String, interactive: B
                     DetailLine("发起时间", SimpleDateFormat("MM-dd HH:mm", Locale.getDefault()).format(Date(card.createdAtMillis)))
                 }
                 Spacer(Modifier.height(20.dp))
-                if (claimable) PearlAction(card.theme, "确认收款  ✦", !busy) { respond("accept") }
-                else Text(state, Modifier.background(Color.White.copy(alpha = .55f), CircleShape).padding(horizontal = 16.dp, vertical = 8.dp), fontSize = 12.sp)
+                if (claimable || busy) PearlAction(card.theme, if (busy) "处理中…" else "确认收款  ✦", claimable && !busy) { respond("accept") }
+                else Column(Modifier.testTag("transfer-confirmation-reveal").semantics {
+                    this[GiftRevealProgress] = if (card.status == "accepted") opened else 1f
+                }.graphicsLayer {
+                    // Animate the receipt itself, not the whole card or its scrolling bubble.
+                    val progress = if (card.status == "accepted") opened else 1f
+                    alpha = progress
+                    scaleX = .82f + .18f * progress
+                    scaleY = scaleX
+                    translationY = (1f - progress) * 10.dp.toPx()
+                }, horizontalAlignment = Alignment.CenterHorizontally) {
+                    Row(Modifier.background(Color.White.copy(alpha = .75f), CircleShape)
+                        .border(1.dp, Color.White, CircleShape).padding(horizontal = 16.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                        if (card.status == "accepted") Image(painterResource(R.drawable.interaction_check), null,
+                            Modifier.size(16.dp), colorFilter = ColorFilter.tint(interactionColors(card.theme).accent))
+                        Text(if (card.status == "accepted") "已确认收款" else state, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    }
+                }
             }
-            if (claimable) Text("退还给对方", Modifier.clickable(
+            if (claimable && !packet) Text("退还给对方", Modifier.padding(top = 24.dp).testTag("gift-return").clickable(
                 enabled = !busy,
                 role = androidx.compose.ui.semantics.Role.Button,
                 onClick = { respond("return") },
-            ).padding(top = 4.dp), fontSize = 11.sp, lineHeight = 15.sp,
+            ).padding(horizontal = 12.dp, vertical = 6.dp), fontSize = 11.sp, lineHeight = 15.sp,
                 color = LocalContentColor.current.copy(alpha = .65f))
-            if (busy) LinearProgressIndicator(Modifier.fillMaxWidth().padding(vertical = 4.dp))
             (error ?: card.error)?.let { raw ->
                 val explanation = if (raw.contains("PGRST202") && raw.contains("orangechat_chat_payment"))
                     "小钱包支付接口尚不可用。请先在钱包数据库执行聊天红包升级 SQL，再核实这笔记录；不要重新发送。" else raw
@@ -305,9 +341,20 @@ internal fun GiftDetailCard(card: ChatInteraction, state: String, interactive: B
             }
             if (packet) Spacer(Modifier.height(40.dp))
         }
-        if (packet) Text(when (card.theme) { "sakura" -> "✧ 愿你今天也甜甜的 ✧"; "lavender" -> "✧ 晚安，愿你有好梦 ✧"; else -> "✧ 浮光跃金 · 静影沉璧 ✧" },
-            Modifier.align(Alignment.BottomCenter).padding(bottom = 22.dp), fontSize = 12.sp,
-            lineHeight = 16.sp, color = LocalContentColor.current.copy(alpha = .65f))
+        if (packet) Column(Modifier.align(Alignment.BottomCenter).padding(bottom = 22.dp),
+            horizontalAlignment = Alignment.CenterHorizontally) {
+            if (claimable) {
+                Text("退还给对方", Modifier.testTag("gift-return").clickable(
+                    enabled = !busy, role = androidx.compose.ui.semantics.Role.Button,
+                    onClick = { respond("return") },
+                ).padding(horizontal = 12.dp), fontSize = 11.sp, lineHeight = 15.sp,
+                    color = LocalContentColor.current.copy(alpha = .65f))
+                Spacer(Modifier.height(10.dp))
+            }
+            Text(when (card.theme) { "sakura" -> "✧ 愿你今天也甜甜的 ✧"; "lavender" -> "✧ 晚安，愿你有好梦 ✧"; else -> "✧ 浮光跃金 · 静影沉璧 ✧" },
+                Modifier.testTag("packet-footer"), fontSize = 12.sp, lineHeight = 16.sp,
+                color = LocalContentColor.current.copy(alpha = .65f))
+        }
     }
 }
 
@@ -317,4 +364,18 @@ private fun DetailLine(label: String, value: String) {
         Text(label, fontSize = 12.sp, lineHeight = 16.sp, color = LocalContentColor.current.copy(alpha = .65f))
         Text(value, Modifier.weight(1f), fontSize = 12.sp, lineHeight = 16.sp, textAlign = TextAlign.End, fontWeight = FontWeight.Medium)
     }
+}
+
+internal val GiftRevealProgress = SemanticsPropertyKey<Float>("GiftRevealProgress")
+internal val GlassScale = SemanticsPropertyKey<Float>("GlassScale")
+internal val PacketOpeningProgress = SemanticsPropertyKey<Float>("PacketOpeningProgress")
+
+@Composable
+private fun PacketAmount(card: ChatInteraction, state: String) {
+    Row(verticalAlignment = Alignment.Bottom) {
+        Text(formatChatAmount(card.amountCents), fontSize = 36.sp, lineHeight = 42.sp, fontWeight = FontWeight.Bold)
+        Text("元", Modifier.padding(start = 4.dp, bottom = 4.dp), fontSize = 14.sp)
+    }
+    Text(state, Modifier.padding(top = 8.dp).background(Color.White.copy(alpha = .55f), CircleShape)
+        .border(1.dp, Color.White.copy(alpha = .8f), CircleShape).padding(horizontal = 12.dp, vertical = 4.dp), fontSize = 11.sp)
 }

@@ -347,9 +347,13 @@ private fun ChatListNormal(
                 (if (showCompressedHistory) conversation.messageNodes else conversation.visibleMessageNodes).map { it.currentMessage })
         }
         val displayNodes = remember(conversation.messageNodes, conversation.compressionRevision, showCompressedHistory) {
-            (if (showCompressedHistory) conversation.messageNodes else conversation.visibleMessageNodes).filter { node ->
+            val legacyGiftFollowups = me.rerere.rikkahub.data.interaction.legacyGiftFollowupIds(conversation.currentMessages)
+            me.rerere.rikkahub.data.interaction.interactionDisplayNodes(
+                if (showCompressedHistory) conversation.messageNodes else conversation.visibleMessageNodes
+            ).filter { node ->
                 val msg = node.currentMessage
                 val text = msg.toText().trim()
+                msg.id !in legacyGiftFollowups &&
                 msg.annotations.filterIsInstance<me.rerere.ai.ui.UIMessageAnnotation.ChatInteraction>().none { it.id in inlineCards } &&
                 !(msg.role == MessageRole.ASSISTANT && text == "[SKIP]") &&
                 !(msg.role == MessageRole.USER && text.contains("[主动消息上下文]"))

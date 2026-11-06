@@ -38,7 +38,7 @@ internal class InteractionsAPI(
     ): MessageChunk = withContext(Dispatchers.IO) {
         val request = request(provider, params, buildRequestBody(messages, params, false))
         client.newCall(request).await().use { response ->
-            check(response.isSuccessful) { "Gemini Interactions HTTP ${response.code}" }
+            if (!response.isSuccessful) throw httpFailure(response)
             val body = json.parseToJsonElement(response.body.string()) as? JsonObject
                 ?: error("Invalid Gemini interaction response")
             InteractionState(params.model.modelId).complete(body)
@@ -67,13 +67,33 @@ internal class InteractionsAPI(
                 if (trySend(type to data).isFailure) close(IOException("Interaction event delivery failed"))
             }
             override fun onFailure(source: EventSource, error: Throwable?, response: Response?) {
+                val failure = if (response != null && !response.isSuccessful) httpFailure(response)
+                    else error ?: IOException("Gemini Interactions stream failed")
                 response?.close()
-                close(error ?: IOException("Gemini Interactions HTTP ${response?.code ?: "stream failure"}"))
+                close(failure)
             }
             override fun onClosed(source: EventSource) { close() }
         })
         awaitClose { source.cancel() }
     }.buffer(Channel.UNLIMITED)
+
+    private fun httpFailure(response: Response): IOException {
+        val raw = runCatching { response.peekBody(16_384).string() }.getOrDefault("")
+        val body = runCatching { json.parseToJsonElement(raw) as? JsonObject }.getOrNull()
+        val error = body?.get("error")
+        val detail = when (error) {
+            is JsonObject -> (error["message"] as? JsonPrimitive)?.contentOrNull
+            is JsonPrimitive -> error.contentOrNull
+            else -> (body?.get("message") as? JsonPrimitive)?.contentOrNull
+        } ?: raw.takeIf { body == null && !it.trimStart().startsWith("<") }.orEmpty()
+        val key = response.request.header("x-goog-api-key").orEmpty()
+        val safe = redactInteractionError(detail, key)
+        val route = response.request.url.let { it.host + it.encodedPath }
+        val hint = if (response.code in setOf(404, 405, 501))
+            "；请确认供应商支持 /interactions，或关闭 Gemini Interactions API 后使用普通接口" else ""
+        return IOException("Gemini Interactions HTTP ${response.code} ($route)" +
+            safe.takeIf { it.isNotBlank() }?.let { ": $it" }.orEmpty() + hint)
+    }
 
     private fun request(provider: ProviderSetting.Google, params: TextGenerationParams, body: JsonObject): Request {
         require(!provider.vertexAI) { "Interactions mode is for the Gemini API; disable it for Vertex AI" }
@@ -178,7 +198,7 @@ internal class InteractionsAPI(
                         functions.forEach { tool -> add(buildJsonObject {
                             put("type", "function_result"); put("call_id", tool.toolCallId); put("name", tool.toolName)
                             val outputs = tool.output.filterNot {
-                                it is UIMessagePart.Audio || it is UIMessagePart.VoiceMessage
+                                it is UIMessagePart.Audio || it is UIMessagePart.VoiceMessage || it is UIMessagePart.Video
                             }.mapNotNull(::content)
                             put("result", JsonArray(outputs.ifEmpty { listOf(buildJsonObject {
                                 put("type", "text"); put("text", " ")
@@ -207,6 +227,9 @@ internal class InteractionsAPI(
                             }
                         } }
                         if (audios.isNotEmpty()) add(step("user_input", audios))
+                        val videos = functions.flatMap { tool -> tool.output.filterIsInstance<UIMessagePart.Video>() }
+                            .mapNotNull(::content)
+                        if (videos.isNotEmpty()) add(step("user_input", videos))
                     }
                 } }
                 flush()
@@ -234,7 +257,9 @@ internal class InteractionsAPI(
             if (part.url.startsWith("https://") || part.url.startsWith("http://")) put("uri", part.url)
             else { put("mime_type", "video/mp4"); put("data", part.encodeBase64(false).getOrThrow()) }
         }
-        is UIMessagePart.Document -> error("Convert document attachments to text before using Interactions")
+        // DocumentAsPromptTransformer retains the attachment descriptor after prepending its text.
+        // Like generateContent, skip that UI-only descriptor instead of failing the whole history.
+        is UIMessagePart.Document -> null
         else -> null
     }
 

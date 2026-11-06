@@ -14,6 +14,8 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
@@ -29,15 +31,18 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.isImeVisible
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
@@ -69,6 +74,7 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.focus.onFocusChanged
@@ -76,6 +82,8 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalResources
@@ -87,6 +95,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.constrainHeight
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.FileProvider
 import androidx.core.net.toUri
@@ -121,12 +130,12 @@ import me.rerere.rikkahub.data.ai.mcp.McpManager
 import me.rerere.rikkahub.data.datastore.DisplayMaterialMode
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.getCurrentAssistant
-import me.rerere.rikkahub.data.datastore.getChatModelForAssistant
 import me.rerere.rikkahub.data.datastore.getAssistantById
 import me.rerere.rikkahub.data.datastore.getQuickMessagesOfAssistant
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.Conversation
+import me.rerere.rikkahub.data.model.getChatModelOf
 import me.rerere.rikkahub.data.model.QuickMessage
 import me.rerere.rikkahub.service.VoiceCallService
 import me.rerere.rikkahub.ui.components.ui.toComposeColor
@@ -205,7 +214,8 @@ fun ChatInput(
         if (chatInputShouldStop(loading, state.isEmpty())) onCancelClick() else onLongSendClick()
     }
 
-    var expand by remember { mutableStateOf(ExpandState.Collapsed) }
+    val panel = remember { ChatPanelState() }
+    val expand = if (panel.expanded) ExpandState.Files else ExpandState.Collapsed
     var giftKind by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf<String?>(null) }
     giftKind?.let { kind ->
         me.rerere.rikkahub.ui.components.message.SendChatGiftDialog(conversation.id, assistant, kind) { giftKind = null }
@@ -214,17 +224,9 @@ fun ChatInput(
     var showInjectionSheet by remember { mutableStateOf(false) }
     var showCompressDialog by remember { mutableStateOf(false) }
     fun dismissExpand() {
-        expand = ExpandState.Collapsed
+        panel.close()
         showInjectionSheet = false
         showCompressDialog = false
-    }
-
-    fun expandToggle(type: ExpandState) {
-        if (expand == type) {
-            dismissExpand()
-        } else {
-            expand = type
-        }
     }
 
     val context = LocalContext.current
@@ -236,7 +238,7 @@ fun ChatInput(
     var voiceMessageMode by remember(conversation.id) { mutableStateOf(false) }
     var recordingUsesAudio by remember(conversation.id) { mutableStateOf(false) }
     var previousRecordingPath by remember(conversation.id) { mutableStateOf<String?>(null) }
-    val selectedModel = settings.getChatModelForAssistant(conversation.assistantId)
+    val selectedModel = settings.getChatModelOf(conversation)
     val wantsDirectAudio = selectedModel?.supportsDirectAudio(selectedModel.findProvider(settings.providers)) == true
     val asr = if (if (voiceMessageMode) recordingUsesAudio else wantsDirectAudio) directRecorder else transcription
     val asrState by asr.state.collectAsState()
@@ -534,12 +536,13 @@ fun ChatInput(
             }
         }
 
-    // Collapse when ime is visible
-    val imeVisile = WindowInsets.isImeVisible
-    LaunchedEffect(imeVisile, showInjectionSheet, showCompressDialog) {
-        if (imeVisile && !showInjectionSheet && !showCompressDialog) {
-            dismissExpand()
-        }
+    val density = LocalDensity.current
+    val ime = WindowInsets.ime
+    val navigationBars = WindowInsets.navigationBars
+    val imeHeight = (ime.getBottom(density) - navigationBars.getBottom(density)).coerceAtLeast(0)
+    val imeVisible = WindowInsets.isImeVisible || imeHeight > 0
+    LaunchedEffect(imeVisible, imeHeight, panel.waitingForKeyboard, showInjectionSheet, showCompressDialog) {
+        panel.keyboardChanged(imeVisible, showInjectionSheet || showCompressDialog, imeHeight)
     }
 
     // Coil resolves the displayed bounds before decoding and shares its image cache.
@@ -624,13 +627,7 @@ fun ChatInput(
     Surface(
         color = Color.Transparent,
     ) {
-        Column(
-            modifier = modifier
-                .imePadding()
-                .navigationBarsPadding()
-                .padding(horizontal = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
+        ChatComposerLayout(modifier, ime, navigationBars) {
             // Input area with optional background image
             Surface(
                 modifier = Modifier
@@ -720,7 +717,7 @@ fun ChatInput(
                                 // Search
                                 val enableSearchMsg = stringResource(R.string.web_search_enabled)
                                 val disableSearchMsg = stringResource(R.string.web_search_disabled)
-                                val chatModel = settings.getChatModelForAssistant(conversation.assistantId)
+                                val chatModel = settings.getChatModelOf(conversation)
                                 SearchPickerButton(
                                     enableSearch = enableSearch,
                                     settings = settings,
@@ -743,7 +740,7 @@ fun ChatInput(
                                 )
 
                                 // Reasoning
-                                val model = settings.getChatModelForAssistant(conversation.assistantId)
+                                val model = settings.getChatModelOf(conversation)
                                 if (model?.abilities?.contains(ModelAbility.REASONING) == true) {
                                     ReasoningButton(
                                         reasoningLevel = assistant.reasoningLevel,
@@ -795,10 +792,14 @@ fun ChatInput(
 
                             ActionIconButton(
                                     onClick = {
-                                        expandToggle(ExpandState.Files)
+                                        panel.toggle(imeVisible)
+                                        if (panel.waitingForKeyboard || panel.expanded) {
+                                            focusManager.clearFocus(force = true)
+                                            keyboardController?.hide()
+                                        }
                                     }) {
                                     Icon(
-                                        imageVector = if (expand == ExpandState.Files) HugeIcons.Cancel01 else HugeIcons.Add01,
+                                        imageVector = if (panel.expanded || panel.waitingForKeyboard) HugeIcons.Cancel01 else HugeIcons.Add01,
                                         contentDescription = stringResource(R.string.more_options)
                                     )
                             }
@@ -822,13 +823,9 @@ fun ChatInput(
             }
 
             // Expanded content
-            Box(
-                modifier = Modifier
-                    .animateContentSize()
-                    .fillMaxWidth()
-            ) {
+            ChatPanelDock {
                 BackHandler(
-                    enabled = expand != ExpandState.Collapsed,
+                    enabled = panel.expanded || panel.waitingForKeyboard,
                 ) {
                     dismissExpand()
                 }
@@ -852,7 +849,7 @@ fun ChatInput(
                             popupContainerColor(hazeTintColor)
                         },
                     ) {
-                        FilesPicker(
+                        ChatAttachmentPanel { FilesPicker(
                             conversation = conversation,
                             state = state,
                             assistant = assistant,
@@ -870,12 +867,46 @@ fun ChatInput(
                             onPickAudio = { audioPickerLauncher.launch("audio/*") },
                             onPickFile = { filePickerLauncher.launch(arrayOf("*/*")) },
                             onSendGift = { kind -> dismissExpand(); giftKind = kind },
-                        )
+                        ) }
                     }
                 }
             }
         }
     }
+}
+
+/** Keyboard and menu share the bottom space while both animate. Never add their heights. */
+@Composable
+internal fun ChatComposerLayout(modifier: Modifier = Modifier, ime: WindowInsets, navigationBars: WindowInsets,
+    content: @Composable () -> Unit) {
+    Layout(content = content, modifier = modifier.windowInsetsPadding(navigationBars)
+        .consumeWindowInsets(ime).padding(horizontal = 8.dp)) { measurables, constraints ->
+        val gap = 8.dp.roundToPx()
+        val input = measurables[0].measure(constraints.copy(minHeight = 0))
+        // Measure the original menu at its natural height, even with the keyboard still open.
+        val dock = measurables[1].measure(constraints.copy(minHeight = 0,
+            maxHeight = (constraints.maxHeight - input.height - gap).coerceAtLeast(0)))
+        val keyboard = (ime.getBottom(this) - navigationBars.getBottom(this)).coerceAtLeast(0)
+        val bottomSpace = maxOf(keyboard, dock.height)
+        layout(constraints.maxWidth, constraints.constrainHeight(input.height + gap + bottomSpace)) {
+            input.placeRelative(0, 0)
+            dock.placeRelative(0, input.height + gap + bottomSpace - dock.height)
+        }
+    }
+}
+
+/** The same non-bouncing animation in either direction, concurrent with Android's IME animation. */
+@Composable
+internal fun ChatPanelDock(content: @Composable () -> Unit) {
+    Box(Modifier.fillMaxWidth().testTag("chat-panel-dock")) {
+        Box(Modifier.animateContentSize(tween(220, easing = FastOutSlowInEasing)).fillMaxWidth()) { content() }
+    }
+}
+
+/** Natural-height menu: never shrink or scroll its original rows to match one keyboard. */
+@Composable
+internal fun ChatAttachmentPanel(content: @Composable () -> Unit) {
+    Box(Modifier.fillMaxWidth().testTag("chat-attachment-panel")) { content() }
 }
 
 /** Keep the entry in place when changing models; explain unavailable input on tap. */

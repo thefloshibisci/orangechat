@@ -3,6 +3,13 @@ package me.rerere.rikkahub.ui.components.ai
 import me.rerere.ai.provider.AudioInputMode
 import me.rerere.ai.provider.Model
 import me.rerere.ai.provider.ProviderSetting
+import me.rerere.rikkahub.data.datastore.Settings
+import me.rerere.rikkahub.data.datastore.findProvider
+import me.rerere.rikkahub.data.datastore.getChatModelForAssistant
+import me.rerere.rikkahub.data.model.Assistant
+import me.rerere.rikkahub.data.model.Conversation
+import me.rerere.rikkahub.data.model.ConversationConfig
+import me.rerere.rikkahub.data.model.getChatModelOf
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -10,6 +17,19 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class MediaInputAvailabilityTest {
+    @Test fun conversationModelEnablesMediaWhenAssistantDefaultWasRemoved() {
+        val assistant = Assistant(chatModelId = Model().id)
+        val model = Model(modelId = "gemini-3.8-flash")
+        val settings = Settings(assistantId = assistant.id, assistants = listOf(assistant),
+            providers = listOf(ProviderSetting.Google(models = listOf(model))))
+        val conversation = Conversation(assistantId = assistant.id, messageNodes = emptyList(), config = ConversationConfig(chatModelId = model.id))
+        assertNull(settings.getChatModelForAssistant(assistant.id))
+        val resolved = settings.getChatModelOf(conversation)
+        assertEquals(model.id, resolved?.id)
+        assertNull(audioInputUnavailableReason(resolved, resolved?.findProvider(settings.providers)))
+        assertNull(videoInputUnavailableReason(resolved, resolved?.findProvider(settings.providers)))
+    }
+
     private val gemini = Model(modelId = "gemini-3.8-flash", displayName = "gemini")
 
     @Test fun googleProviderEnablesVideoAndGeminiAudio() {

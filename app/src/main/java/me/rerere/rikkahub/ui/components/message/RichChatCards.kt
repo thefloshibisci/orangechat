@@ -21,13 +21,17 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.disabled
 import kotlinx.coroutines.launch
 import me.rerere.rikkahub.Screen
 import me.rerere.rikkahub.data.interaction.*
@@ -94,6 +98,17 @@ fun RichChatCard(card: ChatInteraction, conversationId: Uuid?, readOnly: Boolean
         "ended" -> "已结束"
         else -> "等待接听"
     }
+    fun openCard() {
+        if (card.kind == "call" && interactive) {
+            when (card.callDestination(me.rerere.rikkahub.service.VoiceCallService.activeConversationId.value,
+                me.rerere.rikkahub.service.VoiceCallService.startedAtMillis.value)) {
+                CallCardDestination.Incoming -> { nav?.navigate(Screen.IncomingCall(card.conversationId, card.id)); return }
+                CallCardDestination.Active -> { nav?.navigate(Screen.VoiceCall(card.conversationId)); return }
+                CallCardDestination.History -> Unit
+            }
+        }
+        expanded = true
+    }
     fun respond(action: String) {
         if (!interactive || busy) return
         if (card.kind == "call" && action == "accept" && !permission.allRequiredPermissionsGranted) {
@@ -121,13 +136,13 @@ fun RichChatCard(card: ChatInteraction, conversationId: Uuid?, readOnly: Boolean
                 Modifier.widthIn(max = 280.dp).fillMaxWidth().clip(RoundedCornerShape(20.dp))
                     .background(Brush.linearGradient(listOf(colors.top, colors.bottom)))
                     .border(1.5.dp, Color.White.copy(alpha = .88f), RoundedCornerShape(20.dp))
-                    .clickable { expanded = true }.padding(horizontal = 16.dp, vertical = 11.dp),
+                    .clickable { openCard() }.padding(horizontal = 16.dp, vertical = 11.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 Box(Modifier.size(36.dp).background(Color.White.copy(alpha = .75f), RoundedCornerShape(12.dp))
                     .border(1.dp, Color.White, RoundedCornerShape(12.dp)), contentAlignment = Alignment.Center) {
-                    Image(painterResource(illustration), null, Modifier.size(24.dp), colorFilter = ColorFilter.tint(colors.accent))
+                    Image(painterResource(illustration), null, Modifier.size(24.dp), colorFilter = interactionIconColorFilter(illustration, colors.accent))
                 }
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                     Text(when (card.status) {
@@ -144,34 +159,15 @@ fun RichChatCard(card: ChatInteraction, conversationId: Uuid?, readOnly: Boolean
         } else GiftChatBubble(card, state, senderName) { expanded = true }
     }
 
-    if (expanded) InteractionDetailDialog(onDismiss = { if (!busy) expanded = false }, enabled = !busy) { close ->
-        if (card.kind != "call") {
-            Column(Modifier.verticalScroll(rememberScrollState()), horizontalAlignment = Alignment.CenterHorizontally) {
-                GiftDetailCard(card, state, interactive, busy, error, senderName, ::respond)
-                Text(if (card.walletLinked) "关联小钱包账本" else "虚拟金额 · 装个大的", Modifier.padding(top = 10.dp), fontSize = 11.sp)
-                TextButton(onClick = close, enabled = !busy) { Text("关闭") }
-            }
-        } else         InteractionGlass(card.theme, Modifier.fillMaxWidth()) {
-            Image(painterResource(illustration), null, Modifier.size(56.dp))
-            Text(title, fontSize = 20.sp, fontWeight = FontWeight.Bold)
-            Text(state)
-            if (card.kind != "call" && !(card.kind == "red_packet" && card.status == "pending" && recipient)) Text("¥ ${formatChatAmount(card.amountCents)}", fontSize = 32.sp, fontWeight = FontWeight.Bold)
-            if (card.note.isNotBlank()) Text(card.note)
-            if (card.kind != "call") Text(if (card.walletLinked) "关联小钱包账本" else "虚拟金额，不影响小钱包", style = MaterialTheme.typography.bodySmall)
-            (error ?: card.error)?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-            if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
-            if (interactive && card.walletLinked && card.status in setOf("syncing", "unconfirmed", "failed")) {
-                Button(onClick = { respond("sync") }, enabled = !busy) { Text("核实这笔记录") }
-            }
-            if (interactive && recipient && card.status == "pending") {
-                Button(onClick = { respond("accept") }, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
-                    Text(when (card.kind) { "call" -> "接听"; "red_packet" -> "拆开红包"; else -> "确认收款" })
-                }
-                TextButton(onClick = { respond(if (card.kind == "call") "decline" else "return") }, enabled = !busy) {
-                    Text(if (card.kind == "call") "拒绝" else "退还给对方")
-                }
-            }
-            TextButton(onClick = close, enabled = !busy) { Text("关闭") }
+    if (expanded && card.kind == "call") {
+        Dialog(onDismissRequest = { expanded = false }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+            me.rerere.rikkahub.ui.pages.voice.CallHistoryRoute(card, conversationId, interactive) { expanded = false }
+        }
+    } else if (expanded) InteractionDetailDialog(onDismiss = { if (!busy) expanded = false }, enabled = !busy) { close ->
+        Column(Modifier.verticalScroll(rememberScrollState()), horizontalAlignment = Alignment.CenterHorizontally) {
+            GiftDetailCard(card, state, interactive, busy, error, senderName, ::respond)
+            Text(if (card.walletLinked) "关联小钱包账本" else "虚拟金额 · 不关联钱包", Modifier.padding(top = 10.dp), fontSize = 11.sp)
+            GiftDetailCloseButton(card.theme, enabled = !busy, onClick = close)
         }
     }
 }
@@ -182,48 +178,113 @@ fun SendChatGiftDialog(conversationId: Uuid, assistant: Assistant, kind: String,
     val scope = rememberCoroutineScope()
     var amount by rememberSaveable { mutableStateOf("") }
     var note by rememberSaveable { mutableStateOf("") }
+    var virtualAmount by rememberSaveable { mutableStateOf(assistant.pretendRich) }
     val requestId = rememberSaveable { Uuid.random().toString() }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     Dialog(onDismissRequest = { if (!busy) onDismiss() }) {
         InteractionGlass(assistant.chatInteractionTheme, Modifier.fillMaxWidth().verticalScroll(rememberScrollState())) {
-            Text(if (kind == "red_packet") "发红包" else "转账", fontSize = 22.sp, fontWeight = FontWeight.Bold)
-            OutlinedTextField(amount, { amount = it }, label = { Text("金额（元）") }, singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal))
-            if (kind == "red_packet") Text("单个红包最高 200 元", style = MaterialTheme.typography.bodySmall)
-            OutlinedTextField(note, { note = it.take(200) }, label = { Text("想说的话") }, maxLines = 3)
-            Text(if (assistant.pretendRich) "装个大的已开启：使用虚拟金额" else "关联小钱包：对方领取后记入收入", style = MaterialTheme.typography.bodySmall)
-            error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-            if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
-            Button(enabled = !busy, onClick = {
+            GiftComposerContent(assistant.chatInteractionTheme, kind, virtualAmount,
+                amount, { amount = it }, note, { note = it.take(200) }, busy, error,
+                onModeChange = { virtualAmount = it }) {
                 scope.launch {
                     busy = true
                     try {
                         parseChatGiftAmount(kind, amount)
-                        val card = service.createChatInteraction(conversationId, assistant.id, "user", kind, amount, note, requestId)
-                        if (card.status == "pending") service.answerChatGift(conversationId)
+                        val card = service.createChatInteraction(conversationId, assistant.id, "user", kind, amount, note, requestId,
+                            walletLinked = !virtualAmount)
+                        if (card.status == "pending") service.answerChatGift(conversationId, card.id)
                         onDismiss()
                     } catch (e: Exception) { error = e.message } finally { busy = false }
                 }
-            }) { Text("发送") }
-            TextButton(onClick = onDismiss, enabled = !busy) { Text("取消") }
+            }
         }
     }
 }
 
 @Composable
-private fun InteractionDetailDialog(onDismiss: () -> Unit, enabled: Boolean, content: @Composable (() -> Unit) -> Unit) {
+internal fun ColumnScope.GiftComposerContent(theme: String, kind: String, pretendRich: Boolean,
+    amount: String, onAmount: (String) -> Unit, note: String, onNote: (String) -> Unit,
+    busy: Boolean, error: String?, onModeChange: ((Boolean) -> Unit)? = null, onSend: () -> Unit) {
+    val colors = interactionColors(theme)
+    val fieldColors = OutlinedTextFieldDefaults.colors(
+        focusedTextColor = colors.ink, unfocusedTextColor = colors.ink,
+        cursorColor = colors.ink, focusedBorderColor = colors.accent,
+        unfocusedBorderColor = colors.accent.copy(alpha = .65f),
+        focusedLabelColor = colors.ink, unfocusedLabelColor = colors.ink.copy(alpha = .75f),
+        focusedContainerColor = Color.White.copy(alpha = .28f), unfocusedContainerColor = Color.White.copy(alpha = .2f))
+    Text(if (kind == "red_packet") "发红包" else "转账", fontSize = 22.sp, fontWeight = FontWeight.Bold)
+    OutlinedTextField(amount, onAmount, modifier = Modifier.fillMaxWidth(), enabled = !busy,
+        label = { Text("金额（元）") }, singleLine = true, colors = fieldColors, shape = RoundedCornerShape(16.dp),
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal))
+    if (kind == "red_packet") Text("单个红包最高 200 元", style = MaterialTheme.typography.bodySmall)
+    OutlinedTextField(note, onNote, modifier = Modifier.fillMaxWidth(), enabled = !busy,
+        label = { Text("想说的话") }, maxLines = 3, colors = fieldColors, shape = RoundedCornerShape(16.dp))
+    onModeChange?.let { change ->
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text("使用虚拟金额", Modifier.weight(1f), color = colors.ink)
+            Switch(checked = pretendRich, onCheckedChange = change, enabled = !busy,
+                modifier = Modifier.testTag("gift-virtual-mode"), colors = SwitchDefaults.colors(
+                    checkedThumbColor = Color.White, checkedTrackColor = colors.accent,
+                    uncheckedThumbColor = colors.ink, uncheckedTrackColor = colors.top))
+        }
+    }
+    Text(if (pretendRich) "本次为虚拟金额，不关联钱包、不记账" else "本次关联小钱包：对方领取后记入收入", style = MaterialTheme.typography.bodySmall)
+    error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+    if (busy) LinearProgressIndicator(Modifier.fillMaxWidth(), color = colors.accent)
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+        ReferenceGlass(theme, Modifier.width(96.dp).height(44.dp).testTag("gift-send").semantics {
+            role = androidx.compose.ui.semantics.Role.Button
+            if (busy) disabled()
+        }, radius = 22.dp, onClick = if (busy) null else onSend) {
+            Text(if (busy) "发送中" else "发送", Modifier.align(Alignment.Center), color = colors.ink,
+                fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+        }
+    }
+}
+
+@Composable
+internal fun GiftDetailCloseButton(theme: String, enabled: Boolean, onClick: () -> Unit) {
+    ReferenceGlass(theme, Modifier.padding(top = 10.dp, bottom = 8.dp).width(124.dp).height(44.dp)
+        .testTag("gift-detail-close").semantics {
+            role = androidx.compose.ui.semantics.Role.Button
+            if (!enabled) disabled()
+        }.graphicsLayer { alpha = if (enabled) 1f else .55f }, radius = 22.dp,
+        onClick = if (enabled) onClick else null) {
+        Text("关闭", Modifier.align(Alignment.Center), fontSize = 14.sp, fontWeight = FontWeight.SemiBold,
+            color = interactionColors(theme).ink)
+    }
+}
+
+@Composable
+internal fun InteractionDetailDialog(onDismiss: () -> Unit, enabled: Boolean, content: @Composable (() -> Unit) -> Unit) {
+    val backdrop = androidx.compose.ui.platform.LocalView.current.rootView
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    DisposableEffect(backdrop) {
+        // The activity and dialog have separate windows: blur the conversation, never the card.
+        if (android.os.Build.VERSION.SDK_INT >= 31) {
+            val radius = with(density) { 16.dp.toPx() }
+            backdrop.setRenderEffect(android.graphics.RenderEffect.createBlurEffect(radius, radius, android.graphics.Shader.TileMode.CLAMP))
+        }
+        onDispose { if (android.os.Build.VERSION.SDK_INT >= 31) backdrop.setRenderEffect(null) }
+    }
     var visible by remember { mutableStateOf(false) }
+    var closing by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
-    val scale by animateFloatAsState(if (visible) 1f else .90f,
-        animationSpec = tween(350, easing = CubicBezierEasing(.34f, 1.56f, .64f, 1f)), label = "giftDetailScale")
-    val alpha by animateFloatAsState(if (visible) 1f else 0f, tween(180), label = "giftDetailAlpha")
+    val scale by animateFloatAsState(if (visible) 1f else .82f,
+        animationSpec = if (closing) tween(120, easing = FastOutLinearInEasing)
+            else tween(420, easing = CubicBezierEasing(.34f, 1.56f, .64f, 1f)), label = "giftDetailScale")
+    val alpha by animateFloatAsState(if (visible) 1f else 0f, tween(if (closing) 120 else 420), label = "giftDetailAlpha")
     LaunchedEffect(Unit) { visible = true }
     val close: () -> Unit = {
-        if (enabled) scope.launch { visible = false; kotlinx.coroutines.delay(350); onDismiss() }
+        if (enabled && !closing) {
+            closing = true
+            scope.launch { visible = false; kotlinx.coroutines.delay(120); onDismiss() }
+        }
         Unit
     }
     Dialog(onDismissRequest = close) {
-        Box(Modifier.graphicsLayer { scaleX = scale; scaleY = scale; this.alpha = alpha }) { content(close) }
+        Box(Modifier.testTag("gift-detail-dialog").semantics { this[GiftRevealProgress] = alpha }
+            .graphicsLayer { scaleX = scale; scaleY = scale; this.alpha = alpha; translationY = (1f - alpha) * 10.dp.toPx() }) { content(close) }
     }
 }

@@ -5,6 +5,8 @@
  */
 
 package me.rerere.rikkahub.data.ai
+
+import me.rerere.rikkahub.data.interaction.withInteractionRequestScope
  
 import android.content.Context
 import android.util.Log
@@ -241,7 +243,7 @@ class GenerationHandler(
             executeTool = { call, definition, _ ->
                 executeGenerationToolBatch(
                     approval = GenerationToolApproval(listOf(call)),
-                    definitions = listOfNotNull(definition),
+                    definitions = listOfNotNull(definition?.withInteractionRequestScope(messages.last().id)),
                     json = json,
                     onCheckpoint = { checkpointedTool ->
                         val checkpointed = reactionTurn.markPending(messages.replaceLastGenerationTools(listOf(checkpointedTool)))

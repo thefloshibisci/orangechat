@@ -1,0 +1,42 @@
+{
+  "source_directory": "User-supplied bunnies-and-payment-icons-v5; original SVGs archived alongside this manifest",
+  "note": "Original smile and heart SVGs retained intact. App heart uses bunny-heart-adjusted.svg: translated down 4 SVG units with a rounded closed lower face. Returned is smile with only eyes changed to ><. White faces retained; outline, ears and cheeks use the existing theme palette.",
+  "vectors": [
+    {
+      "file": "transfer_bunny_smile_ice.xml",
+      "sha256": "6d36bd10c7296c423f34e81ed3919ef89f0a83f16086edc2c4f6b9c268a2b53b"
+    },
+    {
+      "file": "transfer_bunny_smile_sakura.xml",
+      "sha256": "d225194008258183f33dc4bc1f25508a328819fbe0b748ee06a5a851810dc1f2"
+    },
+    {
+      "file": "transfer_bunny_smile_lavender.xml",
+      "sha256": "cb304a8fbaf83e8f2f167f1ceba0499d32112aba627211e813c95644302de959"
+    },
+    {
+      "file": "transfer_bunny_heart_ice.xml",
+      "sha256": "63f3167b98a982a7a3c468b29f9201bc522af2b5de9c10afaeec7b01196467f6"
+    },
+    {
+      "file": "transfer_bunny_heart_sakura.xml",
+      "sha256": "31723ec4ea14d1aa00bf1ded10f8c9fb18346b82a0e8ffb1a63847f5b2b82168"
+    },
+    {
+      "file": "transfer_bunny_heart_lavender.xml",
+      "sha256": "cf46874b59e5e85e91e3cee4f9e574d3cbfc7739e2ef88680fccb7284fcac2ee"
+    },
+    {
+      "file": "transfer_bunny_returned_ice.xml",
+      "sha256": "4652c2e893067f623f804038d0410957fc9bfb3f77dd20299d8e51aacab530ff"
+    },
+    {
+      "file": "transfer_bunny_returned_sakura.xml",
+      "sha256": "f098473ceae4068373eda2ec26c1d9e404f9da7216602ea70e70078abb0e4f72"
+    },
+    {
+      "file": "transfer_bunny_returned_lavender.xml",
+      "sha256": "76d0b15674dbb5ff298ce995f660905a18abbd9921e4d022f608a0cb7a40e98e"
+    }
+  ]
+}

@@ -12,7 +12,7 @@ import kotlin.uuid.Uuid
 
 suspend fun ChatService.createChatInteraction(
     conversationId: Uuid, assistantId: Uuid, actor: String, kind: String,
-    amount: String = "", note: String = "", requestId: String,
+    amount: String = "", note: String = "", requestId: String, walletLinked: Boolean? = null,
 ): ChatInteraction {
     require(actor in setOf("user", "assistant"))
     require(kind in setOf("red_packet", "transfer", "call"))
@@ -30,14 +30,18 @@ suspend fun ChatService.createChatInteraction(
         val existing = conversation.currentMessages.flatMap { it.annotations }.filterIsInstance<ChatInteraction>()
         existing.firstOrNull { it.id == id }?.let {
             require(it.actor == actor && it.kind == kind && it.amountCents == cents && it.note == note) { "请勿重复使用不同内容的单号" }
+            require(walletLinked == null || it.walletLinked == walletLinked) { "该单金额模式已确定，请勿以同一单号更改" }
             return@withLock it
         }
         if (kind == "call") {
             check(actor != "assistant" || assistant.allowIncomingVoiceCalls) { "AI 来电已关闭" }
             check(!VoiceCallService.isRunning()) { "当前有通话进行中" }
-            existing.firstOrNull { it.kind == "call" && it.status == "pending" }?.let { return@withLock it }
+            existing.firstOrNull { it.kind == "call" && it.status == "pending" }?.let {
+                if (it.actor == "assistant") pendingIncomingCall.value = it
+                return@withLock it
+            }
         }
-        val linked = kind != "call" && !assistant.pretendRich
+        val linked = kind != "call" && resolvePaymentWalletMode(actor, assistant.pretendRich, walletLinked)
         var card = ChatInteraction(id, conversationId.toString(), assistantId.toString(), actor, kind,
             status = if (linked) "syncing" else "pending", amountCents = cents, note = note,
             theme = assistant.chatInteractionTheme, walletLinked = linked,
@@ -45,6 +49,7 @@ suspend fun ChatService.createChatInteraction(
         val message = UIMessage(role = if (actor == "user") MessageRole.USER else MessageRole.ASSISTANT,
             parts = listOf(UIMessagePart.Text(card.readableText())), annotations = listOf(card))
         saveConversationLocked(conversationId, conversation.copy(messageNodes = conversation.messageNodes + message.toMessageNode()))
+        if (kind == "call" && actor == "assistant") pendingIncomingCall.value = card
         if (linked) {
             card = settleChatWallet(card, "create")
             replaceChatInteractionLocked(conversationId, card)
@@ -106,16 +111,22 @@ suspend fun ChatService.respondChatInteraction(conversationId: Uuid, id: String,
                 connectedAtMillis = null)
         }
         replaceChatInteractionLocked(conversationId, card)
+        if (card.kind == "call" && pendingIncomingCall.value?.id == card.id && card.status != "pending") pendingIncomingCall.value = null
         card
     }
 }
 
-internal suspend fun ChatService.endChatInteractionCalls(conversationId: Uuid) {
+internal suspend fun ChatService.endChatInteractionCalls(conversationId: Uuid, startedAt: Long? = null,
+    endedAt: Long = System.currentTimeMillis(), transcript: List<me.rerere.ai.ui.CallTranscriptEntry>? = null,
+    connectingIds: Set<String> = emptySet()) {
     val session = getOrCreateSession(conversationId)
     session.saveMutex.withLock {
         val cards = session.state.value.currentMessages.flatMap { it.annotations }.filterIsInstance<ChatInteraction>()
             .filter { it.kind == "call" && it.status in setOf("accepted", "connecting") && it.conversationId == conversationId.toString() }
-        cards.forEach { replaceChatInteractionLocked(conversationId, it.copy(status = "ended", endedAtMillis = System.currentTimeMillis())) }
+        cards.filter { it.belongsToEndingCall(startedAt, connectingIds) }.forEach {
+            replaceChatInteractionLocked(conversationId, it.copy(status = "ended", endedAtMillis = endedAt,
+                callTranscript = transcript ?: it.callTranscript))
+        }
     }
 }
 

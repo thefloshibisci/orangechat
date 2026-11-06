@@ -39,6 +39,16 @@ class MessageQueuePanelTest {
     private var resumes = 0
     private var visible by mutableStateOf(true)
 
+    @Test fun giftReplyQueueShowsItsPurposeAndCannotEditTheSavedCard() {
+        val gift = entry.copy(parts = emptyList(), existingMessageId = Uuid.random())
+        state = MessageQueueState(messages = listOf(gift))
+        show()
+        compose.onNodeWithText("1. 等待回复红包或转账").assertIsDisplayed()
+        compose.onNodeWithTag("queue_edit_${gift.id}").assertIsNotEnabled()
+        compose.onNodeWithTag("queue_remove_${gift.id}").performClick()
+        compose.runOnIdle { assertEquals(listOf(gift.id), removed) }
+    }
+
     @Test fun onlyNonemptyQueueShowsCountAndLifetimeNote() {
         state = MessageQueueState()
         show()

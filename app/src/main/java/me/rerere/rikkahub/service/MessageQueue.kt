@@ -18,6 +18,7 @@ data class QueuedMessage(
     val isEditing: Boolean = false,
     val transientSystemPrompt: String? = null,
     val enableTools: Boolean = true,
+    val existingMessageId: Uuid? = null,
     val completion: CompletableDeferred<Unit> = CompletableDeferred(),
     val reply: CompletableDeferred<String?> = CompletableDeferred(),
 )
@@ -49,11 +50,14 @@ class MessageQueue internal constructor(
         interaction: UIMessageAnnotation.AvatarInteraction? = null,
         transientSystemPrompt: String? = null,
         enableTools: Boolean = true,
+        existingMessageId: Uuid? = null,
     ): QueuedMessage? {
-        if (parts.isEmptyInputMessage()) return null
+        if (parts.isEmptyInputMessage() && existingMessageId == null) return null
+        if (existingMessageId != null && (state.value.messages + inFlight.values).any { it.existingMessageId == existingMessageId }) return null
         val message = QueuedMessage(
             parts = parts.toList(), answer = answer, interaction = interaction,
             transientSystemPrompt = transientSystemPrompt, enableTools = enableTools,
+            existingMessageId = existingMessageId,
         )
         // Resolve a blocked caller before publishing the entry: no observer can attach under this monitor.
         // Content and completion remain available for an explicit user resume.
@@ -101,7 +105,7 @@ class MessageQueue internal constructor(
     @Synchronized
     fun beginEdit(id: Uuid): QueuedMessage? {
         val current = state.value
-        val message = current.messages.firstOrNull { it.id == id && !it.isEditing } ?: return null
+        val message = current.messages.firstOrNull { it.id == id && !it.isEditing && it.existingMessageId == null } ?: return null
         publish(current.copy(messages = current.messages.map {
             if (it.id == id) it.copy(isEditing = true) else it
         }))
