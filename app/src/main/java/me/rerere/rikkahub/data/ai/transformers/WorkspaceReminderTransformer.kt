@@ -9,9 +9,9 @@ package me.rerere.rikkahub.data.ai.transformers
 import me.rerere.ai.core.MessageRole
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
-import me.rerere.rikkahub.data.db.entity.WorkspaceEntity
 import me.rerere.rikkahub.data.repository.WorkspaceRepository
-import me.rerere.workspace.WorkspaceShellStatus
+import me.rerere.rikkahub.data.model.boundWorkspaceIds
+import me.rerere.rikkahub.data.ai.tools.machineLabel
 
 /**
  * Workspace 系统提示注入转换器
@@ -26,12 +26,21 @@ class WorkspaceReminderTransformer(
         ctx: TransformerContext,
         messages: List<UIMessage>,
     ): List<UIMessage> {
-        val workspaceId = ctx.assistant.workspaceId?.toString() ?: return messages
-        val workspace = workspaceRepository.getById(workspaceId) ?: return messages
-        // 与 ChatService.createWorkspaceToolsIfReady 保持一致: 仅在 shell 就绪时注入
-        if (workspace.shellStatus != WorkspaceShellStatus.READY.name) return messages
-
-        val prompt = buildWorkspacePrompt(workspace, ctx.workspaceCwd)
+        val live = workspaceRepository.currentAssistant(ctx.assistant.id.toString()) ?: return messages
+        val workspaces = live.boundWorkspaceIds().mapNotNull { workspaceRepository.getById(it.toString()) }
+        if (workspaces.isEmpty()) return messages
+        val prompt = buildString {
+            appendLine("<workspaces>")
+            appendLine("Each workspace_* call accepts workspace_id. Select the exact ID below; if omitted, the current live default is used. Bindings may change mid-conversation; trust the tool result's machine label. Never retry a remote failure locally.")
+            for (workspace in workspaces) {
+                appendLine("- id=${workspace.id}; machine=${workspace.machineLabel()}; root=${workspace.workspaceDir()}; status=${workspace.shellStatus}; default=${workspace.id == live.workspaceId?.toString()}")
+            }
+            appendLine("Paths outside the selected root are rejected. File paths are absolute; shell cwd must stay within that root. Do not use local /workspace paths on remote hosts. Local skills and uploads are not mounted remotely.")
+            appendLine("workspace_shell runs with that machine's account permissions: cwd checks are not an OS sandbox. Do not place outside-root paths in commands. Use dedicated skill tools to read /skills. File transfer requires explicit source/destination IDs, defaults to no overwrite, and has a hard 20 MiB limit.")
+            appendLine("To offer a generated file download use Markdown [file](workspace://WORKSPACE_ID/absolute/path), e.g. workspace://ID/workspace/report.txt for local, or workspace://ID/srv/chat/report.txt for remote. Percent-encode special path characters. Multi-workspace chats do not guess a target from sandbox: links.")
+            appendLine("Scheduled workflow workspace actions may omit workspace_id to use the authoring assistant's current default when they execute. Explicit targets must still be bound to that assistant. File transfers always require both workspace IDs.")
+            append("</workspaces>")
+        }
 
         // 追加到第一条 system 消息; 若不存在则插入一条
         val systemIndex = messages.indexOfFirst { it.role == MessageRole.SYSTEM }
@@ -43,34 +52,6 @@ class WorkspaceReminderTransformer(
             listOf(UIMessage.system(prompt)) + messages
         }
     }
-}
-
-private fun buildWorkspacePrompt(workspace: WorkspaceEntity, cwd: String? = null): String = buildString {
-    if (workspace.isSsh()) {
-        appendLine("<workspace>")
-        appendLine("You have access to the remote SSH workspace \"${workspace.name}\".")
-        appendLine("Its working directory is `${workspace.workspaceDir()}`. Use absolute paths on that remote host.")
-        appendLine("workspace_read_file, workspace_write_file, workspace_edit_file and workspace_shell run remotely.")
-        appendLine("This is a real remote host, not a local sandbox. Local /skills and /upload are not mounted there.")
-        if (!cwd.isNullOrBlank()) appendLine("Current working directory: `$cwd`.")
-        append("</workspace>")
-        return@buildString
-    }
-    appendLine("<workspace>")
-    appendLine("You have access to a persistent Linux workspace named \"${workspace.name}\", running in a sandboxed proot rootfs environment.")
-    appendLine("- The workspace files area is mounted at `/workspace`. Use it as your working directory; files written there persist across turns of this conversation.")
-    appendLine("- All paths passed to workspace tools must be absolute and inside the Rootfs (for example `/workspace/notes.md`).")
-    appendLine("- Available tools:")
-    appendLine("  - `workspace_read_file`: read file contents.")
-    appendLine("  - `workspace_write_file` / `workspace_edit_file`: create files, or make precise edits to existing files.")
-    appendLine("  - `workspace_shell`: run shell commands (the files area is mounted at /workspace).")
-    appendLine("- Prefer `workspace_shell` for tasks that standard Unix tools handle well, and prefer `workspace_edit_file` for targeted edits over rewriting whole files.")
-    appendLine("- The skills directory is mounted at `/skills`. Each skill is a subdirectory `/skills/<skill-name>/` containing a `SKILL.md` (with `name` and `description` frontmatter) plus any supporting files. Read a skill's `SKILL.md` before using it, and follow its instructions.")
-    appendLine("- Files the user uploaded are mounted at `/upload`. Treat `/upload` as READ-ONLY: read uploaded files from `/upload/<file-name>`, but never modify, overwrite, or delete anything there. If you need to change an uploaded file, copy it into `/workspace` first and edit the copy.")
-    if (!cwd.isNullOrBlank()) {
-        appendLine("- Current working directory: `$cwd`. Use this as the default context for file operations and shell commands.")
-    }
-    append("</workspace>")
 }
 
 private fun UIMessage.appendText(extra: String): UIMessage {

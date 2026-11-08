@@ -150,6 +150,9 @@ object WorkflowJson {
                     "action $idx: workflow_run cannot be used as a workflow action (chaining is out-of-scope in v1)")
             }
             val args = ao["args"] as? JsonObject ?: buildJsonObject { }
+            if (toolName == "workspace_transfer_file" && listOf("source_workspace_id", "destination_workspace_id").any { args[it]?.jsonPrimitive?.contentOrNull.isNullOrBlank() }) {
+                return ParseResult.Err("workspace_target_required", "action $idx: transfer requires both workspace ids")
+            }
             val timeout = ao["timeout_seconds"]?.jsonPrimitive?.intOrNull ?: 60
             if (timeout < WorkflowConstants.MIN_ACTION_TIMEOUT_S
                 || timeout > WorkflowConstants.MAX_ACTION_TIMEOUT_S) {

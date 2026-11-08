@@ -84,7 +84,7 @@ class ToolSurfaceBuilder(
         if (systemToolsOptions.isNotEmpty()) {
             addAll(SystemTools(context, settings).getTools(systemToolsOptions, recentMessages, filesManager))
         }
-        addAll(createWorkspaceTools(assistant.workspaceId?.toString(), workspaceRepository, workspaceCwd))
+        addAll(createWorkspaceTools(assistant.workspaceId?.toString(), workspaceRepository, assistantId = assistant.id.toString()))
         if (assistant.enabledSkills.isNotEmpty()) {
             addAll(createSkillTools(assistant.enabledSkills, skillManager.listSkills(), skillManager))
         }

@@ -18,10 +18,10 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.*
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.ai.provider.supportsDirectAudio
+import me.rerere.ai.provider.Model
+import me.rerere.ai.provider.ProviderSetting
 import me.rerere.asr.transcribeAudioFile
 import me.rerere.rikkahub.data.datastore.SettingsStore
-import me.rerere.rikkahub.data.datastore.findProvider
-import me.rerere.rikkahub.data.datastore.getChatModelForAssistant
 import me.rerere.rikkahub.data.datastore.getSelectedASRProvider
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.files.saveUploadFromBytes
@@ -31,7 +31,6 @@ import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.util.concurrent.TimeUnit
-import kotlin.uuid.Uuid
 
 data class GongduVideoSource(
     val url: String,
@@ -46,7 +45,9 @@ class GongduVideoReader(private val context: Context, private val files: FilesMa
     private val http = OkHttpClient.Builder().connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(20, TimeUnit.SECONDS).callTimeout(60, TimeUnit.SECONDS).followRedirects(false).build()
 
-    suspend fun read(note: GongduNote, assistantId: Uuid, request: GongduVideoRequest = GongduVideoRequest()): List<UIMessagePart> = withContext(Dispatchers.IO) {
+    suspend fun read(note: GongduNote, model: Model, provider: ProviderSetting?,
+        request: GongduVideoRequest = GongduVideoRequest(),
+    ): List<UIMessagePart> = withContext(Dispatchers.IO) {
         val source = source(note.raw)
         val temp = File.createTempFile("gongdu-video-", ".mp4", context.cacheDir)
         val retriever = MediaMetadataRetriever()
@@ -157,8 +158,7 @@ class GongduVideoReader(private val context: Context, private val files: FilesMa
             try {
                 if (GongduAudioReader.extract(temp, audio, plan.startMs, plan.endMs)) {
                     val live = settingsStore.settingsFlowRaw.first()
-                    val model = live.getChatModelForAssistant(assistantId)
-                    val direct = model?.supportsDirectAudio(model.findProvider(live.providers)) == true
+                    val direct = model.supportsDirectAudio(provider)
                     if (direct) {
                         val saved = files.saveUploadFromBytes(audio.readBytes(), "gongdu-audio-${plan.startMs}.wav", "audio/wav")
                         parts += UIMessagePart.Text("[原声音轨] 以下 WAV 对应 ${plan.startMs / 1000.0}～${plan.endMs / 1000.0} 秒，可结合画面分析对白、语气、音乐和环境音；无法确定的声音请明确说不确定。")

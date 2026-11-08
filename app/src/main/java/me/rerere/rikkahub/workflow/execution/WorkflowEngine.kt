@@ -476,12 +476,15 @@ class WorkflowActionRunner {
                 )
             }
             // Keep a short, readable trace for the immediate run result and workflow tool response.
-            val text = out.filterIsInstance<me.rerere.ai.ui.UIMessagePart.Text>()
-                .joinToString("\n") { it.text }
-            val structuredFailure = out.filterIsInstance<me.rerere.ai.ui.UIMessagePart.Text>()
-                .firstNotNullOfOrNull { toolFailure(it.text) }
+            val textParts = out.filterIsInstance<me.rerere.ai.ui.UIMessagePart.Text>()
+            val text = textParts.joinToString("\n") { it.text }
+            val structuredFailure = textParts.firstNotNullOfOrNull { toolFailure(it.text) }
             if (structuredFailure != null) {
-                return failedResult(outputs, idx, action, structuredFailure, "action $idx: $structuredFailure", steps)
+                val machine = textParts.firstNotNullOfOrNull {
+                    it.metadata?.get("machine")?.jsonPrimitive?.contentOrNull
+                }
+                val reason = listOfNotNull(machine, structuredFailure).joinToString("\n")
+                return failedResult(outputs, idx, action, reason, "action $idx: $reason", steps)
             }
             outputs += "第 ${idx + 1} 步：${action.tool} 已完成" +
                 text.takeIf { it.isNotBlank() }?.let { "\n结果：${it.take(200)}" }.orEmpty()

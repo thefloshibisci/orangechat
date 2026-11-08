@@ -26,6 +26,7 @@ internal suspend fun runGenerationToolLoop(
     executeTool: suspend (UIMessagePart.Tool, Tool?, Int) -> UIMessagePart.Tool?,
     onToolsUpdated: suspend (List<UIMessage>, GenerationToolUpdate) -> Unit,
     onStep: suspend (Int, Boolean) -> Unit = { _, _ -> },
+    onCompleted: suspend (List<UIMessage>) -> List<UIMessage> = { it },
 ): List<UIMessage> {
     var messages = initialMessages
     val steps = if (reserveFinalModelTurn) 0..maxSteps else 0 until maxSteps
@@ -43,7 +44,10 @@ internal suspend fun runGenerationToolLoop(
         val calls = if (resumable.isEmpty()) {
             messages = generateTurn(messages, definitions, step)
             val generated = messages.lastOrNull()?.getTools()?.filter { !it.isExecuted }.orEmpty()
-            if (generated.isEmpty()) return messages
+            if (generated.isEmpty()) {
+                currentCoroutineContext().ensureActive()
+                return onCompleted(messages)
+            }
             if (finalTurn) error(toolLimitError)
             val approval = prepareTools(generated, definitions)
             if (approval.calls != generated) {

@@ -72,8 +72,7 @@ class SereinHookRepository(private val db: AppDatabase, private val client: Sere
     }
 
     suspend fun acknowledge(config: SereinHookConfig, conversation: String, reply: UIMessage, ids: List<String>) {
-        if (reply.role != MessageRole.ASSISTANT || reply.finishedAt == null || reply.getTools().isNotEmpty() ||
-            reply.rawArchiveText().isNullOrBlank() || reply.rawArchiveText()?.trim() == "[SKIP]") return
+        if (!reply.isSereinCompletedReply()) return
         db.withTransaction {
             if (dao.owner(conversation) != config.assistantId) return@withTransaction
             // Empty successful turns count toward the five-turn window too.

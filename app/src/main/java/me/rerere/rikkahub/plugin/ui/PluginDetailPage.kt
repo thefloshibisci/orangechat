@@ -52,9 +52,6 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.ClipboardManager
-import androidx.compose.ui.platform.LocalClipboardManager
-import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
@@ -158,12 +155,6 @@ fun PluginDetailPage(
                 .verticalScroll(rememberScrollState())
         ) {
             PluginInfoSection(plugin)
-
-            // Supabase 记忆库插件的数据库初始化说明
-            if (plugin.manifest.id == "com.orangechat.plugin.supabase_memory") {
-                Spacer(modifier = Modifier.height(16.dp))
-                SupabaseSetupInstructions()
-            }
 
             Spacer(modifier = Modifier.height(24.dp))
 
@@ -516,112 +507,5 @@ private fun ModelConfigField(
                 onValueChange(JsonPrimitive(model.id.toString()))
             }
         )
-    }
-}
-
-/**
- * Supabase 记忆库插件的数据库初始化说明
- */
-@Composable
-private fun SupabaseSetupInstructions() {
-    val clipboardManager: ClipboardManager = LocalClipboardManager.current
-    var copiedIndex by remember { mutableStateOf(-1) }
-
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.primaryContainer
-        )
-    ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Text(
-                text = "数据库初始化",
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onPrimaryContainer
-            )
-            
-            Spacer(modifier = Modifier.height(8.dp))
-            
-            Text(
-                text = "首次使用需要在 Supabase 数据库中创建表。复制以下 SQL 到 Supabase Dashboard 的 SQL Editor 中执行：",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onPrimaryContainer
-            )
-            
-            Spacer(modifier = Modifier.height(12.dp))
-            
-            val sql = """create table chat_messages (
-  id uuid default gen_random_uuid() primary key,
-  assistant_id text not null,
-  conversation_id text not null,
-  role text not null,
-  content text not null,
-  created_at timestamp with time zone default now()
-);
-
-create index idx_chat_messages_conversation on chat_messages(conversation_id);
-create index idx_chat_messages_created on chat_messages(created_at);"""
-            
-            CopyableCodeBlock(
-                code = sql,
-                index = 0,
-                copiedIndex = copiedIndex,
-                onCopy = { idx, text ->
-                    clipboardManager.setText(AnnotatedString(text))
-                    copiedIndex = idx
-                }
-            )
-        }
-    }
-}
-
-/**
- * 可复制的代码块
- */
-@Composable
-private fun CopyableCodeBlock(
-    code: String,
-    index: Int,
-    copiedIndex: Int,
-    onCopy: (Int, String) -> Unit
-) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface
-        )
-    ) {
-        Column(modifier = Modifier.padding(12.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "SQL",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                
-                TextButton(
-                    onClick = { onCopy(index, code) },
-                    modifier = Modifier.padding(0.dp)
-                ) {
-                    Text(
-                        text = if (copiedIndex == index) "已复制 ✓" else "复制",
-                        style = MaterialTheme.typography.labelSmall
-                    )
-                }
-            }
-            
-            Spacer(modifier = Modifier.height(4.dp))
-            
-            Text(
-                text = code,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurface,
-                modifier = Modifier.fillMaxWidth()
-            )
-        }
     }
 }

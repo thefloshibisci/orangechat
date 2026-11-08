@@ -73,7 +73,7 @@ internal class CompressionEngine(
         conversationId: Uuid? = null,
     ): suspend (String) -> String {
         require(targetTokens > 0)
-        val model = settings.compressionModelFor(assistantId) ?: error("没有可用的压缩模型")
+        val model = settings.compressionModelFor(assistantId) ?: error(settings.compressionModelLabelFor(assistantId))
         val provider = model.findProvider(settings.providers) ?: error("压缩模型的提供商不存在")
         val handler = usageRecorder.wrap(
             providers.getProviderByType(provider), UsageTag(UsageSource.COMPRESSION, assistantId, conversationId),

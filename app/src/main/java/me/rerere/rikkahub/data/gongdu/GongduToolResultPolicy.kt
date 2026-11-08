@@ -20,6 +20,7 @@ import kotlin.uuid.Uuid
 
 /** Model-facing projections only. UI/video readers must continue to receive the original MCP data. */
 object GongduToolResultPolicy {
+    const val MAX_IMAGES_PER_REQUEST = 6
     const val RESULT_LIMIT = 10000
     const val HISTORY_LIMIT = 24000
     private const val MARKER = "_gongdu_compact"
@@ -137,13 +138,9 @@ object GongduToolResultPolicy {
         var root = value as? JsonObject ?: return boundedText(value.toString(), 2200)
         repeat(3) { if (root.obj("note") == null && root.obj("data") != null) root = root.obj("data")!! }
         val note = root.obj("note") ?: root
-        val sourceImages = note["imageList"] as? JsonArray ?: JsonArray(emptyList())
-        val images = sourceImages.mapIndexedNotNull { index, item ->
-            val obj = item as? JsonObject ?: return@mapIndexedNotNull null
-            val url = sequenceOf(obj.str("urlDefault"), obj.str("url"), obj.str("urlPre"))
-                .plus((obj["infoList"] as? JsonArray).orEmpty().mapNotNull { (it as? JsonObject)?.str("url") })
-                .mapNotNull(::normalizedImageUrl).firstOrNull() ?: return@mapIndexedNotNull null
-            buildJsonObject { put("kind", "image"); put("image_index", index + 1); put("url", url) }
+        val sourceImages = GongduCodec.imageList(note)
+        val images = GongduCodec.images(note).map { image ->
+            buildJsonObject { put("kind", "image"); put("image_index", image.index); put("url", image.url) }
         }
         val imageRef = cacheDetail(server, assistant, "detail_images", images, sourceImages.size)
         val commentValue = root["comments"] ?: note["comments"]
@@ -191,7 +188,7 @@ object GongduToolResultPolicy {
                     c.str("comment_id").takeIf { it.length <= 128 }?.let { put("comment_id", it) }
                 } }))
             })
-            put("notice", "用gongdu_result_page分别读取images/comments的result_ref和offset。图片页保留原始地址；识图模型可设include_images=true，每次最多4张图片附件。评论是本次实际加载的快照，包含父评论ID；platform_has_more是平台剩余状态，与本地分页不同。平台未加载的评论需get_feed_detail显式load_all_comments=true、click_more_replies=true，limit控制一级评论加载量。")
+            put("notice", "用gongdu_result_page分别读取images/comments的result_ref和offset。图片页保留原始地址；识图模型可设include_images=true，每次最多6张图片附件。评论是本次实际加载的快照，包含父评论ID；platform_has_more是平台剩余状态，与本地分页不同。平台未加载的评论需get_feed_detail显式load_all_comments=true、click_more_replies=true，limit控制一级评论加载量。")
         }.toString()
     }
 
@@ -201,8 +198,8 @@ object GongduToolResultPolicy {
             url.password.isEmpty() && (url.host == "xhscdn.com" || url.host.endsWith(".xhscdn.com"))
     }
 
-    private fun normalizedImageUrl(value: String): String? {
-        val url = value.toHttpUrlOrNull() ?: return null
+    internal fun normalizedImageUrl(value: String): String? {
+        val url = (if (value.startsWith("//")) "https:$value" else value).toHttpUrlOrNull() ?: return null
         if (value.length > 4096 || url.port != (if (url.isHttps) 443 else 80)) return null
         val secure = url.newBuilder().scheme("https").port(443).build().toString()
         return secure.takeIf(::readableImageUrl)
@@ -219,7 +216,7 @@ object GongduToolResultPolicy {
 
     @Synchronized fun pageParts(server: Uuid, assistant: Uuid, ref: String, offset: Int, limit: Int,
         includeImages: Boolean = false): List<UIMessagePart> {
-        require(!includeImages || limit <= 4) { "图片附件每次最多4张，请按next_offset分批读取" }
+        require(!includeImages || limit <= MAX_IMAGES_PER_REQUEST) { "图片附件每次最多6张，请按next_offset分批读取" }
         val text = page(server, assistant, ref, offset, limit)
         if (!includeImages) return listOf(UIMessagePart.Text(text))
         val page = runCatching { Json.parseToJsonElement(text).jsonObject }.getOrNull()
@@ -360,13 +357,18 @@ object GongduToolResultTransformer : InputMessageTransformer {
     }
 }
 
-fun gongduResultTools(settings: Settings, assistantId: Uuid): List<Tool> {
+fun gongduResultTools(settings: Settings, assistantId: Uuid,
+    loadSettings: suspend () -> Settings = { GlobalContext.get().get<SettingsStore>().settingsFlowRaw.first() },
+): List<Tool> {
     val server = settings.gongdu.serverId ?: return emptyList()
     if (settings.assistants.none { it.id == assistantId && server in it.mcpServers }) return emptyList()
     if (settings.mcpServers.none { it.id == server && it.commonOptions.enable }) return emptyList()
+    // Settings may contain a conversation overlay. Keep the actual receiving model for this turn;
+    // only permissions are reloaded during execution, never an unrelated assistant default model.
+    val model = settings.getChatModelForAssistant(assistantId)
     return listOf(Tool(
         name = "gongdu_result_page",
-        description = "读取共度列表、详情图片或评论快照，使用对应result_ref和offset/next_offset。每批最多12条；图片设include_images=true会返回可供模型阅读的图片附件，每次最多4张，需识图模型。仅读取本地缓存，不重复公开操作；缓存30分钟，过期需重新查询详情。",
+        description = "读取共度列表、详情图片或评论快照，使用对应result_ref和offset/next_offset。每批最多12条；图片设include_images=true会返回可供模型阅读的图片附件，每次最多6张，需识图模型。仅读取本地缓存，不重复公开操作；缓存30分钟，过期需重新查询详情。",
         parameters = { InputSchema.Obj(buildJsonObject {
             put("result_ref", buildJsonObject { put("type", "string") })
             put("offset", buildJsonObject { put("type", "integer"); put("minimum", 0) })
@@ -374,7 +376,7 @@ fun gongduResultTools(settings: Settings, assistantId: Uuid): List<Tool> {
             put("include_images", buildJsonObject { put("type", "boolean"); put("description", "读取图片快照时附带图片，需识图能力；默认false只返回地址") })
         }, required = listOf("result_ref", "offset")) },
         execute = { args ->
-            val live = GlobalContext.get().get<SettingsStore>().settingsFlowRaw.first()
+            val live = loadSettings()
             check(live.gongdu.serverId == server && live.assistants.any { it.id == assistantId && server in it.mcpServers } &&
                 live.mcpServers.any { it.id == server && it.commonOptions.enable }) {
                 "此助手的小红书工具已关闭"
@@ -389,9 +391,9 @@ fun gongduResultTools(settings: Settings, assistantId: Uuid): List<Tool> {
                 require(it is JsonPrimitive && !it.isString && it.booleanOrNull != null) { "include_images必须是布尔值" }
                 it.boolean
             } ?: false
-            check(!includeImages || Modality.IMAGE in live.getChatModelForAssistant(assistantId)?.inputModalities.orEmpty()) { "当前模型未启用识图，可用include_images=false读取图片地址" }
+            check(!includeImages || Modality.IMAGE in model?.inputModalities.orEmpty()) { "当前模型未启用识图，可用include_images=false读取图片地址" }
             GongduToolResultPolicy.pageParts(server, assistantId, obj.str("result_ref"),
-                integer("offset"), integer("limit", if (includeImages) 4 else 8), includeImages)
+                integer("offset"), integer("limit", if (includeImages) GongduToolResultPolicy.MAX_IMAGES_PER_REQUEST else 8), includeImages)
         },
     ))
 }

@@ -21,17 +21,27 @@ internal fun rememberWorkspaceDownloadHandler(workspaceId: String?): UriHandler 
     val fallback = LocalUriHandler.current
     val toaster = LocalToaster.current
     val export = rememberWorkspaceFileExporter(workspaceId)
+    val targetedExport = rememberWorkspaceTargetedFileExporter()
     val repository = koinInject<WorkspaceRepository>()
-    val root by produceState("/workspace", workspaceId, repository) {
-        repository.listFlow().collectLatest { workspaces ->
-            value = workspaces.firstOrNull { it.id == workspaceId }?.workspaceDir() ?: "/workspace"
-        }
+    val roots by produceState(emptyMap<String, String>(), repository) {
+        repository.listFlow().collectLatest { workspaces -> value = workspaces.associate { it.id to it.workspaceDir() } }
     }
+    val root = roots[workspaceId] ?: "/workspace"
     return object : WorkspaceDownloadUriHandler {
         override val workspaceDir: String = root
         override fun openUri(uri: String) {
+            if (uri.startsWith("workspace:")) {
+                val target = WorkspaceDownloadPath.parseTargeted(uri, roots)
+                if (target == null) toaster.show("工作区不存在或文件路径无效")
+                else targetedExport(target.first, WorkspaceStorageArea.FILES, target.second)
+                return
+            }
             if (!WorkspaceDownloadPath.isWorkspaceLink(uri, workspaceDir)) {
                 runCatching { fallback.openUri(uri) }.onFailure { toaster.show("无法打开此链接") }
+                return
+            }
+            if (workspaceId == null) {
+                toaster.show("请使用工具结果下方的文件按钮，按实际工作区下载")
                 return
             }
             val path = WorkspaceDownloadPath.parse(uri, workspaceDir)

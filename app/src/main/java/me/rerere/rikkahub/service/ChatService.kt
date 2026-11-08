@@ -17,6 +17,7 @@ import kotlinx.coroutines.flow.onStart
 import me.rerere.rikkahub.data.ai.mcp.normalizeMcpArguments
 import me.rerere.rikkahub.data.repository.ConversationNodeChanges
 
+import me.rerere.rikkahub.data.serein.isSereinCompletedReply
 import android.app.Application
 import android.app.PendingIntent
 import android.content.Context
@@ -745,35 +746,6 @@ class ChatService(
                     Log.w(TAG, "Failed to trigger message_sent event", e)
                 }
 
-                // 保存用户消息到外置记忆库（fire-and-forget，不阻塞后续生成流程）
-                try {
-                    val settingsRaw = settingsStore.settingsFlowRaw.first()
-                    val externalMemoryConfigs = settingsRaw.externalMemories.filter {
-                        it.enabled && it.id in assistant.externalMemoryIds && it.autoSaveMessages
-                    }
-                    if (externalMemoryConfigs.isNotEmpty()) {
-                        val messageText = processedContent.mapNotNull { part ->
-                            if (part is UIMessagePart.Text) part.text else null
-                        }.joinToString("\n")
-                        externalMemoryConfigs.forEach { config ->
-                            appScope.launch {
-                                runCatching {
-                                    val service = me.rerere.rikkahub.data.service.ExternalMemoryService(config)
-                                    service.saveMessage(
-                                        assistantId = assistant.id.toString(),
-                                        conversationId = conversationId.toString(),
-                                        role = "user",
-                                        content = messageText,
-                                    )
-                                }.onFailure {
-                                    Log.w(TAG, "Failed to save user message to external memory ${config.name}", it)
-                                }
-                            }
-                        }
-                    }
-                } catch (e: Exception) {
-                    Log.w(TAG, "Failed to save user message to external memory", e)
-                }
                 } else {
                     session.withStateLock {
                         check(session.state.value.currentMessages.any { it.id == queued.existingMessageId && it.role == MessageRole.USER }) {
@@ -1443,11 +1415,7 @@ class ChatService(
             var regenerationMessageId: Uuid? = null
             val latestUserMessage = messagesForGeneration.lastOrNull { it.role == MessageRole.USER }
             diagnosticTrace?.stage("collecting extra information")
-            val (extraInfoContext, externalMemoryContext) = kotlinx.coroutines.coroutineScope {
-                // Independent read-only recall overlaps device context/Hook preparation.
-                val externalMemoryPending = async {
-                    generationHandler.recallExternalMemories(settings, assistant, messagesForGeneration)
-                }
+            val extraInfoContext = kotlinx.coroutines.coroutineScope {
                 val hookPending = async {
                     if (latestUserMessage == null || messageRange != null || transientSystemPrompt != null || !hookIsCurrent()) null
                     else {
@@ -1488,7 +1456,7 @@ class ChatService(
                         hookTransformer = me.rerere.rikkahub.data.serein.SereinRecallTransformer(it.id, recalled, ::hookIsCurrent)
                     }
                 }
-                extra to externalMemoryPending.await()
+                extra
             }
             // Every historical user message keeps the snapshot it was first sent with, so the
             // request prefix stays byte-identical across turns and the provider cache survives.
@@ -1537,7 +1505,6 @@ class ChatService(
                 model = model,
                 processingStatus = session.processingStatus,
                 messages = messagesForGeneration,
-                preparedExternalMemory = externalMemoryContext,
                 conversationContextSummary = conversation.summaryForGeneration(),
                 assistant = assistant,
                 conversationSystemPrompt = listOfNotNull(
@@ -1701,8 +1668,7 @@ class ChatService(
                 try {
                     sereinHookRepository.acknowledge(hookConfig, conversationId.toString(), completedReply,
                         hookTransformer?.deliveredIds.orEmpty())
-                    val valid = completedReply.role == MessageRole.ASSISTANT && completedReply.finishedAt != null &&
-                        completedReply.getTools().isEmpty() && completedReply.toText().isNotBlank() && completedReply.toText().trim() != "[SKIP]"
+                    val valid = completedReply.isSereinCompletedReply()
                     reportHook(if (valid) "completed" else "interrupted", if (valid) hookTransformer?.deliveredIds.orEmpty() else emptyList())
                 } catch (e: CancellationException) { throw e }
                 catch (_: Exception) { Log.w(TAG, "Could not record Serein recall delivery") }
@@ -1792,37 +1758,6 @@ class ChatService(
                 generateSuggestion(conversationId, finalConversation)
             }
 
-            // 保存 AI 回复到外置记忆库
-            try {
-                val externalMemoryConfigs = settings.externalMemories.filter {
-                    it.enabled && it.id in assistant.externalMemoryIds && it.autoSaveMessages
-                }
-                if (externalMemoryConfigs.isNotEmpty()) {
-                    val lastAssistantMessage = finalConversation.currentMessages.lastOrNull { it.role == MessageRole.ASSISTANT }
-                    val messageText = lastAssistantMessage?.toText() ?: ""
-                    if (messageText.isNotBlank()) {
-                        kotlinx.coroutines.coroutineScope {
-                            externalMemoryConfigs.forEach { config ->
-                                launch {
-                                    runCatching {
-                                        val service = me.rerere.rikkahub.data.service.ExternalMemoryService(config)
-                                        service.saveMessage(
-                                            assistantId = assistant.id.toString(),
-                                            conversationId = conversationId.toString(),
-                                            role = "assistant",
-                                            content = messageText,
-                                        )
-                                    }.onFailure {
-                                        Log.w(TAG, "Failed to save assistant message to external memory ${config.name}", it)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            } catch (e: Exception) {
-                Log.w(TAG, "Failed to save assistant message to external memory", e)
-            }
         }
         return generationResult.isSuccess
     }
@@ -1933,7 +1868,7 @@ class ChatService(
             )
         }
 
-        addAll(createWorkspaceToolsIfReady(assistant.workspaceId?.toString(), conversation.workspaceCwd))
+        addAll(createWorkspaceTools(assistant.workspaceId?.toString(), workspaceRepository, assistantId = assistant.id.toString()))
         if (assistant.enabledSkills.isNotEmpty()) {
             addAll(
                 createSkillTools(
@@ -1989,19 +1924,6 @@ class ChatService(
             },
             onManageReactionPresets = ::manageReactionPresets,
         ))
-    }
-
-    private suspend fun createWorkspaceToolsIfReady(workspaceId: String?, cwd: String? = null): List<Tool> {
-        if (workspaceId.isNullOrBlank()) return emptyList()
-        val workspace = workspaceRepository.getById(workspaceId) ?: return emptyList()
-        if (workspace.shellStatus != WorkspaceShellStatus.READY.name) {
-            Log.d(
-                TAG,
-                "createWorkspaceToolsIfReady: skip workspace tools, workspace=$workspaceId, status=${workspace.shellStatus}"
-            )
-            return emptyList()
-        }
-        return createWorkspaceTools(workspaceId, workspaceRepository, cwd)
     }
 
     // ---- 检查无效消息 ----

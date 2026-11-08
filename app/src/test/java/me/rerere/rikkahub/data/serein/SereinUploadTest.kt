@@ -18,6 +18,7 @@ import me.rerere.rikkahub.data.db.entity.MessageNodeEntity
 import me.rerere.rikkahub.data.model.MessageNode
 import me.rerere.rikkahub.data.model.toMessageNode
 import me.rerere.rikkahub.data.sync.preflightBackupDatabase
+import me.rerere.rikkahub.data.ai.withGenerationCompletion
 import me.rerere.rikkahub.utils.JsonInstant
 import org.junit.Assert.*
 import org.junit.Test
@@ -52,6 +53,50 @@ class SereinUploadTest {
         }
     }
     private suspend fun counts(db: AppDatabase) = db.sereinUploadDao().counts(config.uploadDestination()).first()
+
+    @Test fun `completed tool reply persists proof and uploads only original text with an explicit clock`() = runBlocking {
+        val previousZone = java.util.TimeZone.getDefault()
+        try {
+            for ((zone, expected) in listOf(
+                "Asia/Shanghai" to "2026-10-24T17:00:00Z",
+                "America/Los_Angeles" to "2026-10-25T08:00:00Z",
+            )) {
+                java.util.TimeZone.setDefault(java.util.TimeZone.getTimeZone(zone))
+                val name = "up-${Uuid.random().toString().take(8)}"
+                val db = open(name)
+                try {
+                    seed(db)
+                    val reply = UIMessage.assistant("").copy(createdAt = now, finishedAt = now, parts = listOf(
+                        UIMessagePart.Tool("call", "synthetic", "{}", output = listOf(UIMessagePart.Text("private tool body"))),
+                        UIMessagePart.Reasoning("private reasoning"),
+                        UIMessagePart.Text("final answer"),
+                    ))
+                    val node = reply.toMessageNode()
+                    save(db, node)
+                    assertNull(db.sereinUploadDao().next(config.uploadDestination()))
+                    val completed = node.copy(messages = listOf(reply.withGenerationCompletion()))
+                    save(db, completed)
+                    val queued = db.sereinUploadDao().next(config.uploadDestination())!!
+                    val event = Json.parseToJsonElement(queued.payload).jsonObject["events"]!!.jsonArray.single().jsonObject
+                    assertEquals("final answer", event["text"]!!.jsonPrimitive.content)
+                    assertEquals(expected, event["created_at"]!!.jsonPrimitive.content)
+                    assertFalse(queued.payload.contains("private tool body"))
+                    assertFalse(queued.payload.contains("private reasoning"))
+                    val persisted = JsonInstant.decodeFromString<List<UIMessage>>(db.sereinUploadDao().node(node.id.toString())!!.messages).single()
+                    assertTrue(persisted.isSereinCompletedReply())
+                    val queue = SereinUploadQueue(db.sereinUploadDao())
+                    assertTrue(queue.sourceIsCurrent(queued))
+                    assertTrue(queue.drain(config, { true }) { UploadResult("retry", "network_error") })
+                    java.util.TimeZone.setDefault(java.util.TimeZone.getTimeZone("UTC"))
+                    save(db, completed)
+                    assertEquals(queued.payload, db.sereinUploadDao().read(queued.id)!!.payload)
+                    assertEquals(1, counts(db).pending)
+                    assertFalse(queue.drain(config, { true }) { UploadResult("sent") })
+                    assertEquals(1, counts(db).sent)
+                } finally { db.close(); context.deleteDatabase(name) }
+            }
+        } finally { java.util.TimeZone.setDefault(previousZone) }
+    }
 
     @Test fun `queue survives reopen and lost response retries deduplicate without retaining sent body`() = runBlocking {
         val name = "up-${Uuid.random().toString().take(8)}"

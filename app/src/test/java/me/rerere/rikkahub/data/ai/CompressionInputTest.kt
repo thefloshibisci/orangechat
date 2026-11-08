@@ -160,10 +160,11 @@ class CompressionInputTest {
             providers = listOf(ProviderSetting.OpenAI(models = listOf(firstModel, otherModel, overrideModel))))
         assertEquals(firstModel, settings.compressionModelFor(first.id))
         assertEquals(overrideModel, settings.copy(compressModelId = overrideModel.id).compressionModelFor(first.id))
-        assertEquals("当前助手模型：OpenAI / first", settings.compressionModelLabelFor(first.id))
+        assertEquals("当前聊天模型：OpenAI / first", settings.compressionModelLabelFor(first.id))
         assertEquals("指定压缩模型：OpenAI / compression",
             settings.copy(compressModelId = overrideModel.id).compressionModelLabelFor(first.id))
-        assertEquals("当前助手模型：OpenAI / first",
-            settings.copy(compressModelId = Model().id).compressionModelLabelFor(first.id))
+        val missingOverride = settings.copy(compressModelId = Model().id)
+        assertNull(missingOverride.compressionModelFor(first.id))
+        assertEquals("指定压缩模型不可用，请重新选择或清除指定项", missingOverride.compressionModelLabelFor(first.id))
     }
 }

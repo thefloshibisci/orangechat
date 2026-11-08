@@ -3,11 +3,14 @@ package me.rerere.rikkahub.data.serein
 import androidx.room.*
 import kotlinx.coroutines.flow.Flow
 import kotlinx.datetime.LocalDateTime
+import kotlinx.datetime.TimeZone
+import kotlinx.datetime.toInstant
 import kotlinx.serialization.json.*
 import me.rerere.ai.core.MessageRole
 import me.rerere.rikkahub.data.db.entity.ConversationEntity
 import me.rerere.rikkahub.data.db.entity.MessageNodeEntity
 import me.rerere.rikkahub.data.model.MessageNode
+import me.rerere.rikkahub.data.ai.hasCompletedGeneration
 
 @Entity(tableName = "serein_upload", foreignKeys = [ForeignKey(entity = ConversationEntity::class,
     parentColumns = ["id"], childColumns = ["conversationId"], onDelete = ForeignKey.CASCADE)],
@@ -65,7 +68,7 @@ internal suspend fun SereinUploadDAO.capture(config: SereinHookConfig, assistant
             put("conversation_id", conversation); put("session_id", "orangechat:$assistant:$conversation")
             put("events", buildJsonArray { add(buildJsonObject {
                 put("source_event_id", sourceId); put("role", message.role.name.lowercase())
-                put("text", text); put("created_at", message.createdAt.toString())
+                put("text", text); put("created_at", message.createdAt.toInstant(TimeZone.currentSystemDefault()).toString())
                 put("metadata", buildJsonObject { put("assistant_id", assistant); put("message_id", message.id.toString()) })
             }) })
         }.toString()
@@ -78,6 +81,9 @@ internal suspend fun SereinUploadDAO.capture(config: SereinHookConfig, assistant
 }
 
 internal fun me.rerere.ai.ui.UIMessage.uploadText(): String? {
-    if (role == MessageRole.ASSISTANT && (finishedAt == null || getTools().isNotEmpty())) return null
+    if (role == MessageRole.ASSISTANT && !hasCompletedGeneration()) return null
     return rawArchiveText()
 }
+
+internal fun me.rerere.ai.ui.UIMessage.isSereinCompletedReply(): Boolean =
+    hasCompletedGeneration() && rawArchiveText()?.trim()?.let { it.isNotEmpty() && it != "[SKIP]" } == true

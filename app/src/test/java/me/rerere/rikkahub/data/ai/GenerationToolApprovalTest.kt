@@ -3,11 +3,17 @@ package me.rerere.rikkahub.data.ai
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
 import me.rerere.ai.core.MessageRole
 import me.rerere.ai.core.Tool
 import me.rerere.ai.ui.ToolApprovalState
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
+import me.rerere.rikkahub.data.ai.tools.WorkspaceToolExecutionException
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -203,6 +209,43 @@ class GenerationToolApprovalTest {
         assertTrue(output(results[0]).contains("Invalid tool arguments JSON"))
         assertTrue(results.all { it.isExecuted })
         assertEquals(listOf("auto"), executed)
+    }
+
+    @Test
+    fun `workspace failure retains machine result and failed checkpoint without replay`() = runBlocking {
+        val labels = listOf("腾讯云 · ubuntu@host:22", "未执行 · 请求工作区 missing")
+        for (label in labels) {
+            val payload = listOf(
+                UIMessagePart.Text(label).apply {
+                    metadata = buildJsonObject { put("machine", label) }
+                },
+                UIMessagePart.Text(buildJsonObject {
+                    put("ok", false)
+                    put("isError", true)
+                    put("error", "Workspace unavailable")
+                }.toString()),
+            )
+            var executions = 0
+            val definitions = listOf(Tool(name = "workspace_shell", description = "") {
+                executions++
+                throw WorkspaceToolExecutionException(payload, "Workspace unavailable", IllegalStateException("offline"))
+            })
+            val checkpoints = mutableListOf<UIMessagePart.Tool>()
+            val result = executeGenerationToolBatch(
+                prepare(listOf(call("workspace", "workspace_shell")), definitions), definitions, Json,
+                onCheckpoint = { checkpoints += it },
+            ).single()
+
+            assertEquals(payload, result.output)
+            assertEquals(label, (result.output.first() as UIMessagePart.Text).text)
+            assertEquals(label, result.output.first().metadata!!["machine"]!!.jsonPrimitive.content)
+            assertEquals(false, Json.parseToJsonElement((result.output[1] as UIMessagePart.Text).text)
+                .jsonObject["ok"]!!.jsonPrimitive.booleanOrNull)
+            assertEquals("failed", result.executionCheckpointState)
+            assertEquals(listOf("started", "failed"), checkpoints.map { it.executionCheckpointState })
+            assertTrue(executeGenerationToolBatch(prepare(listOf(result), definitions), definitions, Json).isEmpty())
+            assertEquals(1, executions)
+        }
     }
 
     private fun prepare(calls: List<UIMessagePart.Tool>, definitions: List<Tool>) =

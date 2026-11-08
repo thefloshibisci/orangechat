@@ -377,7 +377,9 @@ private fun ChatPageContent(
     }
 
     val workspaceHandler = rememberWorkspaceDownloadHandler(
-        setting.getAssistantById(conversation.assistantId)?.workspaceId?.toString()
+        setting.getAssistantById(conversation.assistantId)?.let { assistant ->
+            (assistant.workspaceIds + listOfNotNull(assistant.workspaceId)).singleOrNull()?.toString()
+        }
     )
     TTSAutoPlay(vm = vm, setting = setting, conversation = conversation)
 

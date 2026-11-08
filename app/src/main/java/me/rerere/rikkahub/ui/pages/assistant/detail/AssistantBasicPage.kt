@@ -17,6 +17,9 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Card
+import androidx.compose.material3.Checkbox
+import androidx.compose.foundation.layout.Row
+import me.rerere.rikkahub.data.model.boundWorkspaceIds
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
 import me.rerere.rikkahub.ui.theme.LargeFlexibleTopAppBar
@@ -200,24 +203,31 @@ internal fun AssistantBasicContent(
                     Text(stringResource(R.string.assistant_page_workspace_binding))
                 },
                 description = {
-                    Text(stringResource(R.string.assistant_page_workspace_binding_desc))
+                    Text("可同时选择本地和远程工作区；默认目标仅用于聊天，定时工作流单独固定目标。")
                 },
                 modifier = Modifier.padding(8.dp),
             ) {
-                val options = remember(workspaces) { listOf<WorkspaceEntity?>(null) + workspaces }
-                Select(
-                    options = options,
-                    selectedOption = workspaces.find { it.id == assistant.workspaceId?.toString() },
-                    onOptionSelected = { selected ->
-                        onUpdate(
-                            assistant.copy(
-                                workspaceId = selected?.id?.let { Uuid.parse(it) }
-                            )
-                        )
-                    },
-                    optionToString = { it?.name ?: stringResource(R.string.workspace_no_binding) },
-                    modifier = Modifier.fillMaxWidth(),
-                )
+                Column {
+                    val bound = assistant.boundWorkspaceIds()
+                    workspaces.forEach { workspace ->
+                        val workspaceUuid = Uuid.parse(workspace.id)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(checked = workspaceUuid in bound, onCheckedChange = { checked ->
+                                val ids = if (checked) bound + workspaceUuid else bound - workspaceUuid
+                                onUpdate(assistant.copy(workspaceIds = ids,
+                                    workspaceId = assistant.workspaceId?.takeIf { it in ids } ?: ids.firstOrNull()))
+                            })
+                            Text("${workspace.name} · ${if (workspace.isSsh()) "远程 SSH" else "本地"}")
+                        }
+                    }
+                    Select(
+                        options = workspaces.filter { Uuid.parse(it.id) in bound },
+                        selectedOption = workspaces.find { it.id == assistant.workspaceId?.toString() },
+                        onOptionSelected = { selected -> onUpdate(assistant.copy(workspaceId = selected?.id?.let(Uuid::parse))) },
+                        optionToString = { "默认：${it?.name ?: "未选择"}" },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
             }
  
             HorizontalDivider()

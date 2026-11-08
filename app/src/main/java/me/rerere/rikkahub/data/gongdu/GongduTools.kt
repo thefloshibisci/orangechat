@@ -9,16 +9,21 @@ import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.datastore.getChatModelForAssistant
+import me.rerere.rikkahub.data.datastore.findProvider
 import me.rerere.rikkahub.data.files.attachmentReferenceGuard
 import org.koin.core.context.GlobalContext
 import kotlin.uuid.Uuid
 
-fun gongduTools(settings: Settings, assistantId: Uuid): List<Tool> {
+fun gongduTools(settings: Settings, assistantId: Uuid,
+    loadSettings: suspend () -> Settings = { GlobalContext.get().get<SettingsStore>().settingsFlowRaw.first() },
+): List<Tool> {
     val server = settings.gongdu.serverId ?: return emptyList()
     if (settings.assistants.none { it.id == assistantId && server in it.mcpServers }) return emptyList()
     if (settings.mcpServers.none { it.id == server && it.commonOptions.enable }) return emptyList()
-    val resultTools = gongduResultTools(settings, assistantId) + gongduLinkTool(server, assistantId)
-    if (Modality.IMAGE !in settings.getChatModelForAssistant(assistantId)?.inputModalities.orEmpty()) return resultTools
+    val model = settings.getChatModelForAssistant(assistantId)
+    val resultTools = gongduResultTools(settings, assistantId, loadSettings) + gongduLinkTool(server, assistantId)
+    if (model == null || Modality.IMAGE !in model.inputModalities) return resultTools
+    val provider = model.findProvider(settings.providers)
     return resultTools + listOf(Tool(
         name = "gongdu_read_video",
         description = "读取共度小红书视频：全片概览按时长采样，最多24帧带时间拼图，含可用字幕。" +
@@ -34,17 +39,17 @@ fun gongduTools(settings: Settings, assistantId: Uuid): List<Tool> {
         }, required = listOf("feed_id", "xsec_token")) },
         execute = { args ->
             val koin = GlobalContext.get()
-            val live = koin.get<SettingsStore>().settingsFlowRaw.first()
-            check(live.gongdu.serverId == server && live.assistants.any { it.id == assistantId && server in it.mcpServers }) {
+            val live = loadSettings()
+            check(live.gongdu.serverId == server && live.assistants.any { it.id == assistantId && server in it.mcpServers } &&
+                live.mcpServers.any { it.id == server && it.commonOptions.enable }) {
                 "此助手的小红书工具已关闭"
             }
-            check(Modality.IMAGE in live.getChatModelForAssistant(assistantId)?.inputModalities.orEmpty()) { "当前模型未启用识图" }
             val obj = args as? JsonObject ?: error("参数必须是对象")
             val request = gongduVideoRequest(obj)
             val feed = GongduFeed(obj.str("feed_id"), "视频笔记", obj.str("xsec_token"))
             attachmentReferenceGuard.beginWrite().use {
                 val note = koin.get<GongduRepository>().detail(feed)
-                koin.get<GongduVideoReader>().read(note, assistantId, request)
+                koin.get<GongduVideoReader>().read(note, model, provider, request)
             }
         },
     ))

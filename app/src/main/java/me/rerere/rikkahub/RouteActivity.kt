@@ -765,6 +765,7 @@ class RouteActivity : ComponentActivity() {
                                     pluginId = key.pluginId,
                                     htmlEntryPath = key.entryPath,
                                     pluginManager = pluginManager,
+                                    conversationId = key.conversationId,
                                     onNavigateBack = { backStack.removeLastOrNull() }
                                 )
                             }

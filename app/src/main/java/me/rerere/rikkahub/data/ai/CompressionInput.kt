@@ -10,13 +10,14 @@ import me.rerere.rikkahub.data.datastore.getChatModelForAssistant
 import kotlin.uuid.Uuid
 
 internal fun Settings.compressionModelFor(assistantId: Uuid): Model? =
-    compressModelId?.let { findModelById(it) } ?: getChatModelForAssistant(assistantId)
+    if (compressModelId != null) findModelById(compressModelId) else getChatModelForAssistant(assistantId)
 
 internal fun Settings.compressionModelLabelFor(assistantId: Uuid): String {
     val selectedOverride = compressModelId?.let(::findModelById)
+    if (compressModelId != null && selectedOverride == null) return "指定压缩模型不可用，请重新选择或清除指定项"
     val model = selectedOverride ?: getChatModelForAssistant(assistantId) ?: return "未配置可用压缩模型"
     val provider = model.findProvider(providers)?.name ?: "未知服务商"
-    val source = if (selectedOverride != null) "指定压缩模型" else "当前助手模型"
+    val source = if (selectedOverride != null) "指定压缩模型" else "当前聊天模型"
     return "$source：$provider / ${model.modelId}"
 }
 

@@ -3,6 +3,9 @@ package me.rerere.rikkahub.ui.pages.gongdu
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.ui.semantics.Role
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.layout.ContentScale
@@ -21,6 +24,10 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
@@ -37,7 +44,6 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.*
 import me.rerere.ai.provider.Modality
-import me.rerere.ai.ui.UIMessagePart
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.Add01
 import me.rerere.hugeicons.stroke.ArrowDown01
@@ -48,7 +54,8 @@ import me.rerere.hugeicons.stroke.Message01
 import me.rerere.hugeicons.stroke.Refresh
 import me.rerere.hugeicons.stroke.Search01
 import me.rerere.rikkahub.data.datastore.SettingsStore
-import me.rerere.rikkahub.data.datastore.getChatModelForAssistant
+import me.rerere.rikkahub.data.datastore.findProvider
+import me.rerere.rikkahub.data.model.getChatModelOf
 import me.rerere.rikkahub.data.files.attachmentReferenceGuard
 import me.rerere.rikkahub.data.gongdu.*
 import me.rerere.rikkahub.data.repository.ConversationRepository
@@ -78,6 +85,7 @@ private val SuggestedKeywords = listOf("周末去哪", "家常菜", "穿搭", "�
 
 @Composable
 internal fun GongduLookRoom(conversationId: String, onNavigateBack: () -> Unit) {
+    val uriHandler = LocalUriHandler.current
     val repo = koinInject<GongduRepository>()
     val videos = koinInject<GongduVideoReader>()
     val bell = koinInject<GongduDoorbell>()
@@ -101,17 +109,18 @@ internal fun GongduLookRoom(conversationId: String, onNavigateBack: () -> Unit) 
     var qr by remember { mutableStateOf<String?>(null) }
     var login by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
+    var assistantUpdating by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
-    fun runAction(action: suspend () -> Unit) {
-        if (busy) return
-        busy = true
+    fun runAction(showProgress: Boolean = true, action: suspend () -> Unit) {
+        if (busy || assistantUpdating) return
+        if (showProgress) busy = true else assistantUpdating = true
         message = null
         scope.launch {
             try { action() }
             catch (cancelled: CancellationException) { throw cancelled }
             catch (error: Exception) { message = error.message ?: "操作未完成，请稍后重试" }
-            finally { busy = false }
+            finally { if (showProgress) busy = false else assistantUpdating = false }
         }
     }
     LaunchedEffect(id) {
@@ -121,17 +130,16 @@ internal fun GongduLookRoom(conversationId: String, onNavigateBack: () -> Unit) 
     suspend fun share(note: GongduNote, video: Boolean) {
         val target = checkNotNull(id) { "当前聊天不可用，请从聊天中重新打开共度" }
         val conversation = checkNotNull(conversations.getConversationById(target)) { "当前聊天已删除" }
-        val vision = Modality.IMAGE in settingsStore.settingsFlow.value.getChatModelForAssistant(conversation.assistantId)?.inputModalities.orEmpty()
+        val currentSettings = settingsStore.settingsFlow.value
+        val model = checkNotNull(currentSettings.getChatModelOf(conversation)) { "请先为当前会话选择可用的聊天模型" }
+        val vision = Modality.IMAGE in model.inputModalities
         attachmentReferenceGuard.beginWrite().use {
             val parts = if (video) {
                 check(vision) { "当前聊天模型未启用识图，请先选择支持图片的模型" }
                 fun optionalSeconds(value: String): Double? = if (value.isBlank()) null else
                     requireNotNull(value.toDoubleOrNull()?.takeIf { it.isFinite() && it >= 0 }) { "补看时间请填写非负秒数" }
-                videos.read(note, conversation.assistantId, GongduVideoRequest(optionalSeconds(videoStart), optionalSeconds(videoEnd)))
-            } else buildList {
-                add(UIMessagePart.Text("[共度·小红书]\n${note.feed.title}\n${note.content}\n作者：${note.feed.author}\n笔记ID：${note.feed.id}\n我们一起聊聊这篇吧。"))
-                if (vision && note.feed.cover.isNotBlank()) add(UIMessagePart.Image(note.feed.cover))
-            }
+                videos.read(note, model, model.findProvider(currentSettings.providers), GongduVideoRequest(optionalSeconds(videoStart), optionalSeconds(videoEnd)))
+            } else gongduNoteShareParts(note, vision)
             check(conversations.getConversationById(target)?.assistantId == conversation.assistantId) { "当前聊天的助手已改变，请重新打开笔记" }
             checkNotNull(chat.submitMessage(target, parts)) { "未能加入聊天，请返回聊天后重试" }
             selected = null
@@ -140,7 +148,8 @@ internal fun GongduLookRoom(conversationId: String, onNavigateBack: () -> Unit) 
     }
     val openNote: (GongduFeed) -> Unit = { feed -> runAction { selected = repo.detail(feed) } }
 
-    Scaffold(containerColor = MaterialTheme.colorScheme.surfaceContainerLow, topBar = { RoomHeader("一起逛", "小红书 · 一起看，也一起聊", connected, onNavigateBack) }) { padding ->
+    GongduWaterBackdrop {
+    Scaffold(containerColor = Color.Transparent, topBar = { RoomHeader("一起逛", "小红书 · 一起看，也一起聊", connected, onNavigateBack) }) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
             RoomTabs(GongduTabs, tab, onSelect = { tab = it }, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
             if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
@@ -151,21 +160,14 @@ internal fun GongduLookRoom(conversationId: String, onNavigateBack: () -> Unit) 
             when (tab) {
                 0 -> if (!config.configured) EmptyServiceBox { tab = 3 } else FeedGrid(
                     feeds, busy, header = {
-                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                            SectionTitle("一起逛逛", "挑一篇，带回聊天", Modifier.weight(1f))
-                            FilledTonalButton(enabled = !busy, onClick = { runAction { feeds = repo.feeds() } },
-                                contentPadding = PaddingValues(horizontal = 12.dp), modifier = Modifier.height(32.dp)) {
-                                Icon(HugeIcons.Refresh, null, Modifier.size(16.dp)); Spacer(Modifier.width(4.dp))
-                                Text("换一批", style = MaterialTheme.typography.labelMedium)
-                            }
-                        }
+                        RecommendationHeader(busy) { runAction { feeds = repo.feeds() } }
                     }, empty = "点「换一批」，开始一起逛小红书。", onOpen = openNote,
                 )
                 1 -> if (!config.configured) EmptyServiceBox { tab = 3 } else FeedGrid(
                     results, busy, header = {
                         SearchHeader(keyword, onKeywordChange = { keyword = it }, busy = busy,
                             onSearch = { word -> keyword = word; runAction { results = repo.search(word) } })
-                    }, empty = "输入关键词，找一篇想聊的笔记。", onOpen = openNote,
+                    }, empty = "", onOpen = openNote,
                 )
                 2 -> InboxTab(config.configured, setting, id, assistantId, busy,
                     onDoorbell = { enabled -> runAction {
@@ -178,25 +180,35 @@ internal fun GongduLookRoom(conversationId: String, onNavigateBack: () -> Unit) 
                     onRefresh = { runAction { repo.refreshInbox() } })
                 else -> GongduSetup(config, status, connected, login, busy,
                     assistantEnabled = assistantId?.let { aid -> settings.assistants.any { it.id == aid && setting.serverId in it.mcpServers } } == true,
+                    assistantUpdating = assistantUpdating,
+                    onAssistantEnabled = { enabled -> runAction(showProgress = false) {
+                        repo.setAssistantEnabled(checkNotNull(assistantId) { "当前聊天不可用" }, enabled)
+                    } },
                     onSave = { endpoint, token -> runAction { repo.saveConfiguration(endpoint, token); message = "配置已保存，连接后可扫码登录" } },
                     onConnect = { runAction { repo.connect(); login = repo.loginStatus() } },
                     onQr = { runAction { qr = repo.loginQrCode() } },
                     onLoginStatus = { runAction { login = repo.loginStatus() } },
-                    onAssistantEnabled = { enabled -> runAction { repo.setAssistantEnabled(checkNotNull(assistantId) { "当前聊天不可用" }, enabled) } },
                 )
             }
         }
     }
+    }
     selected?.let { note ->
-        ModalBottomSheet(onDismissRequest = { if (!busy) selected = null }) {
-            LazyColumn(contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                item { Text(note.feed.title, style = MaterialTheme.typography.headlineSmall) }
-                item { Text(note.content.ifBlank { "这篇笔记没有文字正文" }) }
-                item {
-                    Button(modifier = Modifier.fillMaxWidth(), enabled = !busy, onClick = { runAction { share(note, false) } }) { Text("和机聊这篇") }
-                    val body = (note.raw["note"] as? JsonObject) ?: note.raw
-                    if (body["video"] is JsonObject) {
-                        OutlinedButton(modifier = Modifier.fillMaxWidth(), enabled = !busy, onClick = { runAction { share(note, true) } }) { Text("让机看视频") }
+        Dialog(onDismissRequest = { if (!busy) selected = null },
+            properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
+            GongduNoteDetail(note, busy, message,
+                onBack = { selected = null },
+                onOriginal = {
+                    runCatching { uriHandler.openUri(gongduNoteUrl(note)) }
+                        .onFailure { message = "无法打开原文，请检查是否安装浏览器或小红书" }
+                },
+                onShare = { runAction { share(note, false) } },
+            ) {
+                    if (note.body["video"] is JsonObject) {
+                        var expanded by remember(note.feed.id) { mutableStateOf(false) }
+                        GongduButton(modifier = Modifier.fillMaxWidth(), enabled = !busy, onClick = { runAction { share(note, true) } }) { Text("让机看视频") }
+                        TextButton(onClick = { expanded = !expanded }) { Text(if (expanded) "收起视频选项" else "视频补看片段") }
+                        if (expanded) {
                         Text("按时长抽取最多24帧，带时间标记；声音由支持音频的模型直接分析，或用语音识别读取对白。", style = MaterialTheme.typography.bodySmall)
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             OutlinedTextField(videoStart, { videoStart = it }, modifier = Modifier.weight(1f), label = { Text("补看起点（秒）") }, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal))
@@ -204,7 +216,7 @@ internal fun GongduLookRoom(conversationId: String, onNavigateBack: () -> Unit) 
                         }
                         Text("留空看全片概览；填写后补看指定片段，每次最多30秒。授权当前助手使用小红书后，机也可自主补看。仅转写文字时不能分析语气、音乐或音效。", style = MaterialTheme.typography.bodySmall)
                     }
-                }
+                        }
             }
         }
     }
@@ -220,11 +232,16 @@ internal fun GongduLookRoom(conversationId: String, onNavigateBack: () -> Unit) 
 @Composable
 internal fun RoomHeader(title: String, subtitle: String, connected: Boolean, onBack: () -> Unit) {
     TopAppBar(
+        expandedHeight = maxOf(64.dp, (44 * LocalDensity.current.fontScale + 16).dp),
+        colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent),
+        modifier = Modifier,
         navigationIcon = { IconButton(onClick = onBack) { Icon(HugeIcons.ArrowLeft01, contentDescription = "返回大厅") } },
         title = {
             Column {
-                Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                Text(subtitle, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(title, style = MaterialTheme.typography.titleLarge, fontFamily = GongduBook,
+                    fontWeight = FontWeight.Normal, letterSpacing = .5.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(subtitle, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Normal,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         },
         actions = { ConnectionChip(connected, Modifier.padding(end = 12.dp)) },
@@ -233,36 +250,38 @@ internal fun RoomHeader(title: String, subtitle: String, connected: Boolean, onB
 
 @Composable
 internal fun ConnectionChip(connected: Boolean, modifier: Modifier = Modifier) {
-    val color = if (connected) Color(0xFF2E9E5B) else MaterialTheme.colorScheme.error
+    val color = if (connected) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error
     Row(
-        modifier.clip(CircleShape).background(color.copy(alpha = 0.12f)).padding(horizontal = 10.dp, vertical = 4.dp),
+        modifier.padding(horizontal = 4.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(Modifier.size(6.dp).clip(CircleShape).background(color))
+        Box(Modifier.size(5.dp).clip(CircleShape).background(if (connected) Color(0xFF56836B) else color))
         Spacer(Modifier.width(6.dp))
         Text(if (connected) "已连接" else "未连接", color = color, style = MaterialTheme.typography.labelSmall)
     }
 }
 
-/** Capsule segmented control: the selected option is a raised surface pill. */
+/** A raised selected key inside a recessed track; each key keeps its full touch target. */
 @Composable
 internal fun RoomTabs(tabs: List<String>, selected: Int, onSelect: (Int) -> Unit, modifier: Modifier = Modifier) {
-    Row(
-        modifier.fillMaxWidth().height(40.dp).clip(CircleShape)
-            .background(MaterialTheme.colorScheme.surfaceContainerHighest).padding(3.dp),
-    ) {
+    Row(modifier.fillMaxWidth().heightIn(min = 48.dp).padding(vertical = 4.dp)
+        .gongduGlass(RoundedCornerShape(16.dp), inset = true)
+        .padding(4.dp).selectableGroup(), horizontalArrangement = Arrangement.spacedBy(3.dp)) {
         tabs.forEachIndexed { index, title ->
             val active = index == selected
-            Surface(
-                onClick = { onSelect(index) }, shape = CircleShape,
-                color = if (active) MaterialTheme.colorScheme.surface else Color.Transparent,
-                shadowElevation = if (active) 2.dp else 0.dp,
-                modifier = Modifier.weight(1f).fillMaxHeight(),
+            Column(
+                modifier = Modifier.weight(1f).heightIn(min = 32.dp)
+                    .then(if (active) Modifier.gongduGlass(RoundedCornerShape(12.dp), raised = true) else Modifier)
+                    .clip(RoundedCornerShape(12.dp))
+                    .selectable(selected = active, role = Role.Tab, onClick = { onSelect(index) })
+                    .padding(horizontal = 4.dp, vertical = 4.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center,
             ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Text(title, style = MaterialTheme.typography.labelLarge, maxLines = 1,
-                        color = if (active) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant)
-                }
+                Text(title, style = MaterialTheme.typography.labelLarge, maxLines = 1,
+                    fontWeight = FontWeight.Normal,
+                    color = if (active) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant)
+
             }
         }
     }
@@ -285,7 +304,7 @@ internal fun FeedGrid(
         modifier = Modifier.fillMaxSize(),
     ) {
         item(span = StaggeredGridItemSpan.FullLine) { Box(Modifier.padding(horizontal = 4.dp, vertical = 4.dp)) { header() } }
-        if (feeds.isEmpty()) item(span = StaggeredGridItemSpan.FullLine) {
+        if (feeds.isEmpty() && empty.isNotBlank()) item(span = StaggeredGridItemSpan.FullLine) {
             Text(empty, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 4.dp, vertical = 24.dp))
         }
@@ -296,20 +315,18 @@ internal fun FeedGrid(
 @Composable
 internal fun FeedCard(feed: GongduFeed, enabled: Boolean, onClick: () -> Unit) {
     Card(
-        onClick = onClick, enabled = enabled, shape = RoundedCornerShape(14.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface,
-            disabledContainerColor = MaterialTheme.colorScheme.surface),
-        border = roomCardBorder(),
-        modifier = Modifier.fillMaxWidth(),
+        onClick = onClick, enabled = enabled, shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(containerColor = Color.Transparent, disabledContainerColor = Color.Transparent),
+        modifier = Modifier.fillMaxWidth().gongduGlass(RoundedCornerShape(12.dp)),
     ) {
         if (feed.cover.isNotBlank()) {
             // Covers keep their own aspect ratio; the cap stops very tall images from dominating a column.
             AsyncImage(feed.cover, contentDescription = feed.title, contentScale = ContentScale.FillWidth,
                 modifier = Modifier.fillMaxWidth().heightIn(max = 280.dp))
         } else CoverPlaceholder(feed.title)
-        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(cleanSummary(feed.title), style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold,
-                lineHeight = 19.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(cleanSummary(feed.title), style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Normal,
+                lineHeight = 21.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
             if (feed.author.isNotBlank()) Row(verticalAlignment = Alignment.CenterVertically) {
                 InitialAvatar(feed.author, 18.dp)
                 Spacer(Modifier.width(6.dp))
@@ -333,19 +350,26 @@ private fun InitialAvatar(name: String, size: androidx.compose.ui.unit.Dp) {
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun SearchHeader(keyword: String, onKeywordChange: (String) -> Unit, busy: Boolean, onSearch: (String) -> Unit) {
+internal fun SearchHeader(keyword: String, onKeywordChange: (String) -> Unit, busy: Boolean, onSearch: (String) -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         OutlinedTextField(
-            keyword, onKeywordChange, singleLine = true, shape = CircleShape,
+            keyword, onKeywordChange, singleLine = true, shape = RoundedCornerShape(16.dp),
             placeholder = { Text("想和机一起看什么？") },
             leadingIcon = { Icon(HugeIcons.Search01, contentDescription = null) },
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
             keyboardActions = KeyboardActions(onSearch = { if (!busy && keyword.isNotBlank()) onSearch(keyword.trim()) }),
-            modifier = Modifier.fillMaxWidth(),
+            colors = OutlinedTextFieldDefaults.colors(unfocusedBorderColor = Color.Transparent,
+                focusedBorderColor = MaterialTheme.colorScheme.primary.copy(alpha = .5f)),
+            modifier = Modifier.fillMaxWidth().gongduGlass(RoundedCornerShape(16.dp), inset = true),
+            textStyle = MaterialTheme.typography.bodyLarge,
         )
-        FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)) {
             SuggestedKeywords.forEach { word ->
-                SuggestionChip(onClick = { if (!busy) onSearch(word) }, label = { Text(word, maxLines = 1) })
+                GongduButton(onClick = { onSearch(word) }, enabled = !busy,
+                    shape = RoundedCornerShape(10.dp), modifier = Modifier.padding(vertical = 4.dp)) {
+                    Text(word, maxLines = 1)
+                }
             }
         }
     }
@@ -385,14 +409,14 @@ internal fun InboxTab(
 ) {
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
-            Card(shape = RoundedCornerShape(14.dp), colors = roomCardColors(), border = roomCardBorder()) {
+            Card(shape = RoundedCornerShape(20.dp), colors = roomCardColors(), modifier = Modifier.gongduGlass(RoundedCornerShape(20.dp))) {
                 Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text("新消息告诉当前聊天", style = MaterialTheme.typography.titleSmall)
                         Text("APP 在前台时约每分钟检查；关闭 APP 后不保证即时提醒。", style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
-                    Switch(checked = setting.doorbellEnabled && setting.targetConversationId == conversationId,
+                    GongduSwitch(checked = setting.doorbellEnabled && setting.targetConversationId == conversationId,
                         enabled = configured && !busy && assistantId != null, onCheckedChange = onDoorbell)
                 }
             }
@@ -410,7 +434,7 @@ internal fun InboxTab(
             // Acknowledged means delivered to chat (or initial sync), not read by the user.
             // Keep pending deliveries first, newest first within each group.
             val events = setting.inbox.events.asReversed().sortedBy { it.acknowledged }
-            Card(shape = RoundedCornerShape(14.dp), colors = roomCardColors(), border = roomCardBorder()) {
+            Card(shape = RoundedCornerShape(20.dp), colors = roomCardColors(), modifier = Modifier.gongduGlass(RoundedCornerShape(20.dp))) {
                 when {
                     !configured -> InboxNote("配置小红书服务后可以接收互动消息。")
                     !setting.inbox.supported -> InboxNote("连接后将检查通知能力；服务不支持通知时，浏览和搜索仍可使用。")
@@ -448,7 +472,7 @@ internal fun InboxRow(event: GongduEvent) {
             // Badges group related events; they cannot invent a verb (e.g. 收藏 is not 赞).
             Text(
                 name.ifBlank { "小红书互动" },
-                style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Normal, maxLines = 1, overflow = TextOverflow.Ellipsis,
             )
             if (body.isNotBlank()) Text(cleanSummary(body), style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
@@ -480,7 +504,7 @@ internal fun GongduEmptyService(onConfigure: () -> Unit) {
         Text("一起逛小红书", style = MaterialTheme.typography.titleLarge)
         Text("小红书服务还没有配置。先连接你自己的服务，之后就能扫码登录、浏览笔记和接收互动。",
             style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Button(onClick = onConfigure) { Text("配置小红书服务") }
+        GongduButton(onClick = onConfigure) { Text("配置小红书服务") }
     }
 }
 
@@ -489,6 +513,7 @@ internal fun GongduSetup(
     config: GongduConfiguration, status: String, connected: Boolean, login: String, busy: Boolean,
     assistantEnabled: Boolean, onSave: (String, String) -> Unit, onConnect: () -> Unit, onQr: () -> Unit,
     onLoginStatus: () -> Unit, onAssistantEnabled: (Boolean) -> Unit,
+    assistantUpdating: Boolean = false,
 ) {
     var endpoint by remember(config.endpoint) { mutableStateOf(config.endpoint) }
     var token by remember(config.token) { mutableStateOf(config.token) }
@@ -497,19 +522,20 @@ internal fun GongduSetup(
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { AccountCard(connected, login, busy, onQr, onLoginStatus) }
         item {
-            Card(shape = RoundedCornerShape(14.dp), colors = roomCardColors(), border = roomCardBorder()) {
+            Card(shape = RoundedCornerShape(20.dp), colors = roomCardColors(), modifier = Modifier.gongduGlass(RoundedCornerShape(20.dp))) {
                 Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text("让当前助手使用小红书", style = MaterialTheme.typography.titleSmall)
                         Text("启用后，机可以调用服务提供的浏览和互动工具。", style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
-                    Switch(assistantEnabled, onCheckedChange = onAssistantEnabled, enabled = config.configured && !busy)
+                    GongduSwitch(assistantEnabled, onCheckedChange = onAssistantEnabled,
+                        enabled = config.configured && !busy && !assistantUpdating)
                 }
             }
         }
         item {
-            Card(shape = RoundedCornerShape(14.dp), colors = roomCardColors(), border = roomCardBorder()) {
+            Card(shape = RoundedCornerShape(20.dp), colors = roomCardColors(), modifier = Modifier.gongduGlass(RoundedCornerShape(20.dp))) {
                 Column {
                     Row(
                         Modifier.fillMaxWidth().clickable { advanced = !advanced }.padding(16.dp),
@@ -528,8 +554,8 @@ internal fun GongduSetup(
                         OutlinedTextField(token, { token = it }, enabled = !busy, label = { Text("访问令牌（如服务需要）") },
                             visualTransformation = PasswordVisualTransformation(), singleLine = true, modifier = Modifier.fillMaxWidth())
                         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                            Button(enabled = !busy && endpoint.isNotBlank(), onClick = { onSave(endpoint, token) }) { Text("保存配置") }
-                            OutlinedButton(enabled = !busy && config.configured, onClick = onConnect) { Text("连接服务") }
+                            GongduButton(enabled = !busy && endpoint.isNotBlank(), onClick = { onSave(endpoint, token) }) { Text("保存配置") }
+                            GongduButton(enabled = !busy && config.configured, onClick = onConnect) { Text("连接服务") }
                         }
                     }
                 }
@@ -545,7 +571,7 @@ internal fun GongduSetup(
 
 @Composable
 private fun AccountCard(connected: Boolean, login: String, busy: Boolean, onQr: () -> Unit, onLoginStatus: () -> Unit) {
-    Card(shape = RoundedCornerShape(14.dp), colors = roomCardColors(), border = roomCardBorder()) {
+    Card(shape = RoundedCornerShape(20.dp), colors = roomCardColors(), modifier = Modifier.gongduGlass(RoundedCornerShape(20.dp))) {
         Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 InitialAvatar("红", 44.dp)
@@ -558,17 +584,17 @@ private fun AccountCard(connected: Boolean, login: String, busy: Boolean, onQr: 
                 }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Button(enabled = connected && !busy, onClick = onQr) { Text("扫码登录") }
-                OutlinedButton(enabled = connected && !busy, onClick = onLoginStatus) { Text("检查登录状态") }
+                GongduButton(enabled = connected && !busy, onClick = onQr) { Text("扫码登录") }
+                GongduButton(enabled = connected && !busy, onClick = onLoginStatus) { Text("检查登录状态") }
             }
         }
     }
 }
 
 
-/** Room cards: plain surface with a hairline, sitting on the tinted room background. */
+/** The shared glass modifier supplies each card surface. */
 @Composable
-internal fun roomCardColors() = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+internal fun roomCardColors() = CardDefaults.cardColors(containerColor = Color.Transparent)
 
 @Composable
 internal fun roomCardBorder() = BorderStroke(0.6.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
@@ -576,7 +602,7 @@ internal fun roomCardBorder() = BorderStroke(0.6.dp, MaterialTheme.colorScheme.o
 @Composable
 internal fun SectionTitle(title: String, subtitle: String, modifier: Modifier = Modifier) {
     Column(modifier) {
-        Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+        Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Normal)
         Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
@@ -588,10 +614,32 @@ internal fun CoverPlaceholder(title: String) {
     val height = 150 + (title.hashCode().mod(5)) * 18
     Box(
         Modifier.fillMaxWidth().height(height.dp)
-            .background(Brush.linearGradient(listOf(colors.primaryContainer, colors.tertiaryContainer))),
+            .background(Brush.linearGradient(listOf(colors.surfaceContainerLow, colors.surfaceContainer))),
         contentAlignment = Alignment.Center,
     ) {
         // A quiet mark only: the title is already shown right below the cover.
-        Text("✦", color = colors.onPrimaryContainer.copy(alpha = 0.35f), fontSize = 28.sp)
+        Text("✦", color = colors.onSurfaceVariant.copy(alpha = 0.25f), fontSize = 18.sp)
+    }
+}
+
+@Composable
+internal fun RecommendationHeading(modifier: Modifier = Modifier) {
+    Column(modifier.padding(vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("挑一篇，带回聊天", style = MaterialTheme.typography.titleMedium, fontFamily = GongduBook,
+            fontWeight = FontWeight.Normal, color = MaterialTheme.colorScheme.onSurface)
+        GongduCelestialRule(MaterialTheme.colorScheme.outline)
+    }
+}
+
+@Composable
+internal fun RecommendationHeader(busy: Boolean, onRefresh: () -> Unit) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        RecommendationHeading(Modifier.weight(1f))
+        GongduButton(enabled = !busy, onClick = onRefresh,
+            contentPadding = PaddingValues(horizontal = 12.dp)) {
+            Icon(HugeIcons.Refresh, null, Modifier.size(16.dp))
+            Spacer(Modifier.width(4.dp))
+            Text("换一批", style = MaterialTheme.typography.labelMedium)
+        }
     }
 }

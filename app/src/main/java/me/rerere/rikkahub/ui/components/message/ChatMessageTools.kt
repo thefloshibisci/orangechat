@@ -216,7 +216,10 @@ fun ChainOfThoughtScope.ChatMessageToolStep(
     val isDenied = tool.approvalState is ToolApprovalState.Denied
     val arguments = tool.inputAsJson()
     val memoryAction = arguments.getStringContent("action")
-    val content = if (tool.isExecuted) {
+    val workspaceMachine = workspaceToolMachine(tool.output)
+    val content = if (tool.isExecuted && tool.toolName.startsWith("workspace_")) {
+        workspaceToolContent(tool.output) ?: JsonObject(emptyMap())
+    } else if (tool.isExecuted) {
         runCatching {
             JsonInstant.parseToJsonElement(
                 tool.output.filterIsInstance<UIMessagePart.Text>().joinToString("\n") { it.text }
@@ -225,6 +228,7 @@ fun ChainOfThoughtScope.ChatMessageToolStep(
     } else {
         null
     }
+    val workspaceError = if (tool.toolName.startsWith("workspace_")) content.getStringContent("error") else null
     val images = tool.output.filterIsInstance<UIMessagePart.Image>()
     // Video analysis attachments feed the model; they are not assistant voice messages.
     val audios = if (tool.toolName == "gongdu_read_video") emptyList()
@@ -324,7 +328,7 @@ fun ChainOfThoughtScope.ChatMessageToolStep(
         ToolNames.WORKSPACE_EDIT_FILE -> workspaceEditDiffOf(tool) != null
         ToolNames.WORKSPACE_SHELL -> content != null
         else -> false
-    } || isDenied || images.isNotEmpty() || audios.isNotEmpty()
+    } || workspaceError != null || isDenied || images.isNotEmpty() || audios.isNotEmpty()
 
     ControlledChainOfThoughtStep(
         expanded = expanded,
@@ -344,14 +348,21 @@ fun ChainOfThoughtScope.ChatMessageToolStep(
             }
         },
         label = {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.titleSmall,
-                color = MaterialTheme.colorScheme.secondary,
-                modifier = Modifier.shimmer(isLoading = loading),
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-            )
+            Column {
+                workspaceMachine?.let { machine ->
+                    Text(machine, style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.secondary, maxLines = 2,
+                        overflow = TextOverflow.Ellipsis)
+                }
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.secondary,
+                    modifier = Modifier.shimmer(isLoading = loading),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
         },
         extra = if (isPending && onToolApproval != null) {
             {
@@ -395,6 +406,10 @@ fun ChainOfThoughtScope.ChatMessageToolStep(
         content = if (hasExtraContent) {
             {
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    workspaceError?.let { error ->
+                        Text(error.substringBefore("\n\tat "), color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.labelSmall)
+                    }
                     if (tool.toolName == ToolNames.MEMORY &&
                         memoryAction in listOf(MemoryActions.CREATE, MemoryActions.EDIT)
                     ) {
@@ -669,6 +684,11 @@ private fun ToolCallPreviewSheet(
         containerColor = popupContainerColor(BottomSheetDefaults.ContainerColor),
         content = {
             when {
+                toolName.startsWith("workspace_") && content.getStringContent("error") != null -> {
+                    Text(content.getStringContent("error").orEmpty().substringBefore("\n\tat "),
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.padding(16.dp).verticalScroll(rememberScrollState()))
+                }
                 // workspace_write_file / workspace_edit_file 即使未执行 (content == null)
                 // 也能基于入参预览内容/diff, 先于 null 兜底分支处理
                 toolName == ToolNames.WORKSPACE_WRITE_FILE -> WorkspaceFileContentPreview(
@@ -1328,7 +1348,7 @@ private const val WORKSPACE_SHELL_SUMMARY_MAX_LINES = 8
  * metadata["diff"] 里 (见 WorkspaceTools.kt), 不会随工具结果发给 API。
  */
 private fun workspaceEditDiffOf(tool: UIMessagePart.Tool): String? =
-    tool.output.firstOrNull()?.metadata?.get("diff")?.jsonPrimitiveOrNull?.contentOrNull
+    workspaceToolDiff(tool.output)
 
 /** 由文件扩展名推断语法高亮语言 */
 private fun languageOf(path: String?): String = when (
@@ -1426,7 +1446,7 @@ private fun WorkspaceEditFilePreview(
     scope: kotlinx.coroutines.CoroutineScope,
     onDismissRequest: () -> Unit,
 ) {
-    val diff = output.firstOrNull()?.metadata?.get("diff")?.jsonPrimitiveOrNull?.contentOrNull
+    val diff = workspaceToolDiff(output)
     if (diff == null) {
         GenericToolPreview(
             toolName = toolName,

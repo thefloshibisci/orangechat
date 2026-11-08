@@ -23,6 +23,7 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
@@ -35,7 +36,12 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.font.Font
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -72,15 +78,19 @@ internal data class GongduPaper(
     val line: Color, val hair: Color, val dot: Color,
 ) {
     companion object {
-        val Light = GongduPaper(Color(0xFFF5EEE9), Color(0xFFFCF8F4), Color(0xFF2B2927), Color(0xFF827668),
-            Color(0xFF9A938A), Color(0xFF8C847A), Color(0xFFD8D2C8), Color(0xFFC9C2B7))
-        val Dark = GongduPaper(Color(0xFF1C1B19), Color(0xFF2A2825), Color(0xFFEDE6DA), Color(0xFFBDB4A6),
-            Color(0xFF8E867B), Color(0xFFCFC6B8), Color(0xFF4A463F), Color(0xFF4F4A43))
+        val Light = GongduPaper(Color(0xFFF5EEE9), Color(0xFFFCF8F4), Color(0xFF554B43), Color(0xFF74695F),
+            Color(0xFF756B61), Color(0xFF8C847A), Color(0xFFD8D2C8), Color(0xFFC9C2B7))
+        val Dark = GongduPaper(Color(0xFF1C1B19), Color(0xFF2A2825), Color(0xFFE4D9C8), Color(0xFFBDB4A6),
+            Color(0xFFB6AB9B), Color(0xFFCFC6B8), Color(0xFF4A463F), Color(0xFF4F4A43))
     }
 }
 
 private const val HUB_PREFS = "gongdu_hub"
 private const val LAST_ROOM_KEY = "last_room"
+
+// Bundled title/Latin subset: Android's generic serif can fall back to sans for Chinese.
+// See docs/design/gongdu-typography.md before adding or renaming room titles.
+internal val GongduBook = FontFamily(Font(R.font.gongdu_book_regular, FontWeight.Normal))
 
 internal fun Context.lastGongduRoom(): String? = getSharedPreferences(HUB_PREFS, Context.MODE_PRIVATE).getString(LAST_ROOM_KEY, null)
 internal fun Context.saveLastGongduRoom(id: String) =
@@ -117,16 +127,20 @@ fun GongduHub(
                     IconButton(onClick = onNavigateBack) { Icon(HugeIcons.ArrowLeft01, contentDescription = "返回", tint = paper.soft) }
                     Spacer(Modifier.weight(1f))
                     Text("%02d / %02d".format(pager.currentPage + 1, rooms.size), color = paper.muted,
+                        fontFamily = GongduBook, fontWeight = FontWeight.Normal,
                         fontSize = (11 * pageScale).sp, lineHeight = (15 * pageScale).sp, letterSpacing = 1.sp, modifier = Modifier.padding(end = 16.dp))
                 }
                 Column(Modifier.padding(horizontal = 28.dp)) {
-                    Text("// GONGDU INDEX · OURS", color = paper.muted, fontSize = (9.5f * pageScale).sp, lineHeight = (13 * pageScale).sp, letterSpacing = 1.6.sp)
+                    Text("GONGDU INDEX · OURS", color = paper.muted, fontFamily = GongduBook, fontWeight = FontWeight.Normal,
+                        fontSize = (9.5f * pageScale).sp, lineHeight = (13 * pageScale).sp, letterSpacing = 1.2.sp)
                     Spacer(Modifier.height(6.dp))
-                    Text("共度", color = paper.ink, fontSize = (31 * pageScale).sp, lineHeight = (39 * pageScale).sp, fontWeight = FontWeight.Bold)
+                    Text("共度", color = paper.ink, fontFamily = GongduBook, fontWeight = FontWeight.Normal,
+                        fontSize = (31 * pageScale).sp, lineHeight = (39 * pageScale).sp, letterSpacing = 1.4.sp)
                     Spacer(Modifier.height(4.dp))
-                    Text("每一张牌，通往一件一起做的事", color = paper.soft, fontSize = (12 * pageScale).sp, lineHeight = (17 * pageScale).sp)
+                    Text("每一张牌，通往一件一起做的事", color = paper.soft, fontFamily = GongduBook,
+                        fontWeight = FontWeight.Normal, fontSize = (12 * pageScale).sp, lineHeight = (17 * pageScale).sp)
                     Spacer(Modifier.height(12.dp))
-                    Box(Modifier.width(28.dp).height(1.5.dp).background(paper.ink))
+                    GongduCelestialRule(paper.line)
                 }
                 BoxWithConstraints(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                     // Use the available viewport, not a small fixed dp cap on tall phones.
@@ -159,9 +173,40 @@ fun GongduHub(
                 }
                 PageDots(pager, paper)
                 Text("左右滑动挑一间 · 轻点进入", color = paper.muted, fontSize = (10 * pageScale).sp, lineHeight = (14 * pageScale).sp, letterSpacing = .8.sp,
+                    fontFamily = GongduBook, fontWeight = FontWeight.Normal,
                     textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(top = 10.dp, bottom = 24.dp))
             }
         }
+    }
+}
+
+/** A quiet hairline with a small crescent and star, echoing the paper frame. */
+@Composable
+internal fun GongduCelestialRule(color: Color) {
+    Canvas(Modifier.width(52.dp).height(8.dp)) {
+        val ink = color.copy(alpha = .65f)
+        val cy = size.height / 2
+        drawLine(ink, Offset(0f, cy), Offset(28.dp.toPx(), cy), .5.dp.toPx())
+        val cx = 37.dp.toPx()
+        val r = 3.5.dp.toPx()
+        val moon = Path().apply {
+            moveTo(cx + r * .45f, cy - r)
+            cubicTo(cx - r * 1.35f, cy - r, cx - r * 1.35f, cy + r, cx + r * .45f, cy + r)
+            cubicTo(cx - r * .55f, cy + r * .45f, cx - r * .55f, cy - r * .45f, cx + r * .45f, cy - r)
+            close()
+        }
+        drawPath(moon, ink)
+        val sx = 47.dp.toPx()
+        val sr = 2.dp.toPx()
+        val star = Path().apply {
+            moveTo(sx, cy - sr)
+            quadraticTo(sx + sr * .2f, cy - sr * .2f, sx + sr, cy)
+            quadraticTo(sx + sr * .2f, cy + sr * .2f, sx, cy + sr)
+            quadraticTo(sx - sr * .2f, cy + sr * .2f, sx - sr, cy)
+            quadraticTo(sx - sr * .2f, cy - sr * .2f, sx, cy - sr)
+            close()
+        }
+        drawPath(star, ink)
     }
 }
 
@@ -255,9 +300,11 @@ private fun RoomCard(room: GongduRoom, paper: GongduPaper, modifier: Modifier, o
                 // Give the art the upper two thirds; measure from the whole card, not its padded body.
                 Column(Modifier.fillMaxWidth().height(illustrationHeight).padding(top = 28.dp * cardScale, bottom = 6.dp)) {
                     Row(Modifier.fillMaxWidth()) {
-                        Text("No.${room.numeral}", color = paper.muted, fontSize = (9 * cardScale).sp, lineHeight = (12 * cardScale).sp, letterSpacing = 1.2.sp)
+                        Text("No.${room.numeral}", color = paper.muted, fontFamily = GongduBook, fontWeight = FontWeight.Normal,
+                            fontSize = (9 * cardScale).sp, lineHeight = (12 * cardScale).sp, letterSpacing = 1.2.sp)
                         Spacer(Modifier.weight(1f))
-                        Text("SPECIMEN", color = paper.muted, fontSize = (8.5f * cardScale).sp, lineHeight = (12 * cardScale).sp, letterSpacing = 1.4.sp)
+                        Text("SPECIMEN", color = paper.muted, fontFamily = GongduBook, fontWeight = FontWeight.Normal,
+                            fontSize = (8.5f * cardScale).sp, lineHeight = (12 * cardScale).sp, letterSpacing = 1.4.sp)
                     }
                     Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
                         if (room.illustration != null) {
@@ -278,13 +325,22 @@ private fun RoomCard(room: GongduRoom, paper: GongduPaper, modifier: Modifier, o
                 }
                 Column(Modifier.fillMaxWidth().weight(1f).padding(top = 8.dp, bottom = footerInset)) {
                     Text(room.name, color = if (dimmed) paper.soft else paper.ink, fontSize = (20 * cardScale).sp, lineHeight = (26 * cardScale).sp,
-                        fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        fontFamily = GongduBook, fontWeight = FontWeight.Normal, letterSpacing = .5.sp,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Spacer(Modifier.height(2.dp))
                     Text(room.subtitle, color = paper.muted, fontSize = (8.5f * cardScale).sp, lineHeight = (12 * cardScale).sp, letterSpacing = 1.sp,
+                        fontFamily = GongduBook, fontWeight = FontWeight.Normal,
                         maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Spacer(Modifier.weight(1f))
-                    Text(if (room.enabled) "轻点进入 →" else "筹备中", color = paper.soft, fontSize = (10 * cardScale).sp, lineHeight = (13 * cardScale).sp,
-                        modifier = Modifier.align(Alignment.End))
+                    val hintStyle = TextStyle(fontFamily = GongduBook, fontWeight = FontWeight.Normal,
+                        fontSize = (10 * cardScale).sp, lineHeight = (13 * cardScale).sp)
+                    val hintLayout = rememberTextMeasurer().measure("轻点进入 →", hintStyle)
+                    val density = LocalDensity.current
+                    Box(Modifier.align(Alignment.End).width(with(density) { hintLayout.size.width.toDp() })) {
+                        Text(if (room.enabled) "轻点进入 →" else "筹备中", color = paper.soft, style = hintStyle,
+                            modifier = Modifier.padding(start = if (room.enabled) 0.dp else
+                                with(density) { hintLayout.getBoundingBox(1).left.toDp() }))
+                    }
                 }
             }
         }

@@ -32,7 +32,14 @@ data class GongduFeed(
     val cover: String = "",
 )
 
-data class GongduNote(val feed: GongduFeed, val content: String, val raw: JsonObject)
+data class GongduNote(val feed: GongduFeed, val content: String, val raw: JsonObject) {
+    val body: JsonObject get() = raw.obj("note") ?: raw
+    val images: List<GongduImage> get() = GongduCodec.images(body).ifEmpty {
+        listOfNotNull(GongduToolResultPolicy.normalizedImageUrl(feed.cover)?.let { GongduImage(1, it) })
+    }
+}
+
+data class GongduImage(val index: Int, val url: String, val width: Int = 0, val height: Int = 0)
 
 internal fun JsonObject.obj(key: String): JsonObject? = this[key] as? JsonObject
 internal fun JsonObject.str(vararg keys: String): String = keys.firstNotNullOfOrNull {
@@ -41,6 +48,21 @@ internal fun JsonObject.str(vararg keys: String): String = keys.firstNotNullOfOr
 
 /** Upstream versions wrap payloads differently. Never interpret plain success text as a note. */
 object GongduCodec {
+    fun imageList(note: JsonObject): JsonArray =
+        (note["imageList"] ?: note["image_list"] ?: note["images"]) as? JsonArray ?: JsonArray(emptyList())
+
+    /** Same ordered CDN images for the reader, chat sharing, and model paging. */
+    fun images(note: JsonObject): List<GongduImage> = imageList(note).mapIndexedNotNull { index, item ->
+        val obj = item as? JsonObject
+        val candidates = if (obj != null) sequenceOf(obj.str("urlDefault", "url_default"), obj.str("url"), obj.str("urlPre", "url_pre"))
+            .plus(((obj["infoList"] ?: obj["info_list"]) as? JsonArray).orEmpty().mapNotNull { (it as? JsonObject)?.str("url") })
+        else sequenceOf((item as? JsonPrimitive)?.contentOrNull.orEmpty())
+        val url = candidates.mapNotNull(GongduToolResultPolicy::normalizedImageUrl).firstOrNull()
+            ?: return@mapIndexedNotNull null
+        GongduImage(index + 1, url, (obj?.get("width") as? JsonPrimitive)?.intOrNull ?: 0,
+            (obj?.get("height") as? JsonPrimitive)?.intOrNull ?: 0)
+    }
+
     fun payload(text: String): JsonElement {
         runCatching { Json.parseToJsonElement(text) }.getOrNull()?.let {
             if (it is JsonObject || it is JsonArray) return it
@@ -85,10 +107,13 @@ object GongduCodec {
     }
 
     fun note(value: JsonElement, fallback: GongduFeed): GongduNote {
-        val root = unwrap(value) as? JsonObject ?: error("服务未返回笔记详情")
+        var root = unwrap(value) as? JsonObject ?: error("服务未返回笔记详情")
+        repeat(3) { if (root.obj("note") == null && root.obj("data") != null) root = root.obj("data")!! }
         val note = root.obj("note") ?: root
         val parsed = feed(note)
         return GongduNote(parsed.copy(id = parsed.id.ifBlank { fallback.id },
+            title = parsed.title.takeUnless { it == "未命名笔记" } ?: fallback.title,
+            author = parsed.author.ifBlank { fallback.author },
             token = parsed.token.ifBlank { fallback.token }, cover = parsed.cover.ifBlank { fallback.cover }),
             note.str("desc", "content", "description"), root)
     }

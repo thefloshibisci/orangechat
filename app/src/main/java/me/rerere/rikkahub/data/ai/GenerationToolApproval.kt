@@ -18,6 +18,7 @@ import me.rerere.ai.core.Tool
 import me.rerere.ai.ui.ToolApprovalState
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
+import me.rerere.rikkahub.data.ai.tools.WorkspaceToolExecutionException
 
 internal fun List<UIMessage>.unfinishedGenerationTools(): List<UIMessagePart.Tool> =
     lastOrNull()?.getTools()?.filter { !it.isExecuted }.orEmpty()
@@ -116,6 +117,8 @@ private suspend fun executeGenerationTool(
             .withExecutionCheckpoint("completed")
     } catch (error: CancellationException) {
         throw error
+    } catch (error: WorkspaceToolExecutionException) {
+        started.copy(output = error.output).withExecutionCheckpoint("failed")
     } catch (error: Exception) {
         started.copy(output = toolError(
             json,

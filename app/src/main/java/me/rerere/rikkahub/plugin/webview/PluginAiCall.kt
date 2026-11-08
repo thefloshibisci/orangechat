@@ -19,6 +19,8 @@ import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.findProvider
 import me.rerere.rikkahub.data.datastore.getCurrentChatModel
+import me.rerere.rikkahub.data.model.Conversation
+import me.rerere.rikkahub.data.model.getChatModelOf
 
 /** The shared boundary for page, overlay and hook text generation. */
 internal class PluginAiCall(
@@ -26,6 +28,7 @@ internal class PluginAiCall(
     private val loadSettings: suspend () -> Settings,
     private val generateText: suspend (ProviderSetting, List<UIMessage>, TextGenerationParams) -> String,
     private val onError: (Exception) -> Unit = {},
+    private val loadConversation: (suspend () -> Conversation?)? = null,
 ) {
     suspend fun call(prompt: String, systemPrompt: () -> String): String {
         try {
@@ -37,7 +40,12 @@ internal class PluginAiCall(
             if (prompt.isBlank()) return errorResult("prompt is required")
 
             val settings = loadSettings()
-            val model = settings.getCurrentChatModel()
+            val model = if (loadConversation != null) {
+                val conversation = loadConversation.invoke()
+                    ?: return errorResult("当前会话已删除，请从聊天重新打开插件")
+                settings.getChatModelOf(conversation)
+                    ?: return errorResult("当前会话所选模型不可用，请重新选择模型")
+            } else settings.getCurrentChatModel()
                 ?: return errorResult("No chat model configured")
             val provider = model.findProvider(settings.providers)
                 ?: return errorResult("Provider not found for model")

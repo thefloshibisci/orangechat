@@ -1,0 +1,13 @@
+{
+  "sourceSha256": "e9a36d45e89db92714316002bc32579e3c8d1fed1786bcf05b056c4926873625",
+  "sourceSize": [
+    1280,
+    2276
+  ],
+  "whitePoint": 239,
+  "method": "grayscale; tonal density capped 0.55; paper #F5EEE9; dark #2F2B27; no screen overlay",
+  "outputs": {
+    "gongdu_room_paper.webp": "788484b650a77cb4804b1ae6f121bd9f08e12d349b303a4db6792547651734db",
+    "gongdu_room_paper_dark.webp": "15e33eabc40264999326da12a764c12706b1ae14000d2a26ef8046e6eeff385c"
+  }
+}
