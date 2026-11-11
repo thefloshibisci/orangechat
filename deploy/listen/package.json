@@ -1,0 +1,12 @@
+{
+  "name": "orangechat-gongdu-listen",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Private Gongdu music source adapter using one-earbud",
+  "license": "MIT",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test test"
+  }
+}

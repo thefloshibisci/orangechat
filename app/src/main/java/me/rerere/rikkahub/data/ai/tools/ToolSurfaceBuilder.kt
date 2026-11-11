@@ -56,6 +56,8 @@ class ToolSurfaceBuilder(
         workspaceCwd: String? = null,
     ): List<Tool> = buildList {
         addAll(me.rerere.rikkahub.data.gongdu.gongduTools(settings, assistant.id))
+        addAll(me.rerere.rikkahub.data.listen.listenTools(invocationContext))
+        addAll(me.rerere.rikkahub.data.reading.readingTools(invocationContext))
         if (!localSceneSettings.settingsFlow.value.sereinHook.usableBy(assistant.id.toString())) addAll(me.rerere.rikkahub.data.serein.buildLocalSceneTools(assistant, localScenes) {
             localSceneSettings.settingsFlow.value.let { live ->
                 !live.sereinHook.usableBy(assistant.id.toString()) &&

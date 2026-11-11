@@ -546,6 +546,43 @@ private fun ChatPageContent(
             )
         ) {
         AssistantBackground(setting = setting)
+        var showListenRoom by remember(conversation.id) { mutableStateOf(false) }
+        var showReadRoom by remember(conversation.id) { mutableStateOf(false) }
+        if (showReadRoom) {
+            androidx.compose.ui.window.Dialog(
+                onDismissRequest = { showReadRoom = false },
+                properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+            ) {
+                me.rerere.rikkahub.ui.pages.gongdu.GongduReadRoom(
+                    conversationId = conversation.id.toString(),
+                    onNavigateBack = { showReadRoom = false },
+                    onShare = { text ->
+                        check(!inputState.isEditing()) { "请先完成当前消息的编辑，再分享书摘" }
+                        inputState.setMessageText(text)
+                        showReadRoom = false
+                    },
+                )
+            }
+        }
+        if (showListenRoom) {
+            androidx.compose.ui.window.Dialog(
+                onDismissRequest = { showListenRoom = false },
+                properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+            ) {
+                me.rerere.rikkahub.ui.pages.gongdu.GongduListenRoom(
+                    conversationId = conversation.id.toString(),
+                    onNavigateBack = { showListenRoom = false },
+                    onShare = { text ->
+                        if (inputState.isEditing()) {
+                            toaster.show("请先完成当前消息的编辑，再分享歌曲", type = ToastType.Warning)
+                        } else {
+                            inputState.setMessageText(text)
+                            showListenRoom = false
+                        }
+                    },
+                )
+            }
+        }
         Scaffold(
             modifier = Modifier.chatBottomFade(),
             topBar = {
@@ -569,6 +606,14 @@ private fun ChatPageContent(
 
                 )
                     me.rerere.rikkahub.ui.pages.voice.ChatCallOverlay(conversation)
+                    me.rerere.rikkahub.ui.pages.gongdu.ListenMiniBar(
+                        conversationId = conversation.id.toString(),
+                        onOpen = { showListenRoom = true },
+                    )
+                    me.rerere.rikkahub.ui.pages.gongdu.ReadMiniBar(
+                        conversationId = conversation.id.toString(),
+                        onOpen = { showReadRoom = true },
+                    )
                 }
             },
             bottomBar = {

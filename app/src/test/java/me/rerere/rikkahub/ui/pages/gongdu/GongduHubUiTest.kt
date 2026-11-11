@@ -54,9 +54,9 @@ class GongduHubUiTest {
         val screenWidth = compose.activity.resources.displayMetrics.widthPixels.toFloat()
         assertTrue("Tall phone card must occupy at least 69% of the width", bounds.width / screenWidth >= .69f)
         assertDividerAtTwoThirds("look")
-        compose.onNodeWithText("轻点进入 →").assertIsDisplayed()
+        roomText("look", "轻点进入 →").assertIsDisplayed()
         val layouts = mutableListOf<androidx.compose.ui.text.TextLayoutResult>()
-        compose.onNodeWithText("一起逛", useUnmergedTree = true).performSemanticsAction(
+        roomText("look", "一起逛").performSemanticsAction(
             androidx.compose.ui.semantics.SemanticsActions.GetTextLayoutResult) { it(layouts) }
         assertTrue(layouts.single().layoutInput.style.fontSize.value >= 23f)
         snapshot("hub-tall-phone")
@@ -69,10 +69,10 @@ class GongduHubUiTest {
         compose.setContent { Themed(false) { GongduHub({}, { entered = true }, {}) } }
         compose.onNodeWithContentDescription("返回").assertIsDisplayed()
         compose.onNodeWithText("共度").assertIsDisplayed()
-        compose.onNodeWithText("轻点进入 →").assertIsDisplayed()
+        roomText("look", "轻点进入 →").assertIsDisplayed()
         assertDividerAtTwoThirds("look")
         val entryLayouts = mutableListOf<androidx.compose.ui.text.TextLayoutResult>()
-        compose.onNodeWithText("轻点进入 →", useUnmergedTree = true)
+        roomText("look", "轻点进入 →")
             .performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.GetTextLayoutResult) { it(entryLayouts) }
         assertTrue(entryLayouts.isNotEmpty())
         snapshot("hub-compact")
@@ -117,6 +117,11 @@ class GongduHubUiTest {
             2f / 3f, (divider.center.y - card.top) / card.height, .01f)
     }
 
+    private fun roomText(roomId: String, text: String) = compose.onNode(
+        hasText(text) and hasAnyAncestor(hasTestTag("gongdu-card-$roomId")),
+        useUnmergedTree = true,
+    )
+
     @Test fun coverflowCentreIsFlatAndNeighboursShrinkTiltAndFade() {
         assertEquals(CoverflowTransform(1f, 0f, 1f), coverflowTransform(0f))
         val right = coverflowTransform(1f)
@@ -149,6 +154,10 @@ class GongduHubUiTest {
         compose.onNodeWithText("01 / 04").assertIsDisplayed()
         assertDividerAtTwoThirds("look")
         snapshot("hub-light")
+        val hint = roomText("look", "轻点进入 →")
+        val hintLayouts = mutableListOf<androidx.compose.ui.text.TextLayoutResult>()
+        hint.performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.GetTextLayoutResult) { it(hintLayouts) }
+        val dotX = hint.fetchSemanticsNode().boundsInRoot.left + hintLayouts.single().getBoundingBox(1).left
         compose.onNodeWithContentDescription("一起逛，轻点进入").performClick()
         assertEquals("look", entered)
         compose.runOnIdle { runBlocking { pager.scrollToPage(1) } }
@@ -156,15 +165,26 @@ class GongduHubUiTest {
         compose.onNodeWithText("02 / 04").assertIsDisplayed()
         assertDividerAtTwoThirds("read")
         snapshot("hub-fish")
+        roomText("read", "轻点进入 →").assertIsDisplayed()
         // Tapping a side card does not enter it; only the centred card responds.
         compose.onNodeWithContentDescription("一起逛，轻点进入").performClick()
         assertEquals("look", entered)
-        compose.onNodeWithContentDescription("一起读，筹备中").performClick()
-        assertEquals("read", unavailable)
+        compose.onNodeWithContentDescription("一起读，轻点进入").performClick()
+        assertEquals("read", entered)
         compose.runOnIdle { runBlocking { pager.scrollToPage(2) } }
         compose.waitForIdle()
         assertDividerAtTwoThirds("listen")
+        roomText("listen", "轻点进入 →").assertIsDisplayed()
+        compose.onNodeWithContentDescription("一起听，轻点进入").performClick()
+        assertEquals("listen", entered)
+        assertNull(unavailable)
         snapshot("hub-jellyfish")
+        compose.runOnIdle { runBlocking { pager.scrollToPage(3) } }
+        compose.waitForIdle()
+        val planned = roomText("next", "筹备中").fetchSemanticsNode()
+        assertEquals("筹 aligns to 点 after centering either card", dotX, planned.boundsInRoot.left, 2f)
+        compose.onNodeWithContentDescription("下一间，筹备中").performClick()
+        assertEquals("next", unavailable)
     }
 
     @Test fun hubReopensOnTheLastRoom() {

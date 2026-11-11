@@ -1554,6 +1554,10 @@ class ChatService(
                     addAll(inputTransformers)
                     add(templateTransformer)
                     add(workspaceReminderTransformer)
+                    add(me.rerere.rikkahub.data.listen.ListenContextTransformer(
+                        org.koin.core.context.GlobalContext.get().get(), conversationId.toString(), assistant.id.toString()))
+                    add(me.rerere.rikkahub.data.reading.ReadContextTransformer(
+                        org.koin.core.context.GlobalContext.get().get(), conversationId.toString(), assistant.id.toString()))
                     add(requireNotNull(activityTransformer))
                     add(ExtraInfoRequestTransformer(extraInfoSnapshots))
                     hookTransformer?.let { add(it) }

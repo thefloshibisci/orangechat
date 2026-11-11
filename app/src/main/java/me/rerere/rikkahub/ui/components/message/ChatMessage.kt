@@ -464,7 +464,16 @@ fun ChatMessage(
                 }
             }
             MessagePartsBlock(
+                listenConversationId = conversationId?.toString(),
+                listenReadOnly = readOnly,
                 afterTools = { tools ->
+                    tools.filter { it.toolName == "music_tool" && it.isExecuted }.forEach { tool ->
+                        tool.output.filterIsInstance<UIMessagePart.Text>().forEach { part ->
+                            me.rerere.rikkahub.data.listen.parseListenShare(part.text)?.let { share ->
+                                ListenSongCard(share, conversationId?.toString(), readOnly)
+                            }
+                        }
+                    }
                     tools.mapNotNull { me.rerere.rikkahub.data.interaction.interactionToolId(it) }.distinct().forEach { id ->
                         inlineCards[id]?.let { card ->
                             ChatBubbleRow(everyday, false, avatar = { ChatBubbleAvatar(false, model, assistant, avatarGesture) }, timestamp = timestamp) {
@@ -649,6 +658,8 @@ fun ChatMessage(
 @OptIn(FlowPreview::class)
 @Composable
 private fun MessagePartsBlock(
+    listenConversationId: String? = null,
+    listenReadOnly: Boolean = false,
     assistant: Assistant?,
     role: MessageRole,
     model: Model?,
@@ -768,7 +779,13 @@ private fun MessagePartsBlock(
                                 part.text.replace(Regex("\\[zip:[^\\]]+\\]", RegexOption.IGNORE_CASE), "")
                             }
 
-                            ChatMessageTextBubbles(
+                            val songShare = remember(displayText) { me.rerere.rikkahub.data.listen.parseListenShare(displayText) }
+                            val bookShare = remember(displayText) { me.rerere.rikkahub.data.reading.parseReadShare(displayText) }
+                            if (songShare != null) {
+                                ListenSongCard(songShare, listenConversationId, listenReadOnly)
+                            } else if (bookShare != null) {
+                                ReadExcerptCard(bookShare)
+                            } else ChatMessageTextBubbles(
                                 text = displayText, role = role, assistant = assistant,
                                 reactions = reactions, reactionPresets = reactionPresets, onReact = onReact,
                                 onUserMessageClick = onUserMessageClick, onClickCitation = handleClickCitation,

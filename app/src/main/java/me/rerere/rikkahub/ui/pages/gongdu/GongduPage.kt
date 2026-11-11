@@ -1,6 +1,10 @@
 package me.rerere.rikkahub.ui.pages.gongdu
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.Role
+import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -65,6 +69,52 @@ fun GongduPage(conversationId: String, onNavigateBack: () -> Unit) {
     BackHandler(enabled = room != null) { room = null }
     when (room) {
         "look" -> GongduLookRoom(conversationId, onNavigateBack = { room = null })
+        "read" -> {
+            val scope = rememberCoroutineScope()
+            val conversations = koinInject<ConversationRepository>()
+            val chat = koinInject<ChatService>()
+            var sharing by remember { mutableStateOf(false) }
+            GongduReadRoom(conversationId, onNavigateBack = { room = null }, onShare = { text ->
+                if (!sharing) {
+                    sharing = true
+                    scope.launch {
+                        try {
+                            val target = Uuid.parse(conversationId)
+                            checkNotNull(conversations.getConversationById(target)) { "当前聊天已删除" }
+                            checkNotNull(chat.submitMessage(target, listOf(me.rerere.ai.ui.UIMessagePart.Text(text)))) {
+                                "未能加入聊天，请稍后重试"
+                            }
+                            onNavigateBack()
+                        } catch (cancelled: CancellationException) { throw cancelled }
+                        catch (error: Exception) { toaster.show(error.message ?: "分享阅读片段失败") }
+                        finally { sharing = false }
+                    }
+                }
+            })
+        }
+        "listen" -> {
+            val scope = rememberCoroutineScope()
+            val conversations = koinInject<ConversationRepository>()
+            val chat = koinInject<ChatService>()
+            var sharing by remember { mutableStateOf(false) }
+            GongduListenRoom(conversationId, onNavigateBack = { room = null }, onShare = { text ->
+                if (!sharing) {
+                    sharing = true
+                    scope.launch {
+                        try {
+                            val target = Uuid.parse(conversationId)
+                            checkNotNull(conversations.getConversationById(target)) { "当前聊天已删除" }
+                            checkNotNull(chat.submitMessage(target, listOf(me.rerere.ai.ui.UIMessagePart.Text(text)))) {
+                                "未能加入聊天，请稍后重试"
+                            }
+                            onNavigateBack()
+                        } catch (cancelled: CancellationException) { throw cancelled }
+                        catch (error: Exception) { toaster.show(error.message ?: "分享歌曲失败") }
+                        finally { sharing = false }
+                    }
+                }
+            })
+        }
         else -> GongduHub(
             onNavigateBack = onNavigateBack,
             onEnterRoom = { room = it.id },
@@ -220,11 +270,16 @@ internal fun GongduLookRoom(conversationId: String, onNavigateBack: () -> Unit) 
 @Composable
 internal fun RoomHeader(title: String, subtitle: String, connected: Boolean, onBack: () -> Unit) {
     TopAppBar(
+        expandedHeight = maxOf(64.dp, (44 * LocalDensity.current.fontScale + 16).dp),
+        colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent),
+        modifier = Modifier,
         navigationIcon = { IconButton(onClick = onBack) { Icon(HugeIcons.ArrowLeft01, contentDescription = "返回大厅") } },
         title = {
             Column {
-                Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                Text(subtitle, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(title, style = MaterialTheme.typography.titleLarge, fontFamily = GongduBook,
+                    fontWeight = FontWeight.Normal, letterSpacing = .5.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(subtitle, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Normal,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         },
         actions = { ConnectionChip(connected, Modifier.padding(end = 12.dp)) },
@@ -233,36 +288,38 @@ internal fun RoomHeader(title: String, subtitle: String, connected: Boolean, onB
 
 @Composable
 internal fun ConnectionChip(connected: Boolean, modifier: Modifier = Modifier) {
-    val color = if (connected) Color(0xFF2E9E5B) else MaterialTheme.colorScheme.error
+    val color = if (connected) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error
     Row(
-        modifier.clip(CircleShape).background(color.copy(alpha = 0.12f)).padding(horizontal = 10.dp, vertical = 4.dp),
+        modifier.padding(horizontal = 4.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(Modifier.size(6.dp).clip(CircleShape).background(color))
+        Box(Modifier.size(5.dp).clip(CircleShape).background(if (connected) Color(0xFF56836B) else color))
         Spacer(Modifier.width(6.dp))
         Text(if (connected) "已连接" else "未连接", color = color, style = MaterialTheme.typography.labelSmall)
     }
 }
 
-/** Capsule segmented control: the selected option is a raised surface pill. */
+/** A raised selected key inside a recessed track; each key keeps its full touch target. */
 @Composable
 internal fun RoomTabs(tabs: List<String>, selected: Int, onSelect: (Int) -> Unit, modifier: Modifier = Modifier) {
-    Row(
-        modifier.fillMaxWidth().height(40.dp).clip(CircleShape)
-            .background(MaterialTheme.colorScheme.surfaceContainerHighest).padding(3.dp),
-    ) {
+    Row(modifier.fillMaxWidth().heightIn(min = 48.dp).padding(vertical = 4.dp)
+        .gongduGlass(RoundedCornerShape(16.dp), inset = true)
+        .padding(4.dp).selectableGroup(), horizontalArrangement = Arrangement.spacedBy(3.dp)) {
         tabs.forEachIndexed { index, title ->
             val active = index == selected
-            Surface(
-                onClick = { onSelect(index) }, shape = CircleShape,
-                color = if (active) MaterialTheme.colorScheme.surface else Color.Transparent,
-                shadowElevation = if (active) 2.dp else 0.dp,
-                modifier = Modifier.weight(1f).fillMaxHeight(),
+            Column(
+                modifier = Modifier.weight(1f).heightIn(min = 32.dp)
+                    .then(if (active) Modifier.gongduGlass(RoundedCornerShape(12.dp), raised = true) else Modifier)
+                    .clip(RoundedCornerShape(12.dp))
+                    .selectable(selected = active, role = Role.Tab, onClick = { onSelect(index) })
+                    .padding(horizontal = 4.dp, vertical = 4.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center,
             ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Text(title, style = MaterialTheme.typography.labelLarge, maxLines = 1,
-                        color = if (active) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant)
-                }
+                Text(title, style = MaterialTheme.typography.labelLarge, maxLines = 1,
+                    fontWeight = FontWeight.Normal,
+                    color = if (active) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant)
+
             }
         }
     }
