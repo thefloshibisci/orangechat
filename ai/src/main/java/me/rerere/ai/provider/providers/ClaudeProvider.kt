@@ -436,11 +436,31 @@ class ClaudeProvider(private val client: OkHttpClient, context: Context? = null)
                     })
                     contentBuffer.clear()
 
-                    // 紧跟 tool_result
+                    // 紧跟 tool_result。图片不放进 tool_result 里：部分 Anthropic 兼容
+                    // 网关会丢掉其中的非文字块，模型只收到文字却以为自己看过图。改成与
+                    // Google/OpenAI 一致，排在所有结果之后当普通 user 内容发。
                     add(buildJsonObject {
                         put("role", "user")
                         putJsonArray("content") {
                             group.tools.forEach { add(it.toToolResultBlock()) }
+                            val toolImages = group.tools.flatMap { tool ->
+                                tool.output.filterIsInstance<UIMessagePart.Image>()
+                                    .map { image -> tool.toolName to image }
+                            }
+                            if (toolImages.isNotEmpty()) {
+                                add(buildJsonObject {
+                                    put("type", "text")
+                                    put(
+                                        "text",
+                                        toolImages.joinToString(", ") { (toolName, _) ->
+                                            "[Tool $toolName returned an image]"
+                                        }
+                                    )
+                                })
+                                toolImages.forEach { (_, image) ->
+                                    image.toContentBlock()?.let { add(it) }
+                                }
+                            }
                         }
                     })
                 }
@@ -505,7 +525,26 @@ class ClaudeProvider(private val client: OkHttpClient, context: Context? = null)
         put("type", "tool_result")
         put("tool_use_id", toolCallId)
         putJsonArray("content") {
-            output.mapNotNull { it.toContentBlock() }.forEach { add(it) }
+            val blocks = output
+                .filter { it !is UIMessagePart.Image }
+                .mapNotNull { it.toContentBlock() }
+            if (blocks.isEmpty()) {
+                // content 不能为空。没有文字输出时要说清媒体在后面，否则模型会以为
+                // 这次工具什么都没返回。
+                add(buildJsonObject {
+                    put("type", "text")
+                    put(
+                        "text",
+                        if (output.any { it is UIMessagePart.Image }) {
+                            "[Tool returned an image; see the following attachment.]"
+                        } else {
+                            "[Tool completed with no text output.]"
+                        }
+                    )
+                })
+            } else {
+                blocks.forEach { add(it) }
+            }
         }
     }
 
