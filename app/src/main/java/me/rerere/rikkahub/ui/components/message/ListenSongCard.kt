@@ -1,20 +1,19 @@
 package me.rerere.rikkahub.ui.components.message
 
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import coil3.compose.AsyncImage
 import kotlinx.coroutines.launch
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.Play
 import me.rerere.rikkahub.data.listen.ListenRepository
 import me.rerere.rikkahub.data.listen.ListenShare
+import me.rerere.rikkahub.ui.pages.gongdu.ListenRecord
 import org.koin.compose.koinInject
 
 @Composable
@@ -29,20 +28,16 @@ fun ListenSongCard(share: ListenShare, conversationId: String?, readOnly: Boolea
             Text("共度 / 一首给你的歌", style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Box(Modifier.size(64.dp), contentAlignment = Alignment.Center) {
-                    Canvas(Modifier.fillMaxSize()) {
-                        drawCircle(Color(0xFF302B37))
-                        drawCircle(Color(0xFF968699), radius = size.minDimension * .22f)
-                    }
-                    if (share.song.cover.isNotBlank()) AsyncImage(model = share.song.cover,
-                        contentDescription = null, modifier = Modifier.size(28.dp))
-                }
+                ListenRecord(share.song.cover, Modifier.size(64.dp))
                 Column(Modifier.weight(1f)) {
-                    Text(share.song.title, style = MaterialTheme.typography.titleMedium)
-                    Text(share.song.artist, style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(share.song.title, style = MaterialTheme.typography.titleMedium, maxLines = 2,
+                        overflow = TextOverflow.Ellipsis)
+                    Text(share.song.artist, style = MaterialTheme.typography.bodyMedium, maxLines = 1,
+                        overflow = TextOverflow.Ellipsis, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                IconButton(enabled = !readOnly && conversationId != null && !busy, onClick = {
+                if (busy) Box(Modifier.size(48.dp), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                } else FilledTonalIconButton(enabled = !readOnly && conversationId != null, onClick = {
                     scope.launch {
                         busy = true
                         try {
@@ -57,7 +52,7 @@ fun ListenSongCard(share: ListenShare, conversationId: String?, readOnly: Boolea
                             error = failure.message ?: "暂时无法播放"
                         } finally { busy = false }
                     }
-                }) { Icon(HugeIcons.Play, contentDescription = "播放这首歌") }
+                }) { Icon(HugeIcons.Play, contentDescription = "播放这首歌", modifier = Modifier.size(20.dp)) }
             }
             if (share.message.isNotBlank()) Text(share.message, style = MaterialTheme.typography.bodyMedium)
             share.lines.forEach { Text(it, style = MaterialTheme.typography.bodyMedium,

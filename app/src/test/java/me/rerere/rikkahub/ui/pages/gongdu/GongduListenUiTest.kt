@@ -65,13 +65,37 @@ class GongduListenUiTest {
         } }
         compose.onNodeWithText(song.title).assertIsDisplayed()
         snapshot("listen-player-dark-large")
-        compose.onNodeWithTag("listen-player").performScrollToNode(hasContentDescription("暂停"))
-        compose.onNodeWithContentDescription("暂停").performClick()
+        compose.onNodeWithContentDescription("暂停").assertIsDisplayed().performClick()
         assertEquals(1, toggles)
-        compose.onNodeWithTag("listen-player").performScrollToNode(hasText("第二行合成歌词"))
+        compose.onNodeWithTag("listen-lyrics").performScrollToNode(hasText("第二行合成歌词"))
         compose.onNodeWithText("第二行合成歌词").performClick()
         assertEquals(30_000L, seek)
+        compose.onNodeWithContentDescription("暂停").assertIsDisplayed()
+        compose.onNodeWithContentDescription("下一首").assertIsDisplayed()
+        compose.onNodeWithContentDescription("播放进度").assertIsDisplayed()
         snapshot("listen-lyrics-dark-large")
+    }
+
+    @Test @Config(qualifiers = "w320dp-h640dp-xxhdpi")
+    fun longLyricsKeepTransportOnScreenAndCycleModeOnCompactScreen() {
+        var mode = ""
+        var queue = 0
+        val song = ListenSong("123", "合成测试歌曲", "合成测试歌手", durationMs = 180_000)
+        val state = ListenState(queue = listOf(ListenQueueItem("queue-1", song)), currentIndex = 0, playing = true,
+            positionMs = 90_000, durationMs = 180_000,
+            lyrics = (0 until 60).map { ListenLyric(it * 3_000L, "第${it + 1}句合成歌词") })
+        compose.setContent { Themed(false) {
+            ListenPlayer(state, Modifier.fillMaxSize(), {}, {}, {}, {}, {}, {}, {}, {}, { mode = it }, { queue++ })
+        } }
+        compose.waitForIdle()
+        compose.onNodeWithText("第31句合成歌词").assertIsDisplayed()
+        compose.onNodeWithContentDescription("暂停").assertIsDisplayed()
+        compose.onNodeWithContentDescription("上一首").assertIsDisplayed()
+        compose.onNodeWithContentDescription("播放模式：顺序播放").assertIsDisplayed().performClick()
+        assertEquals("shuffle", mode)
+        compose.onNodeWithContentDescription("待播列表").assertIsDisplayed().performClick()
+        assertEquals(1, queue)
+        snapshot("listen-player-compact-light")
     }
 
     @Test @Config(qualifiers = "w320dp-h640dp-xxhdpi")
@@ -88,7 +112,7 @@ class GongduListenUiTest {
         } }
         compose.onNodeWithText("保存并连接").performScrollTo().performClick()
         assertTrue(saved)
-        compose.onNodeWithContentDescription("让当前助手陪我听").performScrollTo().assertIsOff().performClick()
+        compose.onNodeWithTag("listen-companion").performScrollTo().assertIsOff().performClick()
         assertEquals(true, authorized)
         compose.onNodeWithText("扫码登录").performScrollTo().performClick()
         assertTrue(qrRequested)
@@ -109,7 +133,7 @@ class GongduListenUiTest {
             ListenConnection(config, "chat-1", "assistant-1", true, ListenAccount(false), null, "",
                 { _, _ -> }, { authorized = it }, {}, {}, {}, {})
         } }
-        compose.onNodeWithContentDescription("让当前助手陪我听").performScrollTo().assertIsOn().assertIsEnabled().performClick()
+        compose.onNodeWithTag("listen-companion").performScrollTo().assertIsOn().assertIsEnabled().performClick()
         assertEquals(false, authorized)
         compose.onNodeWithText("保存并连接").assertIsNotEnabled()
     }
@@ -127,7 +151,6 @@ class GongduListenUiTest {
             ListenPlayer(state, Modifier.fillMaxSize(), {}, { actions.transport { pauses++ } }, {}, {}, {}, {}, {}, {})
         } }
         compose.runOnIdle { assertTrue(actions.busy) }
-        compose.onNodeWithTag("listen-player").performScrollToNode(hasContentDescription("暂停"))
         compose.onNodeWithContentDescription("暂停").assertIsEnabled().performClick()
         compose.runOnIdle { assertEquals(1, pauses); assertTrue(actions.busy); request.complete(Unit) }
         compose.waitForIdle()
