@@ -72,10 +72,10 @@ jobs:
           fi
 
       - name: Test search provider construction and serialization
-        run: ./gradlew :search:testDebugUnitTest :workspace:testDebugUnitTest :terminal:testDebugUnitTest
+        run: ./gradlew -I .github/gradle/robolectric-ci.gradle :search:testDebugUnitTest :workspace:testDebugUnitTest :terminal:testDebugUnitTest
 
       - name: Test app and AI regressions
-        run: ./gradlew :app:testDebugUnitTest :ai:testDebugUnitTest :speech:testDebugUnitTest :app:compileDebugAndroidTestKotlin
+        run: ./gradlew -I .github/gradle/robolectric-ci.gradle :app:testDebugUnitTest :ai:testDebugUnitTest :speech:testDebugUnitTest :app:compileDebugAndroidTestKotlin
 
       - name: Test Image Atelier plugin regressions
         run: node --test plugins/image-atelier/tests/references.test.cjs

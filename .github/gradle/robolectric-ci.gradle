@@ -1,0 +1,15 @@
+// Use Google's Maven Central mirror for Robolectric's large Android test dependencies.
+def centralMirror = 'https://maven-central.storage-download.googleapis.com/maven2'
+
+beforeSettings { settings ->
+    settings.dependencyResolutionManagement.repositories.maven {
+        url = centralMirror
+        content { includeGroup 'org.robolectric' }
+    }
+}
+
+allprojects {
+    tasks.withType(Test).configureEach {
+        systemProperty 'robolectric.dependency.repo.url', centralMirror
+    }
+}
