@@ -21,7 +21,8 @@ import me.rerere.rikkahub.data.db.dao.ManagedFileDAO
 import me.rerere.rikkahub.data.event.AppEventBus
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.repository.FilesRepository
-import org.koin.compose.KoinApplication
+import org.koin.compose.KoinIsolatedContext
+import org.koin.dsl.koinApplication
 import org.koin.dsl.module
 import java.lang.reflect.Proxy
 import androidx.compose.ui.platform.LocalDensity
@@ -213,10 +214,16 @@ class VideoGiftCardUiTest {
             } as ManagedFileDAO
             FilesManager(compose.activity, FilesRepository(dao), scope)
         }
-        KoinApplication(application = { modules(module {
-            single { AppEventBus() }
-            single { files }
-        }) }) {
+        val application = remember(files) {
+            koinApplication {
+                modules(module {
+                    single { AppEventBus() }
+                    single { files }
+                })
+            }
+        }
+        DisposableEffect(application) { onDispose { application.close() } }
+        KoinIsolatedContext(application) {
             MaterialTheme {
                 CompositionLocalProvider(
                     LocalDisplaySettings provides display,
