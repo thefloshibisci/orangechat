@@ -31,6 +31,56 @@ class SshWorkspaceBackend(
 
     private val workspaceDir = layout.workspaceDir
 
+    /** AI access is scoped; the human file browser deliberately retains its system-area view. */
+    fun validateToolPath(path: String): String {
+        val normalized = me.rerere.workspace.WorkspacePathPolicy.requireInside(workspaceDir, path)
+        return withSftp(WorkspaceStorageArea.FILES, retry = true) { sftp ->
+            val realRoot = normalizeAbsolute(sftp.realpath(workspaceDir))
+            var existing = normalized
+            while (true) {
+                try {
+                    sftp.lstat(existing.sftpQuote())
+                    break
+                } catch (e: SftpException) {
+                    if (e.id != ChannelSftp.SSH_FX_NO_SUCH_FILE || existing == "/") throw e
+                    existing = existing.parentPath()
+                }
+            }
+            // realpath follows all parent/final links, including a link to a directory outside the root.
+            me.rerere.workspace.WorkspacePathPolicy.requireInside(realRoot, sftp.realpath(existing))
+            normalized
+        }
+    }
+
+    fun writeToolBytes(path: String, bytes: ByteArray, overwrite: Boolean): WorkspaceFileEntry {
+        val file = validateToolPath(path)
+        return withSftp(WorkspaceStorageArea.FILES, retry = false) { sftp ->
+            // OpenSSH posix-rename replaces an existing target. For no-overwrite use atomic
+            // hard-link publication, which fails if another writer creates the name first.
+            if (!overwrite) {
+                require(sftp.getExtension("hardlink@openssh.com") == "1") {
+                    "Server cannot safely publish without overwrite (hardlink extension unavailable)"
+                }
+                require(sftp.statOrNull(file) == null) { "File already exists: $path" }
+                sftp.mkdirs(file.parentPath())
+                publishRemoteTextAtomically(file, bytes,
+                    upload = { temporary, content -> sftp.put(ByteArrayInputStream(content), temporary.sftpQuote(), ChannelSftp.OVERWRITE) },
+                    publish = { temporary, target ->
+                        sftp.hardlink(temporary.sftpQuote(), target.sftpQuote())
+                        runCatching { sftp.rm(temporary.sftpQuote()) }
+                    },
+                    removeTemporary = { temporary -> sftp.rm(temporary.sftpQuote()) },
+                )
+                sftp.requireStat(file, path).toEntry(file, file.fileName())
+            } else sftp.writeBytes(file, bytes, true, path).toEntry(file, file.fileName())
+        }
+    }
+
+    fun toolFileExists(path: String): Boolean {
+        val file = validateToolPath(path)
+        return withSftp(WorkspaceStorageArea.FILES, retry = true) { it.statOrNull(file) != null }
+    }
+
     override fun shell(): String = pool.use(id, config, retry = true) { it.shell }
 
     override fun listFiles(area: WorkspaceStorageArea, path: String): List<WorkspaceFileEntry> {
@@ -189,6 +239,7 @@ class SshWorkspaceBackend(
     ): WorkspaceCommandResult {
         require(timeoutMillis > 0) { "Command timeout must be positive" }
         val workingDir = normalizeAbsolute(layout.absolutePath(WorkspaceStorageArea.FILES, cwd))
+        validateToolPath(workingDir)
         return pool.use(id, config, retry = false) { connection ->
             connection.ensureDir(workspaceDir)
             // 远程登录 shell 不一定是 POSIX shell, 统一交给探测到的 shell 执行;

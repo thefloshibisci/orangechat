@@ -245,11 +245,14 @@ internal class InteractionsAPI(
         is UIMessagePart.Text -> part.text.takeIf { it.isNotEmpty() }?.let { buildJsonObject {
             put("type", "text"); put("text", it)
         } }
-        is UIMessagePart.Image -> part.encodeBase64(false).getOrThrow().let { encoded -> buildJsonObject {
+        is UIMessagePart.Image -> part.encodeBase64(false).fold(onSuccess = { encoded -> buildJsonObject {
             put("type", "image")
             if (encoded.base64.startsWith("http")) put("uri", encoded.base64)
             else { put("mime_type", encoded.mimeType); put("data", encoded.base64.substringAfter(";base64,")) }
-        } }
+        } }, onFailure = { buildJsonObject {
+            put("type", "text")
+            put("text", "[Image unavailable: the attachment could not be read. Do not infer its contents.]")
+        } })
         is UIMessagePart.Audio -> audio(part)
         is UIMessagePart.VoiceMessage -> audio(UIMessagePart.Audio(part.url))
         is UIMessagePart.Video -> buildJsonObject {

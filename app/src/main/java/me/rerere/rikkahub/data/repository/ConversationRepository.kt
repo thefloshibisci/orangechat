@@ -340,6 +340,12 @@ class ConversationRepository(
         } else null
     }
 
+    internal suspend fun doorbellChatOwner(id: Uuid) = conversationDAO.assistantIdOf(id.toString())?.let(Uuid::parse)
+
+    internal suspend fun hasDoorbellReceipt(id: Uuid, marker: String) = messageNodeDAO.hasDoorbellReceipt(
+        id.toString(), "\"gongdu_event_id\":\"$marker\"",
+    )
+
     suspend fun existsConversationById(uuid: Uuid): Boolean {
         return conversationDAO.existsById(uuid.toString())
     }

@@ -53,6 +53,7 @@ import me.rerere.rikkahub.ui.components.workspace.rememberWorkspaceDownloadHandl
 import me.rerere.rikkahub.data.datastore.getAssistantById
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -72,12 +73,14 @@ import androidx.compose.ui.graphics.layer.GraphicsLayer
 import androidx.compose.ui.graphics.layer.drawLayer
 import androidx.compose.ui.graphics.rememberGraphicsLayer
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalScrollCaptureInProgress
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
@@ -94,6 +97,7 @@ import coil3.request.ImageRequest
 import coil3.request.allowHardware
 import com.dokar.sonner.ToastType
 import dev.chrisbanes.haze.HazeState
+import dev.chrisbanes.haze.hazeSource
 import dev.chrisbanes.haze.rememberHazeState
 import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
@@ -118,6 +122,7 @@ import me.rerere.rikkahub.data.datastore.getCurrentChatModel
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.interaction.effectiveChatReactionPresets
 import me.rerere.rikkahub.data.model.Conversation
+import me.rerere.rikkahub.data.reading.ReadRepository
 import me.rerere.rikkahub.service.ChatError
 import me.rerere.rikkahub.service.VoiceCallService
 import me.rerere.rikkahub.ui.components.ai.ChatInput
@@ -132,6 +137,7 @@ import me.rerere.rikkahub.ui.hooks.recordedVoicePart
 import me.rerere.rikkahub.ui.hooks.ChatInputState
 import me.rerere.rikkahub.ui.hooks.EditStateContent
 import me.rerere.rikkahub.ui.hooks.useEditState
+import me.rerere.rikkahub.ui.pages.gongdu.ChatReadMiniBar
 import me.rerere.rikkahub.ui.theme.LocalMaterialMode
 import me.rerere.rikkahub.utils.base64Decode
 import me.rerere.rikkahub.utils.navigateToChatPage
@@ -164,6 +170,13 @@ fun ChatPage(id: Uuid, text: String?, files: List<Uri>, nodeId: Uuid? = null, au
             parametersOf(id.toString())
         }
     )
+    val doorbellChat = koinInject<me.rerere.rikkahub.service.ChatService>().visibleDoorbellChat
+    if (androidx.compose.ui.platform.LocalWindowInfo.current.isWindowFocused) {
+        androidx.lifecycle.compose.LifecycleResumeEffect(id) {
+            doorbellChat.value = id
+            onPauseOrDispose { doorbellChat.compareAndSet(id, null) }
+        }
+    }
     val filesManager: FilesManager = koinInject()
     val navController = LocalNavController.current
     val scope = rememberCoroutineScope()
@@ -377,7 +390,9 @@ private fun ChatPageContent(
     }
 
     val workspaceHandler = rememberWorkspaceDownloadHandler(
-        setting.getAssistantById(conversation.assistantId)?.workspaceId?.toString()
+        setting.getAssistantById(conversation.assistantId)?.let { assistant ->
+            (assistant.workspaceIds + listOfNotNull(assistant.workspaceId)).singleOrNull()?.toString()
+        }
     )
     TTSAutoPlay(vm = vm, setting = setting, conversation = conversation)
 
@@ -545,30 +560,83 @@ private fun ChatPageContent(
                 radiusPx = bubbleBlurRadiusPx,
             )
         ) {
-        AssistantBackground(setting = setting)
+        val reading = koinInject<ReadRepository>()
+        val readSession by reading.session.collectAsStateWithLifecycle()
+        val readBook by reading.currentBook.collectAsStateWithLifecycle()
+        val showReading = readSession.conversationId == conversation.id.toString() &&
+            readBook?.id == readSession.bookId
+        var listenBarHeightPx by remember(conversation.id) { mutableIntStateOf(0) }
+        var callBarHeightPx by remember { mutableIntStateOf(0) }
+        val showListening = listenBarHeightPx > 0
+        val showSessionCapsule = showReading || showListening || callBarHeightPx > 0
+        val sessionGlass = if (showSessionCapsule && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+            !LocalScrollCaptureInProgress.current
+        ) rememberHazeState() else null
+        var titleHeightPx by remember { mutableIntStateOf(0) }
+        AssistantBackground(
+            setting = setting,
+            modifier = if (sessionGlass != null) Modifier.hazeSource(sessionGlass, zIndex = -1f) else Modifier,
+        )
+        var showListenRoom by remember(conversation.id) { mutableStateOf(false) }
+        if (showListenRoom) {
+            me.rerere.rikkahub.ui.pages.gongdu.ListenIslandDialog(onDismiss = { showListenRoom = false }) {
+                me.rerere.rikkahub.ui.pages.gongdu.GongduListenRoom(
+                    conversationId = conversation.id.toString(),
+                    onNavigateBack = { showListenRoom = false },
+                    onShare = { text ->
+                        when {
+                            inputState.isEditing() -> toaster.show("请先完成当前消息的编辑，再分享歌曲", type = ToastType.Warning)
+                            !inputState.trySetSharedMessageText(text) -> toaster.show("歌曲内容无效，请返回后重试", type = ToastType.Warning)
+                            else -> showListenRoom = false
+                        }
+                    },
+                )
+            }
+        }
         Scaffold(
             modifier = Modifier.chatBottomFade(),
             topBar = {
                 Column {
-                TopBar(
-                    settings = setting,
-                    conversation = conversation,
-                    bigScreen = bigScreen,
-                    drawerState = drawerState,
-                    previewMode = previewMode,
-                    onNewChat = {
-                        navigateToChatPage(navController)
-                    },
-                    onClickMenu = {
-                        previewMode = !previewMode
-                    },
-                    onUpdateTitle = {
-                        vm.updateTitle(it)
-                    },
-                    onConversationSettings = { showConversationSettings = true },
-
-                )
-                    me.rerere.rikkahub.ui.pages.voice.ChatCallOverlay(conversation)
+                    ChatTopBar(
+                        modifier = Modifier.onSizeChanged { titleHeightPx = it.height },
+                        settings = setting,
+                        conversation = conversation,
+                        bigScreen = bigScreen,
+                        drawerState = drawerState,
+                        previewMode = previewMode,
+                        onNewChat = { navigateToChatPage(navController) },
+                        onClickMenu = { previewMode = !previewMode },
+                        onUpdateTitle = { vm.updateTitle(it) },
+                        onConversationSettings = { showConversationSettings = true },
+                        showReading = showReading,
+                        readGlass = sessionGlass,
+                        compactForListening = showListening,
+                        backdropColor = chatBackgroundVisuals.baseColor,
+                        onShareReadExcerpt = { text ->
+                            when {
+                                inputState.isEditing() -> {
+                                    toaster.show("请先完成当前消息的编辑，再分享书摘", type = ToastType.Warning)
+                                    false
+                                }
+                                !inputState.trySetSharedMessageText(text) -> {
+                                    toaster.show("书摘内容无效，请返回后重试", type = ToastType.Warning)
+                                    false
+                                }
+                                else -> true
+                            }
+                        },
+                    )
+                    Box(Modifier.onSizeChanged { callBarHeightPx = it.height }) {
+                        me.rerere.rikkahub.ui.pages.voice.ChatCallOverlay(conversation, sessionGlass)
+                    }
+                    Box(Modifier.onSizeChanged { listenBarHeightPx = it.height }) {
+                        me.rerere.rikkahub.ui.pages.gongdu.ListenMiniBar(
+                            conversationId = conversation.id.toString(),
+                            glass = sessionGlass,
+                            backdropColor = chatBackgroundVisuals.baseColor,
+                            onOpen = { showListenRoom = true },
+                        )
+                    }
                 }
             },
             bottomBar = {
@@ -698,6 +766,8 @@ private fun ChatPageContent(
             containerColor = Color.Transparent,
         ) { innerPadding ->
             ChatList(
+                modifier = if (sessionGlass != null) Modifier.hazeSource(sessionGlass) else Modifier,
+                fixedTopInset = if (showSessionCapsule && titleHeightPx > 0) with(density) { titleHeightPx.toDp() } else null,
                 showCompressedHistory = vm.showCompressedHistory,
                 innerPadding = innerPadding,
                 conversation = conversation,
@@ -841,7 +911,7 @@ private fun ChatPageContent(
 }
 
 @Composable
-private fun TopBar(
+internal fun ChatTopBar(
     settings: Settings,
     conversation: Conversation,
     drawerState: DrawerState,
@@ -851,6 +921,12 @@ private fun TopBar(
     onNewChat: () -> Unit,
     onUpdateTitle: (String) -> Unit,
     onConversationSettings: () -> Unit,
+    onShareReadExcerpt: (String) -> Boolean,
+    showReading: Boolean,
+    modifier: Modifier = Modifier,
+    readGlass: HazeState? = null,
+    backdropColor: Color = MaterialTheme.colorScheme.background,
+    compactForListening: Boolean = false,
 ) {
     val scope = rememberCoroutineScope()
     val toaster = LocalToaster.current
@@ -859,7 +935,11 @@ private fun TopBar(
         onUpdateTitle(it)
     }
 
+    val conversationId = conversation.id.toString()
+    val compactHeight = maxOf(48.dp, (30f * LocalDensity.current.fontScale + 8f).dp)
     TopAppBar(
+        modifier = modifier,
+        expandedHeight = if (showReading || compactForListening) compactHeight else TopAppBarDefaults.TopAppBarExpandedHeight,
         colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent),
         navigationIcon = {
             if (!bigScreen) {
@@ -934,6 +1014,7 @@ private fun TopBar(
             }
         },
     )
+    ChatReadMiniBar(conversationId, readGlass, backdropColor, onShareReadExcerpt)
     titleState.EditStateContent { title, onUpdate ->
         AlertDialog(
             onDismissRequest = {

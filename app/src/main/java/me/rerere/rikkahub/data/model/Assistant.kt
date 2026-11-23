@@ -56,7 +56,8 @@ data class Assistant(
     val customBodies: List<CustomBody> = emptyList(),
     val mcpServers: Set<Uuid> = emptySet(),
     val localTools: List<LocalToolOption> = listOf(LocalToolOption.TimeInfo),
-    val workspaceId: Uuid? = null,
+    val workspaceId: Uuid? = null, // Default; retained for old settings/backup compatibility.
+    val workspaceIds: Set<Uuid> = emptySet(),
     val background: String? = null,
     val backgroundOpacity: Float = 1.0f,
     val modeInjectionIds: Set<Uuid> = emptySet(),      // 关联的模式注入 ID
@@ -276,3 +277,6 @@ fun getTriggeredInjections(
         .filter { it.isTriggered(context) }
         .sortedByDescending { it.priority }
 }
+
+/** Legacy single binding remains a member until settings are explicitly edited. */
+fun Assistant.boundWorkspaceIds(): Set<Uuid> = workspaceIds + listOfNotNull(workspaceId)

@@ -360,7 +360,10 @@ var imageAssets = {
             }
 
             val options = json.parseToJsonElement(optionsJson) as? JsonObject ?: JsonObject(emptyMap())
-            val method = (options["method"] as? JsonPrimitive)?.contentOrNull?.uppercase() ?: "GET"
+            val method = options["method"]?.let {
+                require(it is JsonPrimitive && it.isString) { "HTTP method must be a string" }
+                it.content.uppercase()
+            } ?: "GET"
             val headers = options["headers"] as? JsonObject
             val body = options["body"] as? JsonPrimitive
  
@@ -382,13 +385,15 @@ var imageAssets = {
 
             when (method) {
                 "GET" -> requestBuilder.get()
+                "HEAD" -> requestBuilder.head()
                 "POST" -> requestBuilder.post(payload())
                 "PUT" -> requestBuilder.put(payload())
+                "PATCH" -> requestBuilder.patch(payload())
                 "DELETE" -> {
                     val requestBody = body?.contentOrNull?.let { payload() }
                     if (requestBody != null) requestBuilder.delete(requestBody) else requestBuilder.delete()
                 }
-                else -> requestBuilder.get()
+                else -> throw IllegalArgumentException("Unsupported HTTP method: $method")
             }
  
             val fetchClient = okHttpClient.newBuilder()

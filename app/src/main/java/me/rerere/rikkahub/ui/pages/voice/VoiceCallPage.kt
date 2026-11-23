@@ -199,6 +199,8 @@ fun VoiceCallPage(
         speakerOn = uiState.isSpeakerOn,
         canControl = boundService != null,
         error = uiState.errorMessage,
+        notice = uiState.notice,
+        noticeSeq = uiState.noticeSeq,
         waveform = uiState.amplitudes,
         onCollapse = onBack,
         onPrimary = { boundService?.toggleMute() },

@@ -436,11 +436,24 @@ class ClaudeProvider(private val client: OkHttpClient, context: Context? = null)
                     })
                     contentBuffer.clear()
 
-                    // 紧跟 tool_result
+                    // 紧跟 tool_result。图片不放进 tool_result 里：部分 Anthropic 兼容
+                    // 网关会丢掉其中的非文字块，模型只收到文字却以为自己看过图。改成与
+                    // Google/OpenAI 一致，排在所有结果之后当普通 user 内容发。
                     add(buildJsonObject {
                         put("role", "user")
                         putJsonArray("content") {
                             group.tools.forEach { add(it.toToolResultBlock()) }
+                            group.tools.forEach { tool ->
+                                val images = tool.output.filterIsInstance<UIMessagePart.Image>()
+                                images.forEachIndexed { index, image ->
+                                    add(buildJsonObject {
+                                        put("type", "text")
+                                        put("text", "[Tool ${tool.toolName}, tool_call_id=${tool.toolCallId}, " +
+                                            "image ${index + 1}/${images.size}]")
+                                    })
+                                    image.toContentBlock()?.let { add(it) }
+                                }
+                            }
                         }
                     })
                 }
@@ -505,7 +518,26 @@ class ClaudeProvider(private val client: OkHttpClient, context: Context? = null)
         put("type", "tool_result")
         put("tool_use_id", toolCallId)
         putJsonArray("content") {
-            output.mapNotNull { it.toContentBlock() }.forEach { add(it) }
+            val blocks = output
+                .filter { it !is UIMessagePart.Image }
+                .mapNotNull { it.toContentBlock() }
+            if (blocks.isEmpty()) {
+                // content 不能为空。没有文字输出时要说清媒体在后面，否则模型会以为
+                // 这次工具什么都没返回。
+                add(buildJsonObject {
+                    put("type", "text")
+                    put(
+                        "text",
+                        if (output.any { it is UIMessagePart.Image }) {
+                            "[Tool returned an image; see the following attachment.]"
+                        } else {
+                            "[Tool completed with no text output.]"
+                        }
+                    )
+                })
+            } else {
+                blocks.forEach { add(it) }
+            }
         }
     }
 

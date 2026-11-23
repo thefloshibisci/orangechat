@@ -32,6 +32,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import me.rerere.ai.ui.UIMessagePart
+import me.rerere.rikkahub.data.gongdu.gongduShareSummary
 import me.rerere.rikkahub.service.MessageQueueState
 import me.rerere.rikkahub.service.QueuedMessage
 import me.rerere.rikkahub.ui.hooks.ChatInputState
@@ -125,7 +126,7 @@ internal fun MessageQueuePanel(
             title = { Text("编辑排队消息") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (draft.message.parts.count { it is UIMessagePart.Text } > 1) {
+                    if (draft.input.getContents().count { it is UIMessagePart.Text && gongduShareSummary(it.text) == null } > 1) {
                         Text("正在编辑末段文字，前面的文字会保留。", style = MaterialTheme.typography.labelSmall)
                     }
                     // Removing an original attachment changes the queued payload; the service owns file cleanup.
@@ -134,7 +135,7 @@ internal fun MessageQueuePanel(
                             Text(queuedMessagePreview(listOf(part)), modifier = Modifier.weight(1f),
                                 maxLines = 1, overflow = TextOverflow.Ellipsis)
                             TextButton(onClick = {
-                                draft.input.messageContent = draft.input.messageContent.filterIndexed { i, _ -> i != index }
+                                draft.input.removeMessagePart(index)
                             }, modifier = Modifier.testTag("queue_attachment_remove_$index")) { Text("移除") }
                         }
                     }
@@ -162,7 +163,7 @@ internal fun MessageQueuePanel(
 
 internal fun queuedMessagePreview(parts: List<UIMessagePart>): String = parts.joinToString(" ") { part ->
     when (part) {
-        is UIMessagePart.Text -> part.text
+        is UIMessagePart.Text -> gongduShareSummary(part.text) ?: part.text
         is UIMessagePart.Image -> "[图片]"
         is UIMessagePart.Document -> "[文件] ${part.fileName}"
         is UIMessagePart.Audio, is UIMessagePart.VoiceMessage -> "[语音]"

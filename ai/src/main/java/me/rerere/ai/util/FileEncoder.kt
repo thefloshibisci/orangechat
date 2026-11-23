@@ -80,6 +80,11 @@ fun UIMessagePart.Image.encodeBase64(withPrefix: Boolean = true): Result<Encoded
             require(data.isNotBlank()) { "Empty image data URI" }
             EncodedImage(base64 = if (withPrefix) url else data, mimeType = mimeType)
         }
+        isXiaohongshuImageUrl(this.url) -> {
+            RequestImageEncoding.withXiaohongshuImage(url) { file ->
+                file.compressAndEncode(file.guessMimeType().getOrThrow(), withPrefix)
+            }
+        }
         this.url.startsWith("http") -> {
             // HTTP URL 无法确定 mime type，默认使用 image/png
             EncodedImage(base64 = url, mimeType = "image/png")

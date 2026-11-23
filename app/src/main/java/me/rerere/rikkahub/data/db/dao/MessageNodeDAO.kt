@@ -25,6 +25,11 @@ interface MessageNodeDAO {
     @Query("UPDATE message_node SET messages = :newMessages WHERE id = :id AND messages = :oldMessages")
     suspend fun repairAttachments(id: String, oldMessages: String, newMessages: String): Int
 
+    // JsonInstant stores compact JSON. Match the literal metadata key/value pair, not quoted text
+    // (quotes inside a Text value are escaped). No need to hydrate an entire chat for each event.
+    @Query("SELECT EXISTS(SELECT 1 FROM message_node WHERE conversation_id = :chat AND instr(messages, :receipt) > 0)")
+    suspend fun hasDoorbellReceipt(chat: String, receipt: String): Boolean
+
     @Query("SELECT EXISTS(SELECT 1 FROM message_node WHERE instr(messages, :fileName) > 0)")
     suspend fun referencesFile(fileName: String): Boolean
 

@@ -11,6 +11,35 @@ import org.junit.Test
 import kotlin.uuid.Uuid
 
 class GongduCodecTest {
+    @Test fun likesDescribeTheActionAndDoNotTreatTheQuotedCommentAsANewReply() {
+        val row = GongduCodec.events(Json.parseToJsonElement("""{"items":[{"id":"e","from":{"nickname":"甲"},"title":"赞了你的评论","comment_text":"原来的话","feed_title":"标题","liked":false}]}"""), "likes").single()
+        assertEquals("赞了你的评论", row.action)
+        assertEquals("甲：赞了你的评论\n相关评论：「原来的话」\n相关笔记：「标题」", row.summary)
+        val old = GongduInbox(true, listOf(GongduEvent("e", "旧摘要", true)))
+        val upgraded = GongduCodec.mergeInbox(old, listOf(row), 2).events.single()
+        assertEquals(row.summary, upgraded.summary); assertTrue(upgraded.acknowledged)
+        val unknown = GongduCodec.events(Json.parseToJsonElement("""[{"id":"u","comment_text":"有人说收藏了"}]"""), "likes").single()
+        assertEquals("赞或收藏了你的内容", unknown.action)
+    }
+
+    @Test fun pollingAndHistoryEvictionKeepStillVisibleAcknowledgedIds() {
+        val history = (0..255).map { GongduEvent("$it", "历史", true) }
+        val page = listOf(history.first(), GongduEvent("fresh", "新"))
+        val first = GongduCodec.mergeInbox(GongduInbox(true, history), page, 1)
+        val second = GongduCodec.mergeInbox(first, page, 2)
+        assertEquals(listOf("fresh"), second.events.filterNot { it.acknowledged }.map { it.id })
+    }
+
+    @Test fun doorbellOnlyFollowsTheVisibleChatOfTheAuthorizedOwner() {
+        val a = kotlin.uuid.Uuid.random(); val b = kotlin.uuid.Uuid.random()
+        val owner = kotlin.uuid.Uuid.random(); val other = kotlin.uuid.Uuid.random()
+        assertTrue(GongduDoorbell.shouldDeliver(b,b,owner,owner,true,true))
+        assertFalse(GongduDoorbell.shouldDeliver(a,b,owner,owner,true,true))
+        assertFalse(GongduDoorbell.shouldDeliver(b,null,owner,owner,true,true))
+        assertFalse(GongduDoorbell.shouldDeliver(b,b,owner,other,true,true))
+        assertFalse(GongduDoorbell.shouldDeliver(b,b,owner,owner,true,false))
+    }
+
     @Test fun automaticMcpDiscoveryRequiresApprovalBeforeExposingNewPublicActions() {
         val managed = Uuid.random()
         assertTrue(GongduRepository.initialApproval(managed, managed, "publish_content"))
@@ -48,7 +77,7 @@ class GongduCodecTest {
         val after = GongduCodec.mergeInbox(persisted.inbox, listOf(GongduEvent("fresh", "新消息")), 2)
         assertTrue(after.events.any { it.id == "0" && !it.acknowledged })
         assertTrue(after.events.any { it.id == "fresh" && !it.acknowledged })
-        assertEquals(256, after.events.size)
+        assertEquals(257, after.events.size) // the pending queue does not evict delivery receipts
     }
     @Test fun tooManyPendingEventsFailWithoutDiscardingUnacknowledgedEntries() {
         val before = GongduInbox(true, (0..255).map { GongduEvent("$it", "$it") })

@@ -25,5 +25,5 @@ internal fun sereinRecallLabel(status: SereinRecallStatus?): String = when (stat
 }
 
 internal fun sereinConnectionLabel(result: HookRecall?, elapsedMs: Long): String =
-    if (result?.status in setOf("ready", "empty")) "连接成功 · ${elapsedMs}ms（不展示记忆正文）"
+    if (result?.status in setOf("ready", "empty")) "连接成功 · ${elapsedMs}ms（已验证接口和密钥，未运行召回）"
     else "连接未成功 · ${elapsedMs}ms · ${sereinFailureLabel(result?.status ?: "timeout")}"

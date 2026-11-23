@@ -51,7 +51,7 @@ class GongduAudioReaderDeviceTest {
     @Test(timeout = 30_000)
     fun decodesStereo48kAacToMono16kWavWithoutChangingDurationOrPitch() = runBlocking(Dispatchers.IO) {
         val wav = File(directory, "full.wav")
-        assertTrue("An AAC audio track must be found", GongduAudioReader.extract(encodedAudio, wav, 0, 1_000))
+        assertEquals(GongduAudioResult.READY, GongduAudioReader.extract(encodedAudio, wav, 0, 1_000))
         val samples = readPcmWav(wav)
         // AAC-LC may include one encoder priming frame; do not require sample-exact container padding.
         assertEquals("Full soundtrack duration in milliseconds", 1_000.0, durationMs(samples), 65.0)
@@ -61,7 +61,7 @@ class GongduAudioReaderDeviceTest {
     @Test(timeout = 30_000)
     fun crops250To750MillisecondsUsingTheDecodedPresentationTimeline() = runBlocking(Dispatchers.IO) {
         val wav = File(directory, "window.wav")
-        assertTrue("An AAC audio track must be found", GongduAudioReader.extract(encodedAudio, wav, 250, 750))
+        assertEquals(GongduAudioResult.READY, GongduAudioReader.extract(encodedAudio, wav, 250, 750))
         val samples = readPcmWav(wav)
         assertEquals("Selected soundtrack window duration in milliseconds", 500.0, durationMs(samples), 35.0)
         assertSinePitch(samples)

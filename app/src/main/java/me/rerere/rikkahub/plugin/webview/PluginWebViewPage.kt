@@ -34,6 +34,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -83,6 +84,7 @@ import me.rerere.rikkahub.plugin.loader.PluginLoader
 import me.rerere.rikkahub.plugin.manager.PluginManager
 import me.rerere.rikkahub.plugin.model.PluginHookConfig
 import me.rerere.rikkahub.plugin.model.PluginInfo
+import me.rerere.rikkahub.plugin.model.effectivePluginConfig
 import me.rerere.rikkahub.plugin.repository.PluginRepository
 import org.json.JSONArray
 import org.json.JSONObject
@@ -101,7 +103,8 @@ fun PluginWebViewPage(
     pluginId: String,
     htmlEntryPath: String,
     pluginManager: PluginManager,
-    onNavigateBack: () -> Unit
+    onNavigateBack: () -> Unit,
+    conversationId: String = "",
 ) {
     val context = LocalContext.current
     val pluginLoader = koinInject<PluginLoader>()
@@ -443,7 +446,15 @@ fun PluginWebViewPage(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(pluginInfo?.manifest?.name ?: "\u63D2\u4EF6\u7BA1\u7406") },
+                title = {
+                    Column {
+                        Text(pluginInfo?.manifest?.name ?: "\u63D2\u4EF6\u7BA1\u7406")
+                        if (pluginInfo?.manifest?.permissions?.contains("ai_chat") == true) {
+                            Text(if (conversationId.isBlank()) "AI：助手默认模型" else "AI：当前会话模型",
+                                style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+                },
                 navigationIcon = {
                     IconButton(onClick = onNavigateBack) {
                         Icon(HugeIcons.ArrowLeft01, contentDescription = "\u8FD4\u56DE")
@@ -469,6 +480,9 @@ fun PluginWebViewPage(
                         val aiCall = PluginAiCall(
                             permissions = pluginInfo.manifest.permissions,
                             loadSettings = { settingsStore.settingsFlow.first() },
+                            loadConversation = if (conversationId.isBlank()) null else {
+                                { conversationRepository.getConversationById(Uuid.parse(conversationId)) }
+                            },
                             generateText = { providerSetting, messages, params ->
                                 val manager: ProviderManager = org.koin.java.KoinJavaComponent.get(ProviderManager::class.java)
                                 usageRecorder.wrap(
@@ -905,25 +919,10 @@ private class PluginWebViewClient(
                 scope.launch(Dispatchers.IO) {
                     try {
                         val savedConfig = pluginRepository.getPluginConfig(pluginInfo.manifest.id)
-                        val mergedConfig = mutableMapOf<String, kotlinx.serialization.json.JsonElement>()
-
-                        pluginInfo.manifest.config.forEach { field ->
-                            if (savedConfig.containsKey(field.name)) {
-                                mergedConfig[field.name] = savedConfig[field.name]!!
-                            } else if (field.default != null) {
-                                mergedConfig[field.name] = field.default
-                            }
-                        }
-
-                        savedConfig.forEach { (key, value) ->
-                            if (!mergedConfig.containsKey(key)) {
-                                mergedConfig[key] = value
-                            }
-                        }
+                        val mergedConfig = effectivePluginConfig(pluginInfo.manifest.config, savedConfig)
 
                         val jsonObj = JsonObject(mergedConfig)
                         val result = json.encodeToString(JsonObject.serializer(), jsonObj)
-                        Log.d(TAG, "getPluginConfig for ${pluginInfo.manifest.id}: $result")
                         webView.post {
                             webView.evaluateJavascript(
                                 pluginBridgeJsonJavascript(params["callbackId"], result.toString()), null

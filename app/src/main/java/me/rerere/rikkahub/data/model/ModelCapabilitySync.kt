@@ -102,10 +102,10 @@ class ModelCapabilitySync(
     }
 
     /** Reuses an existing authenticated list response, including models with a native override. */
-    suspend fun applyCodexMetadata(discovered: List<Model>) = withContext(Dispatchers.IO) {
+    suspend fun applyCodexMetadata(discovered: List<Model>, source: ProviderSetting.Codex) = withContext(Dispatchers.IO) {
         if (discovered.isEmpty()) return@withContext
         fun refresh(provider: ProviderSetting): ProviderSetting {
-            val models = mergeCodexModelMetadata(provider, discovered)
+            val models = mergeCodexModelMetadata(provider, discovered, addMissing = provider.id == source.id)
             return if (models == provider.models) provider else provider.copyProvider(models = models)
         }
         val snapshot = settingsStore.settingsFlowRaw.first()

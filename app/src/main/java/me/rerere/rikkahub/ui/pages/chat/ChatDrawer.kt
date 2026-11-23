@@ -410,7 +410,7 @@ fun ChatDrawerContent(
                     drawerItemAlpha = settings.displaySetting.drawerItemAlpha,
                     modifier = Modifier.fillMaxWidth().weight(1f),
                     onManage = { showPluginShortcutSheet = true },
-                    onOpen = { plugin -> openPluginPage(navController, plugin) },
+                    onOpen = { plugin -> openPluginPage(navController, plugin, current.id.toString()) },
                 )
             }
 
@@ -1423,12 +1423,12 @@ private fun PluginShortcutPickerSheet(
     }
 }
 
-private fun openPluginPage(navigator: Navigator, plugin: PluginInfo) {
+private fun openPluginPage(navigator: Navigator, plugin: PluginInfo, conversationId: String) {
     val manifest = plugin.manifest
     when {
         manifest.ui != null -> navigator.navigate(Screen.PluginDeclarativeUI(manifest.id))
         manifest.customPageWebView != null -> navigator.navigate(
-            Screen.PluginWebView(manifest.id, manifest.customPageWebView.entry)
+            Screen.PluginWebView(manifest.id, manifest.customPageWebView.entry, conversationId)
         )
         manifest.customPage == "memory_bank" -> navigator.navigate(Screen.MemoryBank)
         else -> navigator.navigate(Screen.PluginDetail(manifest.id))

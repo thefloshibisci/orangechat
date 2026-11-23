@@ -1,0 +1,12 @@
+services:
+  listen:
+    build: .
+    restart: unless-stopped
+    environment:
+      LISTEN_TOKEN: ${LISTEN_TOKEN:?Set LISTEN_TOKEN in .env}
+    ports:
+      - "127.0.0.1:8787:8787"
+    volumes:
+      - listen-data:/data
+volumes:
+  listen-data:

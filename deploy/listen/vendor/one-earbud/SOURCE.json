@@ -1,0 +1,41 @@
+{
+  "repository": "https://github.com/isle0306ral-hub/one-earbud",
+  "commit": "ac2ae71916ed1f696e68c9a0edd15b7c7454209e",
+  "retrievedAt": "2026-11-09",
+  "license": "MIT (see NOTICE.md for inconsistent README usage wording)",
+  "files": [
+    {
+      "path": "server/music/netease.js",
+      "gitBlobSha": "c299ecff69a22cc473c05933a731cdbc65e5736f"
+    },
+    {
+      "path": "server/music/qr.js",
+      "gitBlobSha": "fed8dbcfd423ff80ae581c4e8b4429a20f95d6ab"
+    },
+    {
+      "path": "server/music/store.js",
+      "gitBlobSha": "75f427a8d20cf744d965b69428bfe3af2f572083"
+    },
+    {
+      "path": "LICENSE",
+      "gitBlobSha": "1081563587f469b7af4178d8bc366abaeb6f9205"
+    },
+    {
+      "path": "README.md",
+      "gitBlobSha": "9b1dabf8a1401e88f303c9ebc6e918ea3a0c11eb"
+    }
+  ],
+  "modifications": [
+    {
+      "path": "server/music/netease.js",
+      "localGitBlobSha": "48ce01badfb7c103edd15fe8aa184c06b020a80a",
+      "reason": "Validate provider business codes and JSON shape; bound total timeout and response size; handle interrupted response bodies."
+    },
+    {
+      "path": "server/music/store.js",
+      "localGitBlobSha": "555c87849c93e7e68261cf9abc1cb99c3f0357c4",
+      "reason": "Report failed cookie deletion so logout cannot falsely claim success."
+    }
+  ],
+  "verification": "files retain the pinned upstream Git tree blob SHAs. Unmodified local files match those SHAs; modifications list the current local blob SHAs and patch reasons."
+}

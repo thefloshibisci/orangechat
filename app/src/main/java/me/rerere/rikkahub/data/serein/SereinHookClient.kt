@@ -17,11 +17,20 @@ data class HookRecall(val context: String = "", val ids: List<String> = emptyLis
 class SereinHookClient internal constructor(private val client: OkHttpClient) {
     constructor() : this(OkHttpClient.Builder().build())
 
-    suspend fun recall(config: SereinHookConfig, query: String, session: String, delivered: List<String>): HookRecall {
+    suspend fun testConnection(config: SereinHookConfig): HookRecall = request(
+        config, "Serein connection test: synthetic memory check", "orangechat-connection-test", emptyList(), maxNotes = 0,
+    )
+
+    suspend fun recall(config: SereinHookConfig, query: String, session: String, delivered: List<String>): HookRecall =
+        request(config, query, session, delivered, maxNotes = 2)
+
+    private suspend fun request(
+        config: SereinHookConfig, query: String, session: String, delivered: List<String>, maxNotes: Int,
+    ): HookRecall {
         val root = config.rootUrl() ?: return HookRecall(status = "invalid_config")
         if (config.gatewayKey.isBlank()) return HookRecall(status = "invalid_config")
         val payload = buildJsonObject {
-            put("query", query); put("session_id", session); put("max_notes", 2)
+            put("query", query); put("session_id", session); put("max_notes", maxNotes)
             put("max_chars", 1200); put("max_context_chars", 4200)
             put("delivered_ids", JsonArray(delivered.map(::JsonPrimitive)))
         }

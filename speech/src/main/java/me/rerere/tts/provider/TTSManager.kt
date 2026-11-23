@@ -53,6 +53,11 @@ class TTSManager(private val context: Context) {
     }
 }
 
-internal fun compatibleSpeechRequest(setting: TTSProviderSetting, request: TTSRequest): TTSRequest =
-    if (setting is TTSProviderSetting.MiniMax) request
-    else request.copy(text = SpeechMarkup.plainText(request.text), style = SpeechStyle())
+internal fun compatibleSpeechRequest(setting: TTSProviderSetting, request: TTSRequest): TTSRequest = when (setting) {
+    is TTSProviderSetting.MiniMax -> request.copy(text = SpeechMarkup.withoutElevenLabsTags(request.text))
+    is TTSProviderSetting.ElevenLabs -> request.copy(
+        text = SpeechMarkup.plainText(request.text),
+        style = SpeechStyle(stability = request.style.stability, similarityBoost = request.style.similarityBoost),
+    )
+    else -> request.copy(text = SpeechMarkup.withoutElevenLabsTags(SpeechMarkup.plainText(request.text)), style = SpeechStyle())
+}

@@ -3,6 +3,7 @@ package me.rerere.rikkahub.ui.pages.voice
 import androidx.compose.runtime.*
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import dev.chrisbanes.haze.HazeState
 import kotlinx.coroutines.launch
 import me.rerere.rikkahub.Screen
 import me.rerere.rikkahub.data.datastore.getAssistantById
@@ -20,7 +21,10 @@ import me.rerere.rikkahub.ui.components.ui.permission.rememberPermissionState
 import kotlin.uuid.Uuid
 
 @Composable
-internal fun ChatCallOverlay(conversation: Conversation) {
+internal fun ChatCallOverlay(
+    conversation: Conversation,
+    glass: HazeState? = null,
+) {
     val service: ChatService = org.koin.compose.koinInject()
     val settings = LocalSettings.current
     val nav = LocalNavController.current
@@ -62,6 +66,14 @@ internal fun ChatCallOverlay(conversation: Conversation) {
     FloatingCallPill(theme = assistant?.chatInteractionTheme ?: pending?.theme ?: "ice",
         name = assistant?.name?.ifBlank { "对方" } ?: "对方", incoming = activeId == null, busy = busy,
         onAccept = { respond("accept") },
-        onOpen = { nav.navigate(if (activeId != null) Screen.VoiceCall(targetId) else Screen.IncomingCall(targetId, pending?.id)) { launchSingleTop = true } },
-        onEnd = { if (activeId != null) VoiceCallService.stop(context) else respond("decline") })
+        onOpen = {
+            val target = when {
+                activeId != null && VoiceCallService.isVideoCall() -> Screen.VideoCall(targetId)
+                activeId != null -> Screen.VoiceCall(targetId)
+                else -> Screen.IncomingCall(targetId, pending?.id)
+            }
+            nav.navigate(target) { launchSingleTop = true }
+        },
+        onEnd = { if (activeId != null) VoiceCallService.stop(context) else respond("decline") },
+        glass = glass)
 }

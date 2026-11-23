@@ -19,15 +19,16 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
-import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
 private const val TAG = "ElevenLabsTTSProvider"
 
-class ElevenLabsTTSProvider : TTSProvider<TTSProviderSetting.ElevenLabs> {
-    private val httpClient = OkHttpClient.Builder()
+class ElevenLabsTTSProvider(
+    private val httpClient: OkHttpClient = OkHttpClient.Builder()
         .readTimeout(120, TimeUnit.SECONDS)
+        .retryOnConnectionFailure(false)
         .build()
+) : TTSProvider<TTSProviderSetting.ElevenLabs> {
 
     override fun generateSpeech(
         context: Context,
@@ -35,46 +36,19 @@ class ElevenLabsTTSProvider : TTSProvider<TTSProviderSetting.ElevenLabs> {
         request: TTSRequest
     ): Flow<AudioChunk> = flow {
         try {
-            // clamp 到 API 要求的 0..1 区间, 防止迁移/导入的旧设置超范围触发 400
-            val stability = providerSetting.stability.coerceIn(0f, 1f)
-            val similarityBoost = providerSetting.similarityBoost.coerceIn(0f, 1f)
-
-            val requestBody = JSONObject().apply {
-                put("text", request.text)
-                put("model_id", providerSetting.modelId)
-                // 显式锁定输出格式为 mp3, 与下面 AudioFormat.MP3 一致。
-                // eleven_v3 等模型默认返回 PCM, 不显式指定会导致拿到 PCM 却按 MP3
-                // 解析, 播放杂音或 PlaybackException。
-                put("output_format", "mp3_44100_128")
-                put("voice_settings", JSONObject().apply {
-                    put("stability", stability)
-                    put("similarity_boost", similarityBoost)
-                })
-            }
-
-            Log.i(TAG, "generateSpeech request: voiceId=${providerSetting.voiceId}, modelId=${providerSetting.modelId}, body=$requestBody")
+            val requestBody = elevenLabsRequestBody(providerSetting, request)
 
             val httpRequest = Request.Builder()
-                .url("${providerSetting.baseUrl}/text-to-speech/${providerSetting.voiceId}")
+                .url(elevenLabsSpeechUrl(providerSetting))
                 .addHeader("xi-api-key", providerSetting.apiKey)
                 .addHeader("Content-Type", "application/json")
                 .post(requestBody.toString().toRequestBody("application/json".toMediaType()))
                 .build()
 
-            val response = httpClient.newCall(httpRequest).execute()
-
-            if (!response.isSuccessful) {
-                val errorBody = try {
-                    response.body.string()
-                } catch (e: Exception) {
-                    Log.e(TAG, "Failed to read error body", e)
-                    null
-                }
-                Log.e(TAG, "generateSpeech failed: code=${response.code}, message=${response.message}, body=$errorBody, voiceId=${providerSetting.voiceId}")
-                throw Exception("ElevenLabs TTS request failed: ${response.code} ${response.message}")
+            val audioData = httpClient.newCall(httpRequest).execute().use { response ->
+                check(response.isSuccessful) { "ElevenLabs TTS request failed: ${response.code} ${response.message}" }
+                response.body.bytes().also { check(it.isNotEmpty()) { "ElevenLabs returned empty audio" } }
             }
-
-            val audioData = response.body.bytes()
 
             emit(
                 AudioChunk(

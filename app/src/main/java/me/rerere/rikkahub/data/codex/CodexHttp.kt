@@ -1,6 +1,7 @@
 package me.rerere.rikkahub.data.codex
 
 import kotlinx.coroutines.CancellationException
+import me.rerere.ai.provider.providers.openai.CodexHttpFailure
 import okhttp3.HttpUrl
 import okhttp3.OkHttpClient
 import java.io.IOException
@@ -35,6 +36,8 @@ internal fun codexHttpClient(): OkHttpClient = OkHttpClient.Builder()
 internal suspend fun <T> codexSafe(block: suspend () -> T): T = try {
     kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { block() }
 } catch (error: CancellationException) {
+    throw error
+} catch (error: CodexHttpFailure) {
     throw error
 } catch (_: Exception) {
     // No raw HTTP body, JSON decoder input, token, URL query or nested cause escapes.

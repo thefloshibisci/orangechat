@@ -11,6 +11,8 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberUpdatedState
 import me.rerere.ai.core.MessageRole
+import me.rerere.ai.ui.UIMessage
+import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.data.ai.transformers.speechText
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.model.Conversation
@@ -27,7 +29,7 @@ fun TTSAutoPlay(vm: ChatVM, setting: Settings, conversation: Conversation) {
         vm.generationDoneFlow.collect { conversationId ->
             if (updatedSetting.displaySetting.autoPlayTTSAfterGeneration) {
                 val lastMessage = currentConversation.currentMessages.lastOrNull()
-                if (lastMessage != null && lastMessage.role == MessageRole.ASSISTANT) {
+                if (conversationId == currentConversation.id && lastMessage != null && shouldAutoPlayTts(lastMessage)) {
                     val text = lastMessage.speechText()
                     val textToSpeak = if (updatedSetting.displaySetting.ttsOnlyReadQuoted) {
                         text.extractQuotedContentAsText() ?: text
@@ -42,3 +44,7 @@ fun TTSAutoPlay(vm: ChatVM, setting: Settings, conversation: Conversation) {
         }
     }
 }
+
+/** A voice tool result is already generated; the separate automatic text-reading preference must not replay it. */
+internal fun shouldAutoPlayTts(message: UIMessage): Boolean = message.role == MessageRole.ASSISTANT &&
+    message.parts.none { it is UIMessagePart.Tool && it.toolName == "text_to_speech" }

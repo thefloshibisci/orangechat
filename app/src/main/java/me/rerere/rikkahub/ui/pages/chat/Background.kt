@@ -67,13 +67,14 @@ fun rememberChatBackgroundVisuals(setting: Settings): ChatBackgroundVisuals {
 @Composable
 fun AssistantBackground(
     setting: Settings,
+    modifier: Modifier = Modifier,
 ) {
     val assistant = setting.getCurrentAssistant()
     val visuals = rememberChatBackgroundVisuals(setting)
     val chatBackgroundColor = setting.displaySetting.chatBackgroundColor?.let { it.toComposeColor() }
     val isScrollCaptureInProgress = LocalScrollCaptureInProgress.current
 
-    Box(modifier = Modifier.fillMaxSize()) {
+    Box(modifier = modifier.fillMaxSize()) {
         // MIUI's scroll capture composites the page by repeated screenshots. Keep image layers
         // out of that capture window for one diagnostic pass; solid colors remain unchanged.
         if (!isScrollCaptureInProgress && setting.themeId == "pearltide") {

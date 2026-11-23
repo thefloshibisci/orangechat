@@ -15,7 +15,7 @@ internal object GongduAudioReader {
     const val SAMPLE_RATE = GongduPcmResampler.SAMPLE_RATE
     const val MAX_PCM_BYTES = GongduPcmResampler.MAX_PCM_BYTES
 
-    suspend fun extract(video: File, output: File, startMs: Long, endMs: Long): Boolean {
+    suspend fun extract(video: File, output: File, startMs: Long, endMs: Long): GongduAudioResult {
         val extractor = MediaExtractor()
         var codec: MediaCodec? = null
         var started = false
@@ -23,7 +23,7 @@ internal object GongduAudioReader {
             extractor.setDataSource(video.path)
             val track = (0 until extractor.trackCount).firstOrNull {
                 extractor.getTrackFormat(it).getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true
-            } ?: return false
+            } ?: return GongduAudioResult.NO_TRACK
             extractor.selectTrack(track)
             extractor.seekTo(startMs * 1000, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
             val format = extractor.getTrackFormat(track)
@@ -90,11 +90,11 @@ internal object GongduAudioReader {
                         }
                     }
                 }
-                if (!resampler.finish()) return false
+                if (!resampler.finish()) return GongduAudioResult.NO_SAMPLES
                 wav.seek(0)
                 wav.write(wavHeader(resampler.pcmBytesWritten))
             }
-            return true
+            return GongduAudioResult.READY
         } finally {
             if (started) runCatching { codec?.stop() }
             runCatching { codec?.release() }

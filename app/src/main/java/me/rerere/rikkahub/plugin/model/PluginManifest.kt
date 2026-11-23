@@ -181,9 +181,10 @@ data class PluginToolParameter(
 
     /**
      * 宿主自动填充来源。声明后该参数不出现在模型可见的 schema 里，执行时由宿主注入：
-     * - "chat_image_base64"/"chat_image_mime"：当前聊天分支的用户图片（params.attachment_id 指定，缺省为最新一张），
+     * - "chat_image_base64"/"chat_image_mime"：当前聊天分支的用户/助手/工具图片（params.attachment_id 指定，
+     *   多图时必传；缺省仅允许分支里只有一张图）。宿主自动向模型暴露 attachment_id，可用 chat_images 预览，
      *   需要 conversation_sync 权限，压缩到最长边 1600px 后以 base64/mime 注入。
-     * - "chat_images_list"：当前聊天分支的用户图片清单，以数组注入。
+     * - "chat_images_list"：当前聊天分支的图片清单，以数组注入，包含 origin/tool_name 来源字段。
      */
     val source: String? = null
 )

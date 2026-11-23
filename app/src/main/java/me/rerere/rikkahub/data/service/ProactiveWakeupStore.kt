@@ -18,7 +18,7 @@ internal data class ProactiveWakeup(
 )
 
 @Serializable
-internal enum class ProactiveWakeupStatus { Pending, Running, Sent, Failed, Cancelled }
+internal enum class ProactiveWakeupStatus { Pending, Running, Sent, Failed, Cancelled, Skipped, Interrupted }
 
 @Serializable
 internal data class ProactiveWakeupRecord(
@@ -35,25 +35,48 @@ internal fun proactiveWakeupOutcome(outcome: String): String = when (outcome) {
     "appointment_conversation_removed" -> "原会话已删除或已变更角色"
     "no_user_message" -> "原会话没有用户消息"
     "no_model" -> "未配置聊天模型"
+    "no_provider" -> "找不到此会话模型的服务商"
+    "empty_response" -> "模型没有返回可发送的正文"
+    "failed" -> "主动生成或工具请求出错；可在 App 日志查看本轮记录，未自动重发"
     "follow_up_limit" -> "已达连续追问上限，等待你回来"
     "user_returned", "cancelled" -> "本次唤醒已中断，未自动重发"
+    "appointment_disabled" -> "主动消息或 AI 约定唤醒已关闭，未发送"
+    "appointment_not_due" -> "发送前重新检查时，约定时间尚未到达，未发送"
     "disabled_or_quiet_hours" -> "已关闭主动消息或进入免打扰，未发送"
-    "pass", "wait", "stop" -> "AI 本次未发送正文，可重新约定"
+    "pass" -> "AI 检查后选择这次不发消息"
+    "wait" -> "AI 决定稍后再判断，本次没有发送正文"
+    "stop" -> "AI 决定等待你再次开口"
     "process_interrupted" -> "应用中断，发送结果未确认；未自动重发"
     else -> "唤醒未完成，可重新约定"
 }
 
-/** Quiet hours move execution forward without changing the original appointment. */
+/** Persist a bounded diagnosis. Provider error bodies may contain prompts, signed URLs or credentials. */
+private fun proactiveFailureReason(failure: Throwable): String {
+    val causes = generateSequence(failure) { it.cause }.take(8).toList()
+    for (cause in causes.asReversed()) {
+        val status = providerResponseStatus.find(cause.message.orEmpty().take(40))?.groupValues?.get(1)
+        if (status != null) return "服务商返回 HTTP $status"
+        when (cause) {
+            is java.net.SocketTimeoutException, is kotlinx.coroutines.TimeoutCancellationException -> return "请求超时"
+            is java.net.UnknownHostException -> return "域名解析失败"
+            is java.net.ConnectException -> return "无法建立连接"
+            is javax.net.ssl.SSLException -> return "安全连接失败"
+            is java.io.EOFException -> return "连接提前结束"
+            is me.rerere.ai.util.HttpException -> return "服务商返回错误"
+        }
+    }
+    return failure.javaClass.simpleName.take(80).ifBlank { "未知异常" }
+}
+
+private val providerResponseStatus = Regex("""^Failed to get response: ([45][0-9]{2})(?:\s|$)""")
+
+/** An opted-in appointment uses its agreed instant, independent of ordinary active hours. */
 internal fun nextProactiveWakeup(
     appointments: List<ProactiveWakeup>,
     setting: ProactiveMessageSetting,
-    now: Long,
-    zone: ZoneId,
 ): ProactiveWakeup? {
     if (!setting.enabled || !setting.allowAiScheduledWakeup) return null
-    return appointments.minWithOrNull(compareBy<ProactiveWakeup> {
-        nextProactiveActiveTime(setting, it.timeMillis.coerceAtLeast(now), zone)
-    }.thenBy { it.timeMillis }.thenBy { it.conversationId })
+    return appointments.minWithOrNull(compareBy(ProactiveWakeup::timeMillis, ProactiveWakeup::conversationId))
 }
 
 /** Rechecked after generation too, since consent or active hours can change during a request. */
@@ -63,9 +86,11 @@ internal fun canRunProactiveWakeup(
     now: Long,
     zone: ZoneId,
     manual: Boolean = false,
-): Boolean = setting.enabled &&
-    (appointment == null || (setting.allowAiScheduledWakeup && appointment.timeMillis <= now)) &&
-    (manual || isProactiveActiveTime(setting, now, zone))
+): Boolean = when {
+    !setting.enabled -> false
+    appointment != null -> setting.allowAiScheduledWakeup && appointment.timeMillis <= now
+    else -> manual || isProactiveActiveTime(setting, now, zone)
+}
 
 internal fun proactiveTriggerTime(
     appointment: ProactiveWakeup?,
@@ -73,12 +98,12 @@ internal fun proactiveTriggerTime(
     setting: ProactiveMessageSetting,
     now: Long,
     zone: ZoneId,
-): Long = nextProactiveActiveTime(
-    setting,
+): Long = when {
+    appointment == null -> nextProactiveActiveTime(setting, fallbackTime, zone)
     // A blocked, overdue appointment gets a bounded retry instead of a tight alarm loop.
-    appointment?.let { if (it.timeMillis <= now) now + 60_000L else it.timeMillis } ?: fallbackTime,
-    zone,
-)
+    appointment.timeMillis <= now -> now + 60_000L
+    else -> appointment.timeMillis
+}
 
 /** One durable record per conversation; compare-and-remove protects a newer replacement. */
 internal class ProactiveWakeupStore(
@@ -124,13 +149,26 @@ internal class ProactiveWakeupStore(
     }
 
     /** Final outcomes never overwrite another appointment or a newer terminal record. */
-    fun finish(appointment: ProactiveWakeup, outcome: String) = synchronized(lock) {
+    fun finish(
+        appointment: ProactiveWakeup,
+        outcome: String,
+        failureStage: String = "执行约定",
+        failure: Throwable? = null,
+    ) = synchronized(lock) {
         val history = readHistory()
         if (history.any { it.appointment.token == appointment.token && it.status == ProactiveWakeupStatus.Running }) {
             write(read(), history.filterNot { it.appointment.token == appointment.token } +
                 record(appointment,
-                    if (outcome == "sent") ProactiveWakeupStatus.Sent else ProactiveWakeupStatus.Failed,
-                    proactiveWakeupOutcome(outcome)))
+                    when (outcome) {
+                        "sent" -> ProactiveWakeupStatus.Sent
+                        "pass", "wait", "stop", "follow_up_limit", "disabled_or_quiet_hours",
+                        "appointment_disabled", "appointment_not_due" -> ProactiveWakeupStatus.Skipped
+                        "user_returned", "cancelled" -> ProactiveWakeupStatus.Interrupted
+                        else -> ProactiveWakeupStatus.Failed
+                    },
+                    if (outcome == "failed" && failure != null) {
+                        "${failureStage}时出错：${proactiveFailureReason(failure)}"
+                    } else proactiveWakeupOutcome(outcome)))
         }
     }
 
@@ -149,7 +187,7 @@ internal class ProactiveWakeupStore(
         val stored: List<ProactiveWakeupRecord> = json.decodeFromString(prefs.getString("history", "[]") ?: "[]")
         val recovered = stored.map {
             if (it.status == ProactiveWakeupStatus.Running && it.processId != processId) {
-                record(it.appointment, ProactiveWakeupStatus.Failed, proactiveWakeupOutcome("process_interrupted"))
+                record(it.appointment, ProactiveWakeupStatus.Interrupted, proactiveWakeupOutcome("process_interrupted"))
             } else it
         }
         if (stored != recovered) write(read(), recovered)

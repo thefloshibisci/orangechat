@@ -3,6 +3,8 @@ package me.rerere.rikkahub.workflow
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import me.rerere.ai.core.Tool
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.workflow.execution.WorkflowActionRunner
@@ -48,6 +50,38 @@ class WorkflowActionRunnerTest {
         assertFalse(laterCalled)
         assertEquals(listOf("FAILED", "SKIPPED"), result.steps.map { it.status })
         assertEquals("permission denied", result.steps[0].errorMessage)
+    }
+
+    @Test
+    fun workspaceCommandFailureKeepsMachineInHistoryAndRunSummary() = runBlocking {
+        val machine = "腾讯云 · ubuntu@example.invalid:22"
+        val metadata = buildJsonObject { put("machine", machine); put("workspace_id", "remote-id") }
+        for (error in listOf("Command exited with code 2", "Command timed out")) {
+            var laterCalled = false
+            val result = WorkflowActionRunner().run(
+                listOf(WorkflowAction("workspace_shell", args), WorkflowAction("second", args)),
+                listOf(
+                    Tool(name = "workspace_shell", description = "") {
+                        listOf(
+                            UIMessagePart.Text(machine).apply { this.metadata = metadata },
+                            UIMessagePart.Text(buildJsonObject { put("ok", false); put("error", error) }.toString())
+                                .apply { this.metadata = metadata },
+                        )
+                    },
+                    Tool(name = "second", description = "") {
+                        laterCalled = true
+                        emptyList()
+                    },
+                ),
+            )
+
+            assertFalse(result.success)
+            assertFalse(laterCalled)
+            assertEquals(listOf("FAILED", "SKIPPED"), result.steps.map { it.status })
+            assertEquals("$machine\n$error", result.steps.first().errorMessage)
+            assertTrue(result.error.orEmpty().contains(machine))
+            assertTrue(result.summary.contains(machine))
+        }
     }
 
     @Test

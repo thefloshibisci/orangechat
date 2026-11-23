@@ -60,13 +60,14 @@ class SereinHookUiTest {
         compose.onNodeWithTag("serein-recall").assertIsOff()
         compose.onNodeWithTag("serein-recall").performClick()
         compose.onNodeWithText("保存并开启").assertIsNotEnabled()
-        compose.onNodeWithText("HTTPS 实例根地址").performScrollTo().performTextInput("https://memory.example")
+        compose.onNodeWithText("HTTP / HTTPS 实例根地址").performScrollTo().performTextInput("http://memory.example:8080")
         compose.onNodeWithText("Gateway Key").performScrollTo().performTextInput("synthetic-secret")
         compose.onNodeWithText("5s").performScrollTo().performClick()
         compose.onNode(isToggleable() and hasAnyAncestor(isDialog())).performScrollTo().performClick()
         compose.onNodeWithText("保存并开启").performClick()
         compose.waitUntil(5000) { saved != null }
         assertEquals(5000L, saved!!.waitMs)
+        assertEquals("http://memory.example:8080", saved!!.rootUrl())
         assertEquals(assistant.id.toString(), saved!!.assistantId)
         compose.onNodeWithTag("serein-recall").assertIsOn()
         compose.runOnIdle {

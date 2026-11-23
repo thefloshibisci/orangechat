@@ -35,6 +35,7 @@ import me.rerere.rikkahub.data.event.AppEventBus
 import me.rerere.rikkahub.service.VoiceCallService
 import me.rerere.rikkahub.utils.readClipboardText
 import me.rerere.rikkahub.utils.writeClipboardText
+import me.rerere.rikkahub.data.datastore.getSelectedTTSProvider
 import me.rerere.rikkahub.data.datastore.findModelById
 import me.rerere.rikkahub.data.datastore.findProvider
 import me.rerere.rikkahub.data.files.FilesManager
@@ -398,49 +399,14 @@ class LocalTools(
         )
     }
  
-    val ttsTool by lazy {
-        Tool(
-            name = "text_to_speech",
-            description = """
-                Speak text aloud to the user using the device's text-to-speech engine.
-                Use this when the user asks you to read something aloud, or when audio output is appropriate.
-                The tool returns immediately; audio plays in the background on the device.
-                Provide natural, readable text without markdown formatting.
-                You may set delivery per sentence inside text, for example:
-                [[voice emotion=happy speed=0.9 pitch=-2 volume=1]]Hello(laughs), how are you?[[/voice]]
-                Wrap each styled sentence separately and always close the block. All attributes are optional.
-                emotion: auto, happy, sad, angry, fearful, disgusted, surprised, calm (fluent/whisper only on MiniMax 2.6).
-                speed: 0.5-2, pitch: integer -12 to 12, volume: >0 to 10.
-                MiniMax pauses: put <#0.3#> between spoken words (0.01-99.99 seconds, at most two decimals).
-                Only MiniMax 2.8 supports interjections: (laughs), (chuckle), (sighs), (breath), (pant),
-                (inhale), (exhale), (gasps), (sniffs), (coughs), (clear-throat), (groans), (snorts),
-                (burps), (lip-smacking), (humming), (hissing), (emm), (sneezes).
-                Unsupported settings and tags are automatically omitted when another model/provider is selected.
-                Ordinary spoken fillers such as 嗯, 啊, 呀 may be written directly in the text.
-            """.trimIndent().replace("\n", " "),
-            parameters = {
-                InputSchema.Obj(
-                    properties = buildJsonObject {
-                        put("text", buildJsonObject {
-                            put("type", "string")
-                            put("description", "Text to speak; optional per-sentence [[voice emotion=happy speed=0.9 pitch=-2]]words[[/voice]] blocks. Plain text also works.")
-                        })
-                    },
-                    required = listOf("text")
-                )
-            },
-            execute = {
-                val text = it.jsonObject["text"]?.jsonPrimitive?.contentOrNull
-                    ?: error("text is required")
-                eventBus.emit(AppEvent.Speak(text))
-                val payload = buildJsonObject {
-                    put("success", true)
-                }
-                listOf(UIMessagePart.Text(payload.toString()))
-            }
+    private val savedSpeechGenerator by lazy { SavedSpeechGenerator(context, filesManager) }
+
+    val ttsTool: Tool
+        get() = speechMessageTool(
+            selectedProvider = { settingsStore.settingsFlow.value.getSelectedTTSProvider() },
+            generate = savedSpeechGenerator::generate,
         )
-    }
- 
+
     val askUserTool by lazy {
         Tool(
             name = "ask_user",

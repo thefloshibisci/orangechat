@@ -1,10 +1,12 @@
-﻿/*
+/*
  * 橘瓣 OrangeChat
  * 衍生自 RikkaHub (https://github.com/rikkahub/rikkahub)，原作者 RE
  * 本项目基于 GNU AGPL v3 开源，详见根目录 LICENSE 文件
  */
 
 package me.rerere.rikkahub.ui.components.message
+
+import me.rerere.rikkahub.data.interaction.withoutVideoCallTranscriptText
 
 import me.rerere.rikkahub.data.interaction.withoutJumpControl
 
@@ -293,8 +295,10 @@ fun ChatMessage(
     onQuote: ((String) -> Unit)? = null,
     hasAssistantResponse: Boolean? = null,
     hasUserRead: Boolean? = null,
+    hideVideoCallTranscriptText: Boolean = false,
 ) {
-    val message = me.rerere.rikkahub.data.ai.transformers.interactionTranscript(node.messages[node.selectIndex], streaming = loading).withoutJumpControl().let { original ->
+    val sourceMessage = node.messages[node.selectIndex]
+    val renderedMessage = me.rerere.rikkahub.data.ai.transformers.interactionTranscript(sourceMessage, streaming = loading).withoutJumpControl().let { original ->
         if (original.role == MessageRole.USER && original.parts.any {
                 it is UIMessagePart.Text && it.text.startsWith("\u2063[orange-watch-auto]")
             }
@@ -308,7 +312,12 @@ fun ChatMessage(
             original
         }
     }
-    if (message.parts.isEmptyUIMessage() && !loading) return
+    val message = if (hideVideoCallTranscriptText) {
+        renderedMessage.withoutVideoCallTranscriptText()
+    } else renderedMessage
+    if (message.parts.isEmptyUIMessage() && !loading &&
+        message.annotations.none { it is me.rerere.ai.ui.UIMessageAnnotation.VideoCallGift }
+    ) return
     if (message.avatarInteraction() != null) {
         Text(
             text = message.avatarInteractionText(),
@@ -381,7 +390,7 @@ fun ChatMessage(
             }
             if (message.role == MessageRole.USER && !everyday) {
                 Column(Modifier.align(Alignment.End).padding(top = 4.dp)) {
-                    InteractionMessageActions(message, node, readOnly, model, onUpdate, onRegenerate,
+                    InteractionMessageActions(sourceMessage, node, readOnly, model, onUpdate, onRegenerate,
                         onEdit, onDelete, onShare, onFork, isFavorite, onToggleFavorite)
                 }
             }
@@ -448,7 +457,11 @@ fun ChatMessage(
             }
         }
         ProvideTextStyle(textStyle) {
-            if (everyday && message.role == MessageRole.ASSISTANT && message.parts.none {
+            if (everyday && message.role == MessageRole.ASSISTANT &&
+                // A gift-only record has no hidden process to open; keep loading/process entries intact.
+                (loading || message.annotations.none { it is UIMessageAnnotation.VideoCallGift } ||
+                    message.parts.any { it is UIMessagePart.Reasoning || it is UIMessagePart.Tool }) &&
+                (!hideVideoCallTranscriptText || message.parts.any { it is UIMessagePart.Reasoning || it is UIMessagePart.Tool }) && message.parts.none {
                 (it is UIMessagePart.Text && it.text.isNotBlank())
                     || it is UIMessagePart.Image || it is UIMessagePart.Audio
                     || it is UIMessagePart.VoiceMessage || it is UIMessagePart.Video || it is UIMessagePart.Document
@@ -464,7 +477,16 @@ fun ChatMessage(
                 }
             }
             MessagePartsBlock(
+                listenConversationId = conversationId?.toString(),
+                listenReadOnly = readOnly,
                 afterTools = { tools ->
+                    tools.filter { it.toolName == "music_tool" && it.isExecuted }.forEach { tool ->
+                        tool.output.filterIsInstance<UIMessagePart.Text>().forEach { part ->
+                            me.rerere.rikkahub.data.listen.parseListenShare(part.text)?.let { share ->
+                                ListenSongCard(share, conversationId?.toString(), readOnly)
+                            }
+                        }
+                    }
                     tools.mapNotNull { me.rerere.rikkahub.data.interaction.interactionToolId(it) }.distinct().forEach { id ->
                         inlineCards[id]?.let { card ->
                             ChatBubbleRow(everyday, false, avatar = { ChatBubbleAvatar(false, model, assistant, avatarGesture) }, timestamp = timestamp) {
@@ -492,6 +514,11 @@ fun ChatMessage(
                 timestamp = timestamp,
             )
  
+            message.annotations.filterIsInstance<me.rerere.ai.ui.UIMessageAnnotation.VideoCallGift>()
+                .lastOrNull()?.let { gift ->
+                    // The gift belongs to this same reply; do not add a second sender row.
+                    VideoCallGiftCard(gift)
+                }
             message.translation?.let { translation ->
                 CollapsibleTranslationText(
                     content = translation,
@@ -520,7 +547,7 @@ fun ChatMessage(
             ) {
                 ChatMessageActionButtons(
                     readOnly = readOnly,
-                    message = message,
+                    message = sourceMessage,
                     onRegenerate = onRegenerate,
                     node = node,
                     onUpdate = onUpdate,
@@ -560,7 +587,7 @@ fun ChatMessage(
                     Column {
                         ChatMessageActionButtons(
                             readOnly = readOnly,
-                            message = message,
+                            message = sourceMessage,
                             node = node,
                             onUpdate = onUpdate,
                             onRegenerate = { showActionsSheet = false; onRegenerate() },
@@ -649,6 +676,8 @@ fun ChatMessage(
 @OptIn(FlowPreview::class)
 @Composable
 private fun MessagePartsBlock(
+    listenConversationId: String? = null,
+    listenReadOnly: Boolean = false,
     assistant: Assistant?,
     role: MessageRole,
     model: Model?,
@@ -763,17 +792,19 @@ private fun MessagePartsBlock(
                 ) {
                     when (val part = block.part) {
                         is UIMessagePart.Text -> {
-                            // 从显示文本中移除[zip:...]标记
-                            val displayText = remember(part.text) {
-                                part.text.replace(Regex("\\[zip:[^\\]]+\\]", RegexOption.IGNORE_CASE), "")
+                            GongduShareMessageContent(part.text, listenConversationId, listenReadOnly) { plainText ->
+                                // Filter internal archive markers only from ordinary text. A card's
+                                // excerpt or note may legitimately contain the same literal text.
+                                val displayText = remember(plainText) {
+                                    plainText.replace(Regex("\\[zip:[^\\]]+\\]", RegexOption.IGNORE_CASE), "")
+                                }
+                                ChatMessageTextBubbles(
+                                    text = displayText, role = role, assistant = assistant,
+                                    reactions = reactions, reactionPresets = reactionPresets, onReact = onReact,
+                                    onUserMessageClick = onUserMessageClick, onClickCitation = handleClickCitation,
+                                    avatar = bubbleAvatar, onLongClick = onBubbleLongClick, onDoubleClick = onBubbleDoubleClick, onQuote = onBubbleQuote, timestamp = timestamp,
+                                )
                             }
-
-                            ChatMessageTextBubbles(
-                                text = displayText, role = role, assistant = assistant,
-                                reactions = reactions, reactionPresets = reactionPresets, onReact = onReact,
-                                onUserMessageClick = onUserMessageClick, onClickCitation = handleClickCitation,
-                                avatar = bubbleAvatar, onLongClick = onBubbleLongClick, onDoubleClick = onBubbleDoubleClick, onQuote = onBubbleQuote, timestamp = timestamp,
-                            )
                         }
 
                         is UIMessagePart.Video -> {

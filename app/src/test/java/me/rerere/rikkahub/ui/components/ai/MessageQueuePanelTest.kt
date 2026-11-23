@@ -14,6 +14,9 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextReplacement
 import me.rerere.ai.ui.UIMessagePart
+import me.rerere.rikkahub.data.gongdu.gongduShareSummary
+import me.rerere.rikkahub.data.listen.ListenSong
+import me.rerere.rikkahub.data.listen.listenShareText
 import me.rerere.rikkahub.service.MessageQueueState
 import me.rerere.rikkahub.service.QueuedMessage
 import me.rerere.rikkahub.ui.hooks.ChatInputState
@@ -112,6 +115,23 @@ class MessageQueuePanelTest {
             assertEquals(listOf(entry.id to expected), finished)
             assertEquals(expected, state.messages.single().parts)
             assertFalse(state.messages.single().isEditing)
+        }
+    }
+
+    @Test fun queuedSharePreviewAndEditKeepOnlyTheUnremovedDuplicate() {
+        val payload = listenShareText(ListenSong("123", "歌", "歌手"))
+        val card = UIMessagePart.Text(payload)
+        val image = UIMessagePart.Image("file:///queued-card.png")
+        state = state.copy(messages = listOf(entry.copy(parts = listOf(UIMessagePart.Text("附言"), card, image, card))))
+        val summary = checkNotNull(gongduShareSummary(payload))
+        assertEquals("附言 $summary [图片] $summary", queuedMessagePreview(state.messages.single().parts))
+        show()
+        compose.onNodeWithTag("queue_edit_${entry.id}").performClick()
+        compose.onNodeWithTag("queue_attachment_remove_0").performClick()
+        compose.onNodeWithTag("chat_queue_edit_text").performTextReplacement("更新附言")
+        compose.onNodeWithText("保存").performClick()
+        compose.runOnIdle {
+            assertEquals(listOf(UIMessagePart.Text("更新附言"), image, card), state.messages.single().parts)
         }
     }
 

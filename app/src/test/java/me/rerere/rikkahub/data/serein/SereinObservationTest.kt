@@ -42,7 +42,7 @@ class SereinObservationTest {
             val user=UIMessage.user("Synthetic query")
             repo.prepareWith(config,"a","chat",user,true,{true}) { _,_->result }
             assertNull(db.sereinObservationDao().next(config.uploadDestination()))
-            for (state in listOf("completed","failed","interrupted")) {
+            for (state in listOf("completed","failed","interrupted","incomplete")) {
                 repo.report(config,"chat","orangechat:$state",user,result,result.ids,state,123,1793150859000)
                 val row=db.sereinObservationDao().next(config.uploadDestination())!!
                 val payload=Json.parseToJsonElement(row.payload).jsonObject

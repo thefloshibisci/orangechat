@@ -9,6 +9,8 @@ data class SpeechStyle(
     val speed: Float? = null,
     val pitch: Int? = null,
     val volume: Float? = null,
+    val stability: Float? = null,
+    val similarityBoost: Float? = null,
 )
 
 data class SpeechSegment(val text: String, val style: SpeechStyle = SpeechStyle())
@@ -25,6 +27,12 @@ object SpeechMarkup {
         "gasps", "sniffs", "sighs", "snorts", "burps", "lip-smacking", "humming", "hissing", "emm", "sneezes",
     )
     private val interjection = Regex("\\((?:${interjections.joinToString("|")})\\)", RegexOption.IGNORE_CASE)
+    private val elevenLabsTag = Regex(
+        "\\[(?:whispers|whispering|laughs|laughing|sighs|excited|sad|short pause|pause|long pause|rushed|slow)]",
+        RegexOption.IGNORE_CASE,
+    )
+
+    fun withoutElevenLabsTags(text: String): String = text.replace(elevenLabsTag, "")
 
     private fun removeUnfinishedControls(text: String): String {
         var result = text
@@ -146,4 +154,37 @@ object SpeechMarkup {
         }
         return ready
     }
+
+    /**
+     * 流式朗读用的前缀：在 [readyPrefixLength] 的整句边界之外，允许**够长的分句**先读。
+     *
+     * 通话里第一句完整的话可能要等模型写完好几个分句；按分句（，、；：）先合成，
+     * 首字出声会早一两秒。规则：
+     * - 仍然不会切开未闭合的 `[[voice]]` 块或 `<#...#>` 停顿标记；
+     * - 只有从上一处边界起累计长度达到 [softMin] 才认这个分句，避免一个字一个字地合成。
+     */
+    fun streamPrefixLength(text: String, softMin: Int = STREAM_SOFT_MIN_CHARS): Int {
+        var result = readyPrefixLength(text)
+        if (softMin <= 0) return result
+        var i = result
+        while (i < text.length) {
+            if (text[i] in "，,、；;：:" && !insideMarkup(text, i)) {
+                if (text.substring(result, i).trim().length >= softMin) result = i + 1
+            }
+            i++
+        }
+        return result
+    }
+
+    /** [index] 是否落在未闭合的 `[[voice ...]]` 块或 `<#...#>` 停顿标记里面。 */
+    internal fun insideMarkup(text: String, index: Int): Boolean {
+        val before = text.substring(0, index.coerceIn(0, text.length))
+        // 只看"块头 vs 块尾"：`[[voice ...]]` 自己的 `]]` 不闭合块，只有 `[[/voice]]` 才算。
+        val openVoice = before.lastIndexOf("[[voice") > before.lastIndexOf("[[/voice]]")
+        val openPause = before.lastIndexOf("<#") > before.lastIndexOf("#>")
+        return openVoice || openPause
+    }
+
+    /** 一个分句至少这么长才单独合成（约等于短句"我明白了"）。 */
+    const val STREAM_SOFT_MIN_CHARS: Int = 10
 }

@@ -35,29 +35,86 @@ class ToolImageRequestTest {
     ))
 
     @Test
-    fun `claude tool results contain decodable images and matching ids`() {
+    fun `claude sends images after every tool result instead of inside them`() {
         val result = claudeMessages(messages)
         val calls = result[1].jsonObject["content"]!!.jsonArray
         val outputs = result[2].jsonObject["content"]!!.jsonArray
         assertEquals(names.map { "call_$it" }, calls.map { it.jsonObject["id"]!!.jsonPrimitive.content })
-        assertEquals(names.map { "call_$it" }, outputs.map { it.jsonObject["tool_use_id"]!!.jsonPrimitive.content })
-        outputs.forEachIndexed { index, output ->
-            val content = output.jsonObject["content"]!!.jsonArray
-            assertEquals("result_${names[index]}", content.first().jsonObject["text"]!!.jsonPrimitive.content)
-            if (index != 1) {
-                val source = content[1].jsonObject["source"]!!.jsonObject
-                assertEquals("base64", source["type"]!!.jsonPrimitive.content)
-                assertEquals("image/png", source["media_type"]!!.jsonPrimitive.content)
-                assertPng(source["data"]!!.jsonPrimitive.content)
+
+        // tool_result 必须全部排在前面，且只含文字——网关会丢掉里面的图片块
+        val results = outputs.take(names.size).map { it.jsonObject }
+        assertEquals(names.map { "call_$it" }, results.map { it["tool_use_id"]!!.jsonPrimitive.content })
+        results.forEachIndexed { index, output ->
+            val content = output["content"]!!.jsonArray
+            assertEquals("result_${names[index]}", content.single().jsonObject["text"]!!.jsonPrimitive.content)
+        }
+
+        // 每张图片前紧邻工具名、调用 ID 和调用内序号。
+        val trailing = outputs.drop(names.size).map { it.jsonObject }
+        assertEquals(4, trailing.size)
+        assertEquals("[Tool take_screenshot, tool_call_id=call_take_screenshot, image 1/1]",
+            trailing[0]["text"]!!.jsonPrimitive.content)
+        assertEquals("[Tool generate_image, tool_call_id=call_generate_image, image 1/1]",
+            trailing[2]["text"]!!.jsonPrimitive.content)
+        val images = listOf(trailing[1], trailing[3])
+        assertEquals(2, images.size)
+        images.forEach { image ->
+            assertEquals("image", image["type"]!!.jsonPrimitive.content)
+            val source = image["source"]!!.jsonObject
+            assertEquals("base64", source["type"]!!.jsonPrimitive.content)
+            assertEquals("image/png", source["media_type"]!!.jsonPrimitive.content)
+            assertPng(source["data"]!!.jsonPrimitive.content)
+        }
+    }
+
+    @Test
+    fun `claude labels each image from parallel same-name calls including failures`() {
+        val tools = listOf(
+            UIMessagePart.Tool("first", "workspace_read_file", "{\"path\":\"a\"}", listOf(
+                UIMessagePart.Text("first result"), UIMessagePart.Image(dataUri), UIMessagePart.Image("unsupported:bad"),
+            )),
+            UIMessagePart.Tool("second", "workspace_read_file", "{\"path\":\"b\"}", listOf(
+                UIMessagePart.Text("second result"), UIMessagePart.Image(dataUri), UIMessagePart.Image(dataUri),
+            )),
+        )
+        val result = claudeMessages(listOf(UIMessage(role = MessageRole.ASSISTANT, parts = tools)))
+        val outputs = result[1].jsonObject["content"]!!.jsonArray.map { it.jsonObject }
+        assertEquals(10, outputs.size)
+        assertEquals(listOf("first", "second"), outputs.take(2).map { it["tool_use_id"]!!.jsonPrimitive.content })
+        assertEquals(listOf("first result", "second result"), outputs.take(2).map {
+            it["content"]!!.jsonArray.single().jsonObject["text"]!!.jsonPrimitive.content
+        })
+        listOf("first" to 1, "first" to 2, "second" to 1, "second" to 2).forEachIndexed { index, (id, number) ->
+            val label = outputs[2 + index * 2]
+            val image = outputs[3 + index * 2]
+            assertEquals("[Tool workspace_read_file, tool_call_id=$id, image $number/2]",
+                label["text"]!!.jsonPrimitive.content)
+            if (id == "first" && number == 2) {
+                assertEquals("text", image["type"]!!.jsonPrimitive.content)
+                assertTrue(image["text"]!!.jsonPrimitive.content.contains("Image unavailable"))
+            } else {
+                assertEquals("image", image["type"]!!.jsonPrimitive.content)
+                assertPng(image["source"]!!.jsonObject["data"]!!.jsonPrimitive.content)
             }
         }
+    }
+
+    @Test
+    fun `claude image-only result keeps tool_result non-empty`() {
+        val tool = UIMessagePart.Tool("only", "take_screenshot", "{}", listOf(UIMessagePart.Image(dataUri)))
+        val result = claudeMessages(listOf(UIMessage(role = MessageRole.ASSISTANT, parts = listOf(tool))))
+        val content = result[1].jsonObject["content"]!!.jsonArray
+        val toolResult = content.first().jsonObject["content"]!!.jsonArray.single().jsonObject
+        assertTrue(toolResult["text"]!!.jsonPrimitive.content.contains("see the following attachment"))
+        assertEquals("image", content.last().jsonObject["type"]!!.jsonPrimitive.content)
     }
 
     @Test
     fun `claude failed attachment is explicit not an empty content block`() {
         val tool = UIMessagePart.Tool("bad", "take_screenshot", "{}", listOf(UIMessagePart.Image("unsupported:bad")))
         val result = claudeMessages(listOf(UIMessage(role = MessageRole.ASSISTANT, parts = listOf(tool))))
-        val block = result[1].jsonObject["content"]!!.jsonArray.single().jsonObject["content"]!!.jsonArray.single().jsonObject
+        val content = result[1].jsonObject["content"]!!.jsonArray
+        val block = content.last().jsonObject
         assertEquals("text", block["type"]!!.jsonPrimitive.content)
         assertTrue(block["text"]!!.jsonPrimitive.content.contains("Image unavailable"))
     }

@@ -18,6 +18,7 @@ import me.rerere.rikkahub.data.db.entity.MessageNodeEntity
 import me.rerere.rikkahub.data.model.MessageNode
 import me.rerere.rikkahub.data.model.toMessageNode
 import me.rerere.rikkahub.data.sync.preflightBackupDatabase
+import me.rerere.rikkahub.data.ai.withGenerationCompletion
 import me.rerere.rikkahub.utils.JsonInstant
 import org.junit.Assert.*
 import org.junit.Test
@@ -53,6 +54,52 @@ class SereinUploadTest {
     }
     private suspend fun counts(db: AppDatabase) = db.sereinUploadDao().counts(config.uploadDestination()).first()
 
+    @Test fun `completed tool reply persists proof and uploads only original text with an explicit clock`() = runBlocking {
+        val previousZone = java.util.TimeZone.getDefault()
+        try {
+            for ((zone, expected) in listOf(
+                "Asia/Shanghai" to "2026-10-24T17:00:00Z",
+                "America/Los_Angeles" to "2026-10-25T08:00:00Z",
+            )) {
+                java.util.TimeZone.setDefault(java.util.TimeZone.getTimeZone(zone))
+                val name = "up-${Uuid.random().toString().take(8)}"
+                val db = open(name)
+                try {
+                    seed(db)
+                    val reply = UIMessage.assistant("").copy(createdAt = now, finishedAt = now, parts = listOf(
+                        UIMessagePart.Tool("call", "synthetic", "{}", output = listOf(UIMessagePart.Text("private tool body"))),
+                        UIMessagePart.Reasoning("private reasoning"),
+                        UIMessagePart.Text("final answer"),
+                    ))
+                    val node = reply.toMessageNode()
+                    save(db, node)
+                    assertNull(db.sereinUploadDao().next(config.uploadDestination()))
+                    val completed = node.copy(messages = listOf(reply.withGenerationCompletion()))
+                    save(db, completed)
+                    val queued = db.sereinUploadDao().next(config.uploadDestination())!!
+                    val event = Json.parseToJsonElement(queued.payload).jsonObject["events"]!!.jsonArray.single().jsonObject
+                    assertEquals("final answer", event["text"]!!.jsonPrimitive.content)
+                    assertEquals(expected, event["created_at"]!!.jsonPrimitive.content)
+                    assertEquals("live", event.getValue("metadata").jsonObject.getValue("origin").jsonPrimitive.content)
+                    assertEquals(true, event.getValue("metadata").jsonObject.getValue("generation_completed").jsonPrimitive.boolean)
+                    assertFalse(queued.payload.contains("private tool body"))
+                    assertFalse(queued.payload.contains("private reasoning"))
+                    val persisted = JsonInstant.decodeFromString<List<UIMessage>>(db.sereinUploadDao().node(node.id.toString())!!.messages).single()
+                    assertTrue(persisted.isSereinCompletedReply())
+                    val queue = SereinUploadQueue(db.sereinUploadDao())
+                    assertTrue(queue.sourceIsCurrent(queued))
+                    assertTrue(queue.drain(config, { true }) { UploadResult("retry", "network_error") })
+                    java.util.TimeZone.setDefault(java.util.TimeZone.getTimeZone("UTC"))
+                    save(db, completed)
+                    assertEquals(queued.payload, db.sereinUploadDao().read(queued.id)!!.payload)
+                    assertEquals(1, counts(db).pending)
+                    assertFalse(queue.drain(config, { true }) { UploadResult("sent") })
+                    assertEquals(1, counts(db).sent)
+                } finally { db.close(); context.deleteDatabase(name) }
+            }
+        } finally { java.util.TimeZone.setDefault(previousZone) }
+    }
+
     @Test fun `queue survives reopen and lost response retries deduplicate without retaining sent body`() = runBlocking {
         val name = "up-${Uuid.random().toString().take(8)}"
         try {
@@ -60,6 +107,10 @@ class SereinUploadTest {
             val node = node()
             seed(db); save(db, node); save(db, node)
             val original = db.sereinUploadDao().next(config.uploadDestination())!!
+            val userMetadata = Json.parseToJsonElement(original.payload).jsonObject.getValue("events")
+                .jsonArray.single().jsonObject.getValue("metadata").jsonObject
+            assertEquals("live", userMetadata.getValue("origin").jsonPrimitive.content)
+            assertFalse(userMetadata.containsKey("generation_completed"))
             assertEquals(1, counts(db).pending)
             db.close()
             // Restoring the current native OrangeChat database must keep its outbox. Importing
@@ -96,6 +147,7 @@ class SereinUploadTest {
             save(db, node(), config.copy(uploadEnabled = false))
             save(db, node(), config.copy(assistantId = "other"))
             save(db, node(), origin = "backfill")
+            save(db, UIMessage.assistant("finished history").copy(createdAt = now, finishedAt = now).toMessageNode(), origin = "backfill")
             save(db, UIMessage.user("old").copy(createdAt = LocalDateTime.parse("2026-10-24T00:00:00")).toMessageNode())
             val assistant = UIMessage.assistant("partial").copy(createdAt = now)
             save(db, assistant.toMessageNode())
@@ -186,13 +238,15 @@ class SereinUploadTest {
         assertEquals("Bearer synthetic-key", request.header("Authorization"))
         val buffer = okio.Buffer(); request.body!!.writeTo(buffer)
         assertEquals(payload, buffer.readUtf8())
+        assertEquals("sent", client.send(config.copy(baseUrl = "http://memory.example:8080"), row).status)
+        assertEquals("http://memory.example:8080/api/ingest-raw", seen.last().url.toString())
         for (error in listOf(401, 403, 404, 405, 408, 429, 500, 302)) {
             code = error; assertEquals("retry", client.send(config, row).status)
         }
         code = 413; assertEquals("blocked", client.send(config, row).status)
         code = 200; body = "x".repeat(65537)
         assertEquals("invalid_response", client.send(config, row).error)
-        assertEquals(11, seen.size)
+        assertEquals(12, seen.size)
     }
 
     @Test fun `v37 staged backup upgrades preserving originals and queue cascades with chat`() = runBlocking {

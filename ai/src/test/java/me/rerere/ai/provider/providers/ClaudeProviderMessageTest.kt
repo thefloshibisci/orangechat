@@ -364,17 +364,34 @@ class ClaudeProviderMessageTest {
             output = listOf(UIMessagePart.Text("Generated"), UIMessagePart.Image("data:image/png;base64,aGVsbG8=")),
         )
         val second = createExecutedTool("time_1", "time", "{}", "12:00")
+        val third = createExecutedTool("image_2", "generate_image", "{}", "Generated second").copy(
+            output = listOf(UIMessagePart.Text("Generated second"), UIMessagePart.Image("data:image/png;base64,d29ybGQ=")),
+        )
         val result = invokeBuildMessages(listOf(UIMessage(
-            role = MessageRole.ASSISTANT, parts = listOf(first, second, UIMessagePart.Text("Done")),
+            role = MessageRole.ASSISTANT, parts = listOf(first, second, third, UIMessagePart.Text("Done")),
         )))
         assertEquals(listOf("assistant", "user", "assistant"),
             result.map { it.jsonObject["role"]!!.jsonPrimitive.content })
         val uses = result[0].jsonObject["content"]!!.jsonArray
         val outputs = result[1].jsonObject["content"]!!.jsonArray
+        assertEquals(listOf("tool_result", "tool_result", "tool_result", "text", "image", "text", "image"),
+            outputs.map { it.jsonObject["type"]!!.jsonPrimitive.content })
+        val results = outputs.take(3).map { it.jsonObject }
+        assertEquals(listOf("image_1", "time_1", "image_2"),
+            uses.map { it.jsonObject["id"]!!.jsonPrimitive.content })
         assertEquals(uses.map { it.jsonObject["id"]!!.jsonPrimitive.content },
-            outputs.map { it.jsonObject["tool_use_id"]!!.jsonPrimitive.content })
-        assertEquals(listOf("text", "image"), outputs[0].jsonObject["content"]!!.jsonArray
-            .map { it.jsonObject["type"]!!.jsonPrimitive.content })
+            results.map { it["tool_use_id"]!!.jsonPrimitive.content })
+        assertEquals(listOf("Generated", "12:00", "Generated second"), results.map {
+            val content = it["content"]!!.jsonArray
+            assertEquals("text", content.single().jsonObject["type"]!!.jsonPrimitive.content)
+            content.single().jsonObject["text"]!!.jsonPrimitive.content
+        })
+        assertEquals("[Tool generate_image, tool_call_id=image_1, image 1/1]",
+            outputs[3].jsonObject["text"]!!.jsonPrimitive.content)
+        assertEquals("aGVsbG8=", outputs[4].jsonObject["source"]!!.jsonObject["data"]!!.jsonPrimitive.content)
+        assertEquals("[Tool generate_image, tool_call_id=image_2, image 1/1]",
+            outputs[5].jsonObject["text"]!!.jsonPrimitive.content)
+        assertEquals("d29ybGQ=", outputs[6].jsonObject["source"]!!.jsonObject["data"]!!.jsonPrimitive.content)
     }
 
     private fun createExecutedTool(

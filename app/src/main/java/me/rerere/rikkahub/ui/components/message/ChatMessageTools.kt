@@ -111,8 +111,6 @@ import me.rerere.hugeicons.stroke.Tools
 import me.rerere.hugeicons.stroke.VolumeHigh
 import me.rerere.hugeicons.stroke.Zip02
 import me.rerere.rikkahub.R
-import me.rerere.rikkahub.data.event.AppEvent
-import me.rerere.rikkahub.data.event.AppEventBus
 import me.rerere.rikkahub.data.ai.tools.ToolNaming
 import me.rerere.rikkahub.data.ai.tools.WriteFilesCache
 import me.rerere.rikkahub.data.repository.MemoryRepository
@@ -128,11 +126,8 @@ import me.rerere.rikkahub.ui.components.ui.DotLoading
 import me.rerere.rikkahub.ui.components.ui.Favicon
 import me.rerere.rikkahub.ui.components.ui.FaviconRow
 import me.rerere.rikkahub.ui.components.ui.FormItem
-import me.rerere.rikkahub.ui.context.LocalTTSState
-import me.rerere.rikkahub.ui.hooks.CustomTtsState
 import me.rerere.rikkahub.ui.modifier.shimmer
 import me.rerere.rikkahub.ui.theme.popupContainerColor
-import me.rerere.tts.model.PlaybackStatus
 import me.rerere.rikkahub.utils.JsonInstant
 import me.rerere.rikkahub.utils.JsonInstantPretty
 import me.rerere.rikkahub.utils.jsonPrimitiveOrNull
@@ -210,13 +205,15 @@ fun ChainOfThoughtScope.ChatMessageToolStep(
     var showResult by remember { mutableStateOf(false) }
     var showDenyDialog by remember { mutableStateOf(false) }
     var expanded by remember { mutableStateOf(true) }
-    val eventBus: AppEventBus = koinInject()
     val scope = rememberCoroutineScope()
     val isPending = tool.isPending
     val isDenied = tool.approvalState is ToolApprovalState.Denied
     val arguments = tool.inputAsJson()
     val memoryAction = arguments.getStringContent("action")
-    val content = if (tool.isExecuted) {
+    val workspaceMachine = workspaceToolMachine(tool.output)
+    val content = if (tool.isExecuted && tool.toolName.startsWith("workspace_")) {
+        workspaceToolContent(tool.output) ?: JsonObject(emptyMap())
+    } else if (tool.isExecuted) {
         runCatching {
             JsonInstant.parseToJsonElement(
                 tool.output.filterIsInstance<UIMessagePart.Text>().joinToString("\n") { it.text }
@@ -225,9 +222,10 @@ fun ChainOfThoughtScope.ChatMessageToolStep(
     } else {
         null
     }
+    val workspaceError = if (tool.toolName.startsWith("workspace_")) content.getStringContent("error") else null
     val images = tool.output.filterIsInstance<UIMessagePart.Image>()
     // Video analysis attachments feed the model; they are not assistant voice messages.
-    val audios = if (tool.toolName == "gongdu_read_video") emptyList()
+    val audios = if (tool.toolName in setOf("gongdu_read_video", ToolNames.TTS)) emptyList()
         else tool.output.filterIsInstance<UIMessagePart.Audio>()
 
     val title = when (tool.toolName) {
@@ -255,7 +253,7 @@ fun ChainOfThoughtScope.ChatMessageToolStep(
             val preview = arguments.getStringContent("text")?.let { text ->
                 if (text.length > 24) text.take(24) + "…" else text
             } ?: ""
-            "Speaking: $preview"
+            "语音：$preview"
         }
 
         ToolNames.USE_SKILL -> {
@@ -324,7 +322,7 @@ fun ChainOfThoughtScope.ChatMessageToolStep(
         ToolNames.WORKSPACE_EDIT_FILE -> workspaceEditDiffOf(tool) != null
         ToolNames.WORKSPACE_SHELL -> content != null
         else -> false
-    } || isDenied || images.isNotEmpty() || audios.isNotEmpty()
+    } || workspaceError != null || isDenied || images.isNotEmpty() || audios.isNotEmpty()
 
     ControlledChainOfThoughtStep(
         expanded = expanded,
@@ -344,14 +342,21 @@ fun ChainOfThoughtScope.ChatMessageToolStep(
             }
         },
         label = {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.titleSmall,
-                color = MaterialTheme.colorScheme.secondary,
-                modifier = Modifier.shimmer(isLoading = loading),
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-            )
+            Column {
+                workspaceMachine?.let { machine ->
+                    Text(machine, style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.secondary, maxLines = 2,
+                        overflow = TextOverflow.Ellipsis)
+                }
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.secondary,
+                    modifier = Modifier.shimmer(isLoading = loading),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
         },
         extra = if (isPending && onToolApproval != null) {
             {
@@ -395,6 +400,10 @@ fun ChainOfThoughtScope.ChatMessageToolStep(
         content = if (hasExtraContent) {
             {
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    workspaceError?.let { error ->
+                        Text(error.substringBefore("\n\tat "), color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.labelSmall)
+                    }
                     if (tool.toolName == ToolNames.MEMORY &&
                         memoryAction in listOf(MemoryActions.CREATE, MemoryActions.EDIT)
                     ) {
@@ -447,10 +456,10 @@ fun ChainOfThoughtScope.ChatMessageToolStep(
                         )
                     }
                     if (tool.toolName == ToolNames.TTS) {
-                        val text = arguments.getStringContent("text") ?: ""
-                        TtsVoiceBar(
-                            text = text,
-                            onReplay = { scope.launch { eventBus.emit(AppEvent.Speak(text)) } }
+                        SavedSpeechVoiceBar(
+                            clips = tool.output.filterIsInstance<UIMessagePart.Audio>(),
+                            loading = loading || !tool.isExecuted,
+                            generationError = content.getStringContent("error"),
                         )
                     }
                     if ((tool.toolName == ToolNames.ZIP_FILES || tool.toolName == ToolNames.WRITE_FILES) && tool.isExecuted && content != null) {
@@ -669,6 +678,11 @@ private fun ToolCallPreviewSheet(
         containerColor = popupContainerColor(BottomSheetDefaults.ContainerColor),
         content = {
             when {
+                toolName.startsWith("workspace_") && content.getStringContent("error") != null -> {
+                    Text(content.getStringContent("error").orEmpty().substringBefore("\n\tat "),
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.padding(16.dp).verticalScroll(rememberScrollState()))
+                }
                 // workspace_write_file / workspace_edit_file 即使未执行 (content == null)
                 // 也能基于入参预览内容/diff, 先于 null 兜底分支处理
                 toolName == ToolNames.WORKSPACE_WRITE_FILE -> WorkspaceFileContentPreview(
@@ -1183,102 +1197,6 @@ private data class AskUserQuestion(
 )
 
 @Composable
-private fun TtsVoiceBar(
-    text: String,
-    onReplay: () -> Unit
-) {
-    val ttsState = LocalTTSState.current
-    val playbackState by ttsState.playbackState.collectAsState()
-    val isSpeaking by ttsState.isSpeaking.collectAsState()
-
-    val progress = if (playbackState.durationMs > 0) {
-        playbackState.positionMs.toFloat() / playbackState.durationMs
-    } else 0f
-
-    val waveformBars = remember(text) {
-        val rnd = java.util.Random(text.hashCode().toLong())
-        List(24) { 0.2f + rnd.nextFloat() * 0.8f }
-    }
-
-    val activeColor = MaterialTheme.colorScheme.primary
-    val inactiveColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.18f)
-
-    Row(
-        modifier = Modifier
-            .clip(RoundedCornerShape(14.dp))
-            .background(MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.6f))
-            .padding(horizontal = 3.dp, vertical = 2.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        // Play / Pause button
-        Box(
-            modifier = Modifier
-                .size(22.dp)
-                .clip(CircleShape)
-                .background(MaterialTheme.colorScheme.primary)
-                .clickable {
-                    when (playbackState.status) {
-                        PlaybackStatus.Playing -> ttsState.pause()
-                        else -> if (isSpeaking) ttsState.resume() else onReplay()
-                    }
-                },
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(
-                imageVector = if (playbackState.status == PlaybackStatus.Playing) HugeIcons.Pause else HugeIcons.Play,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onPrimary,
-                modifier = Modifier.size(12.dp)
-            )
-        }
-
-        Spacer(modifier = Modifier.width(4.dp))
-
-        // Waveform
-        Canvas(
-            modifier = Modifier
-                .weight(1f)
-                .height(18.dp)
-        ) {
-            val barCount = waveformBars.size
-            val totalWidth = size.width
-            val barWidth = 2f
-            val gap = (totalWidth - barWidth * barCount) / (barCount - 1).coerceAtLeast(1)
-            val playedBarCount = (progress * barCount).toInt()
-
-            waveformBars.forEachIndexed { index, barRatio ->
-                val barHeight = size.height * barRatio.coerceIn(0.2f, 1f)
-                val x = index * (barWidth + gap)
-                val y = (size.height - barHeight) / 2f
-                drawRoundRect(
-                    color = if (index < playedBarCount) activeColor else inactiveColor,
-                    topLeft = androidx.compose.ui.geometry.Offset(x, y),
-                    size = androidx.compose.ui.geometry.Size(barWidth, barHeight),
-                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(1f, 1f)
-                )
-            }
-        }
-
-        Spacer(modifier = Modifier.width(4.dp))
-
-        // Duration
-        val remainingSec = if (isSpeaking && playbackState.durationMs > 0) {
-            ((playbackState.durationMs - playbackState.positionMs) / 1000).toInt().coerceAtLeast(0)
-        } else {
-            text.length / 5
-        }
-        Text(
-            text = String.format("%d:%02d", remainingSec / 60, remainingSec % 60),
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSecondaryContainer,
-            fontSize = 10.sp,
-            modifier = Modifier.width(28.dp),
-            textAlign = TextAlign.End
-        )
-    }
-}
-
-@Composable
 private fun ToolDenyReasonDialog(
     onDismiss: () -> Unit,
     onConfirm: (String) -> Unit
@@ -1328,7 +1246,7 @@ private const val WORKSPACE_SHELL_SUMMARY_MAX_LINES = 8
  * metadata["diff"] 里 (见 WorkspaceTools.kt), 不会随工具结果发给 API。
  */
 private fun workspaceEditDiffOf(tool: UIMessagePart.Tool): String? =
-    tool.output.firstOrNull()?.metadata?.get("diff")?.jsonPrimitiveOrNull?.contentOrNull
+    workspaceToolDiff(tool.output)
 
 /** 由文件扩展名推断语法高亮语言 */
 private fun languageOf(path: String?): String = when (
@@ -1426,7 +1344,7 @@ private fun WorkspaceEditFilePreview(
     scope: kotlinx.coroutines.CoroutineScope,
     onDismissRequest: () -> Unit,
 ) {
-    val diff = output.firstOrNull()?.metadata?.get("diff")?.jsonPrimitiveOrNull?.contentOrNull
+    val diff = workspaceToolDiff(output)
     if (diff == null) {
         GenericToolPreview(
             toolName = toolName,

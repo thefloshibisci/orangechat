@@ -27,14 +27,14 @@ class GongduDetailResultTest {
         val all = mutableListOf<JsonObject>()
         var offset = 0
         do {
-            val parts = GongduToolResultPolicy.pageParts(server, assistant, ref, offset, 4, images)
+            val parts = GongduToolResultPolicy.pageParts(server, assistant, ref, offset, 6, images)
             val page = Json.parseToJsonElement((parts.first() as UIMessagePart.Text).text).jsonObject
             assertTrue(page.toString().length <= GongduToolResultPolicy.RESULT_LIMIT)
             val rows = page["items"]!!.jsonArray.map { it.jsonObject }
             assertTrue(rows.isNotEmpty())
             if (images) {
                 assertEquals(rows.map { it.str("url") }, parts.filterIsInstance<UIMessagePart.Image>().map { it.url })
-                assertTrue(parts.filterIsInstance<UIMessagePart.Image>().size <= 4)
+                assertTrue(parts.filterIsInstance<UIMessagePart.Image>().size <= 6)
             }
             all += rows
             offset = page["next_offset"]?.jsonPrimitive?.int ?: -1
@@ -73,7 +73,10 @@ class GongduDetailResultTest {
     }
     @Test fun imageAttachmentsAreBoundedAndCannotCrossAssistantOrServer() {
         val ref = compact(fixture()).obj("images")!!.str("result_ref")
-        assertThrows(IllegalArgumentException::class.java) { GongduToolResultPolicy.pageParts(server, assistant, ref, 0, 5, true) }
+        val six = GongduToolResultPolicy.pageParts(server, assistant, ref, 0, 6, true)
+        assertEquals(6, six.filterIsInstance<UIMessagePart.Image>().size)
+        assertEquals(6, Json.parseToJsonElement((six.first() as UIMessagePart.Text).text).jsonObject["next_offset"]!!.jsonPrimitive.int)
+        assertThrows(IllegalArgumentException::class.java) { GongduToolResultPolicy.pageParts(server, assistant, ref, 0, 7, true) }
         for (scope in listOf(server to Uuid.random(), Uuid.random() to assistant)) {
             val parts = GongduToolResultPolicy.pageParts(scope.first, scope.second, ref, 0, 4, true)
             assertTrue(parts.filterIsInstance<UIMessagePart.Image>().isEmpty())

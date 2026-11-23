@@ -16,6 +16,9 @@ import me.rerere.ai.provider.ProviderSetting
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.model.Assistant
+import me.rerere.rikkahub.data.model.Conversation
+import me.rerere.rikkahub.data.model.ConversationConfig
+import kotlin.uuid.Uuid
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -30,6 +33,32 @@ class PluginAiCallTest {
     )
 
     private fun result(value: String) = Json.parseToJsonElement(value).jsonObject
+
+    @Test fun boundPluginUsesItsConversationAndKeepsDefaults() = runBlocking {
+        val other = Model(modelId = "conversation-only")
+        val configured = settings.copy(providers = listOf(provider.copy(models = listOf(model, other))))
+        var chat = Conversation(assistantId = assistant.id, messageNodes = emptyList(), config = ConversationConfig(chatModelId = other.id))
+        val ids = mutableListOf<Uuid>()
+        val call = PluginAiCall(listOf("ai_chat"), { configured }, { _, _, params ->
+            ids += params.model.id
+            "ok"
+        }, loadConversation = { chat })
+        assertTrue(result(call.call("first") { "context" }).getValue("success").jsonPrimitive.boolean)
+        chat = chat.copy(config = chat.config!!.copy(chatModelId = model.id))
+        assertTrue(result(call.call("second") { "context" }).getValue("success").jsonPrimitive.boolean)
+        assertEquals(listOf(other.id, model.id), ids)
+        assertEquals(model.id, configured.assistants.single().chatModelId)
+    }
+
+    @Test fun missingBoundConversationOrModelNeverCallsDefault() = runBlocking {
+        for (chat in listOf(null, Conversation(assistantId = assistant.id, messageNodes = emptyList(),
+            config = ConversationConfig(chatModelId = Uuid.random())))) {
+            val call = PluginAiCall(listOf("ai_chat"), { settings },
+                { _, _, _ -> error("Must not send") }, loadConversation = { chat })
+            assertFalse(result(call.call("help") { "context" }).getValue("success").jsonPrimitive.boolean)
+        }
+    }
+
 
     @Test
     fun `missing permission rejects before loading user settings or constructing a prompt`() = runBlocking {

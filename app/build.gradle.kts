@@ -26,8 +26,8 @@ android {
         applicationId = "me.rerere.orangechat"
         minSdk = 26
         targetSdk = 37
-        versionCode = 165
-        versionName = "2.2.9"
+        versionCode = 166
+        versionName = "2.2.10"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -374,6 +374,7 @@ dependencies {
 
     // media3 (ExoPlayer)
     implementation(libs.androidx.media3.exoplayer)
+    implementation(libs.androidx.media3.session)
 
     // modules
     implementation(project(":ai"))

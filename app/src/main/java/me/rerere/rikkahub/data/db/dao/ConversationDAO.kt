@@ -67,6 +67,9 @@ interface ConversationDAO {
     @Query("SELECT * FROM conversationentity WHERE id = :id")
     suspend fun getConversationById(id: String): ConversationEntity?
 
+    @Query("SELECT assistant_id FROM conversationentity WHERE id = :id")
+    suspend fun assistantIdOf(id: String): String?
+
     @Query("SELECT conversation_config FROM conversationentity WHERE id = :id")
     suspend fun getConfig(id: String): String?
 

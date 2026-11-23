@@ -3,6 +3,7 @@ package me.rerere.ai.util
 import java.io.File
 import java.io.OutputStream
 import java.security.MessageDigest
+import okhttp3.OkHttpClient
 
 /** Private, disposable compressed images. No bitmaps or Base64 strings are retained in RAM. */
 internal class ImageEncodingCache(
@@ -68,11 +69,16 @@ internal class ImageEncodingCache(
 /** One decode gate across all providers. The app configures an Android-managed cache directory. */
 object RequestImageEncoding {
     private var cache: ImageEncodingCache? = null
+    @Volatile private var xiaohongshu = XiaohongshuImageCache(null)
 
     @Synchronized
-    fun configure(directory: File) {
+    fun configure(directory: File, imageClient: OkHttpClient = OkHttpClient()) {
         cache = ImageEncodingCache(directory)
+        xiaohongshu = XiaohongshuImageCache(File(directory, "xiaohongshu"), imageClient)
     }
+
+    internal fun <T> withXiaohongshuImage(url: String, consume: (File) -> T): T =
+        xiaohongshu.useImage(url, consume)
 
     @Synchronized
     internal fun <T> withCache(block: (ImageEncodingCache?) -> T): T = block(cache)

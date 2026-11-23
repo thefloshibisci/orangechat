@@ -95,7 +95,19 @@ fun SettingSpeechPage(vm: SettingVM = koinViewModel()) {
     var editingTTSProvider by remember { mutableStateOf<TTSProviderSetting?>(null) }
     var editingASRProvider by remember { mutableStateOf<ASRProviderSetting?>(null) }
     var selectedPage by remember { mutableIntStateOf(0) }
+    // 视频设置是**独立可滚页**：它自己底部可能很长，塞进本页的非滚动 Column 顶部
+    // 会把 TTS/ASR 列表挤成 0 高度（真机上表现为"展开后划不动、底部项点不到"）。
+    var videoSettingsOpen by remember { mutableStateOf(false) }
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
+
+    if (videoSettingsOpen) {
+        VideoCallSettingsScreen(
+            setting = settings.videoCallSetting,
+            onUpdate = { updated -> vm.updateSettings(settings.copy(videoCallSetting = updated)) },
+            onBack = { videoSettingsOpen = false },
+        )
+        return
+    }
 
     Scaffold(
         topBar = {
@@ -155,6 +167,10 @@ fun SettingSpeechPage(vm: SettingVM = koinViewModel()) {
                 onEnabledChange = { enabled ->
                     vm.updateSettings(settings.copy(voiceCallKeepListeningDuringReply = enabled))
                 },
+            )
+            VideoCallSettingsSection(
+                setting = settings.videoCallSetting,
+                onOpen = { videoSettingsOpen = true },
             )
         when (selectedPage) {
             0 -> TTSProviderList(

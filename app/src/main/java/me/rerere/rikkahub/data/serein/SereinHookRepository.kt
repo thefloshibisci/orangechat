@@ -16,18 +16,25 @@ import me.rerere.rikkahub.data.ai.transformers.TransformerContext
 import me.rerere.rikkahub.data.db.AppDatabase
 import kotlin.uuid.Uuid
 
-class SereinHookRepository(private val db: AppDatabase, private val client: SereinHookClient) {
+private const val FAILED_RECALL_CACHE_MS = 30_000L
+
+class SereinHookRepository(
+    private val db: AppDatabase,
+    private val client: SereinHookClient,
+    private val nowMillis: () -> Long = System::currentTimeMillis,
+) {
     private val locks = Array(32) { Mutex() }
     private val dao get() = db.sereinHookDao()
 
     suspend fun prepare(config: SereinHookConfig, owner: String, conversation: String, user: UIMessage,
-                        allowNetwork: Boolean, isCurrent: () -> Boolean): HookRecall? =
-        prepareWith(config, owner, conversation, user, allowNetwork, isCurrent) { q, ids ->
+                        allowNetwork: Boolean, isCurrent: () -> Boolean, retryFailed: Boolean = false): HookRecall? =
+        prepareWith(config, owner, conversation, user, allowNetwork, isCurrent, retryFailed) { q, ids ->
             client.recall(config, q, conversation, ids)
         }
 
     internal suspend fun prepareWith(config: SereinHookConfig, owner: String, conversation: String, user: UIMessage,
                                      allowNetwork: Boolean, isCurrent: () -> Boolean,
+                                     retryFailed: Boolean = false,
                                      fetch: suspend (String, List<String>) -> HookRecall): HookRecall? {
         if (!config.usableBy(owner) || !isCurrent() || user.role != MessageRole.USER) return null
         val query = user.rawArchiveText()?.takeIf { it.length <= 20000 } ?: return null
@@ -37,10 +44,21 @@ class SereinHookRepository(private val db: AppDatabase, private val client: Sere
         val fingerprint = "$configFingerprint:$legacyFingerprint"
         return try {
             withTimeoutOrNull(config.waitMs) {
+                // Concurrent retries may replace this failure while this caller awaits the lock.
+                val failureBeforeLock = if (retryFailed && allowNetwork) {
+                    dao.snapshot(conversation, user.id.toString())
+                } else null
                 locks[(conversation.hashCode() and Int.MAX_VALUE) % locks.size].withLock {
                     if (dao.owner(conversation) != owner) return@withLock null
-                    dao.snapshot(conversation, user.id.toString())?.takeIf {
+                    val cached = dao.snapshot(conversation, user.id.toString())?.takeIf {
                         it.fingerprint == fingerprint || it.fingerprint == legacyFingerprint
+                    }
+                    cached?.takeIf {
+                        val successful = it.status == "ready" || it.status == "empty"
+                        val age = nowMillis() - it.createdAt
+                        successful || !allowNetwork ||
+                            (retryFailed && it != failureBeforeLock) ||
+                            (!retryFailed && age in 0 until FAILED_RECALL_CACHE_MS)
                     }?.let {
                         if (!isCurrent()) return@withLock null
                         // Upgrade a matching old cache entry without re-fetching or changing its age.
@@ -61,7 +79,7 @@ class SereinHookRepository(private val db: AppDatabase, private val client: Sere
                     if (!isCurrent()) return@withLock null
                     db.withTransaction {
                         dao.put(SereinHookSnapshot(conversation, user.id.toString(), fingerprint, result.context,
-                            encodeIds(result.ids), result.status, System.currentTimeMillis(), result.diagnostics.toString()))
+                            encodeIds(result.ids), result.status, nowMillis(), result.diagnostics.toString()))
                         dao.pruneSnapshots(conversation)
                     }
                     result
@@ -72,8 +90,7 @@ class SereinHookRepository(private val db: AppDatabase, private val client: Sere
     }
 
     suspend fun acknowledge(config: SereinHookConfig, conversation: String, reply: UIMessage, ids: List<String>) {
-        if (reply.role != MessageRole.ASSISTANT || reply.finishedAt == null || reply.getTools().isNotEmpty() ||
-            reply.rawArchiveText().isNullOrBlank() || reply.rawArchiveText()?.trim() == "[SKIP]") return
+        if (!reply.isSereinCompletedReply()) return
         db.withTransaction {
             if (dao.owner(conversation) != config.assistantId) return@withTransaction
             // Empty successful turns count toward the five-turn window too.

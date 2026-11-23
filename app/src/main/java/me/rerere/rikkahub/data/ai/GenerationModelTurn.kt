@@ -25,6 +25,7 @@ internal suspend fun generateModelTurn(
     onUpdateMessages: suspend (List<UIMessage>) -> Unit,
     updateIntervalMillis: Long = 0,
     nanoTime: () -> Long = System::nanoTime,
+    prepareRequestMessages: () -> List<UIMessage> = { requestMessages },
 ): List<UIMessage> {
     var messages = initialMessages
     var lastUpdateNanos: Long? = null
@@ -63,9 +64,9 @@ internal suspend fun generateModelTurn(
 
     try {
         if (stream) {
-            providerImpl.streamText(providerSetting, requestMessages, params).collect { accept(it) }
+            providerImpl.streamText(providerSetting, prepareRequestMessages(), params).collect { accept(it) }
         } else {
-            accept(providerImpl.generateText(providerSetting, requestMessages, params))
+            accept(providerImpl.generateText(providerSetting, prepareRequestMessages(), params))
         }
     } catch (error: Exception) {
         // Retain the latest partial reply on provider failure/cancellation too. A cancelled

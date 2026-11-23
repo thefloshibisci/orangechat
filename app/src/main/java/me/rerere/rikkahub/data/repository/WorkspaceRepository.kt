@@ -41,6 +41,14 @@ import me.rerere.workspace.ssh.SshWorkspaceBackend
 import java.io.InputStream
 import java.io.OutputStream
 import kotlin.uuid.Uuid
+import kotlin.coroutines.AbstractCoroutineContextElement
+import kotlin.coroutines.CoroutineContext
+import kotlinx.coroutines.currentCoroutineContext
+
+private class WorkspaceCallSnapshot(val targets: Map<String, WorkspaceEntity>) :
+    AbstractCoroutineContextElement(Key) {
+    companion object Key : CoroutineContext.Key<WorkspaceCallSnapshot>
+}
 
 class WorkspaceRepository(
     private val dao: WorkspaceDAO,
@@ -50,6 +58,77 @@ class WorkspaceRepository(
     private val sshPool: SshConnectionPool,
 ) {
     private val editLocks = ConcurrentHashMap<String, Mutex>()
+
+    fun currentAssistant(id: String) = settingsStore.settingsFlow.value.assistants.firstOrNull { it.id.toString() == id }
+
+    suspend fun all() = dao.getAll()
+
+    /** One call keeps its resolved machine throughout IO; the next call resolves live again. */
+    suspend fun <T> withToolTargets(targets: List<WorkspaceEntity>, block: suspend () -> T): T =
+        withContext(WorkspaceCallSnapshot(targets.associateBy { it.id })) { block() }
+
+    /** Separate from the human system-file browser: AI tools may only address their declared root. */
+    suspend fun validateToolPath(id: String, path: String): String {
+        val workspace = getById(id) ?: error("Workspace not found: $id")
+        return runInterruptible(Dispatchers.IO) {
+            val normalized = me.rerere.workspace.WorkspacePathPolicy.requireInside(workspace.workspaceDir(), path)
+            val remote = remoteBackend(workspace)
+            if (remote != null) remote.validateToolPath(normalized) else {
+                localToolFile(workspace, normalized)
+                normalized
+            }
+        }
+    }
+
+    suspend fun toolFileExists(id: String, path: String): Boolean {
+        val normalized = validateToolPath(id, path)
+        val workspace = getById(id) ?: error("Workspace not found: $id")
+        return runInterruptible(Dispatchers.IO) {
+            remoteBackend(workspace)?.toolFileExists(normalized)
+                ?: localToolFile(workspace, normalized).exists()
+        }
+    }
+
+    suspend fun writeToolBytes(id: String, path: String, bytes: ByteArray, overwrite: Boolean): WorkspaceFileEntry {
+        val normalized = validateToolPath(id, path)
+        val workspace = getById(id) ?: error("Workspace not found: $id")
+        return runInterruptible(Dispatchers.IO) {
+            val remote = remoteBackend(workspace)
+            if (remote != null) remote.writeToolBytes(normalized, bytes, overwrite) else {
+                val file = localToolFile(workspace, normalized)
+                require(normalized != "/workspace") { "Invalid destination" }
+                require(overwrite || !file.exists()) { "File already exists: $path" }
+                require(!file.exists() || file.isFile) { "Path is not a file: $path" }
+                file.parentFile!!.mkdirs()
+                val temporary = java.io.File.createTempFile(".transfer-", ".tmp", file.parentFile)
+                try {
+                    temporary.writeBytes(bytes)
+                    if (file.exists()) {
+                        val permissions = try { java.nio.file.Files.getPosixFilePermissions(file.toPath()) }
+                        catch (_: UnsupportedOperationException) { null }
+                        if (permissions != null) java.nio.file.Files.setPosixFilePermissions(temporary.toPath(), permissions)
+                    }
+                    if (overwrite) java.nio.file.Files.move(temporary.toPath(), file.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+                    else java.nio.file.Files.createLink(file.toPath(), temporary.toPath())
+                } finally { temporary.delete() }
+                WorkspaceFileEntry(normalized, file.name, false, file.length(), file.lastModified())
+            }
+        }
+    }
+
+    /** Resolve the nearest existing ancestor, including junctions and dangling links, before mkdir/write. */
+    private fun localToolFile(workspace: WorkspaceEntity, normalized: String): java.io.File {
+        val root = manager.filesDir(workspace.root).toPath().toRealPath()
+        var ancestor = root.resolve(normalized.removePrefix("/workspace").trimStart('/'))
+        val missing = ArrayDeque<String>()
+        while (!java.nio.file.Files.exists(ancestor, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+            missing.addFirst(ancestor.fileName.toString())
+            ancestor = ancestor.parent ?: error("Path outside workspace root")
+        }
+        val real = ancestor.toRealPath()
+        require(real.startsWith(root)) { "Symlink escapes workspace root" }
+        return missing.fold(real) { parent, name -> parent.resolve(name) }.toFile()
+    }
 
     fun listFlow(): Flow<List<WorkspaceEntity>> = dao.listFlow()
 
@@ -74,7 +153,8 @@ class WorkspaceRepository(
         }
     }
 
-    suspend fun getById(id: String): WorkspaceEntity? = dao.getById(id)
+    suspend fun getById(id: String): WorkspaceEntity? =
+        currentCoroutineContext()[WorkspaceCallSnapshot]?.targets?.get(id) ?: dao.getById(id)
 
     suspend fun create(name: String): WorkspaceEntity {
         val id = Uuid.random().toString()
@@ -91,13 +171,13 @@ class WorkspaceRepository(
             updatedAt = now,
             lastAccessAt = null,
         )
-        manager.ensureWorkspace(workspace.root)
+        if (!workspace.isSsh()) manager.ensureWorkspace(workspace.root)
         dao.upsert(workspace)
         return workspace
     }
 
     suspend fun rename(id: String, name: String): Boolean {
-        val workspace = dao.getById(id) ?: return false
+        val workspace = getById(id) ?: return false
         val finalName = name.trim().ifBlank { workspace.name }
         require(!isNameTaken(finalName, excludeId = id)) {
             "Workspace name already exists: $finalName"
@@ -118,7 +198,7 @@ class WorkspaceRepository(
     }
 
     suspend fun setToolApproval(id: String, toolName: String, needsApproval: Boolean): Boolean {
-        val workspace = dao.getById(id) ?: return false
+        val workspace = getById(id) ?: return false
         val overrides = workspace.toolApprovalOverrides() + (toolName to needsApproval)
         dao.upsert(
             workspace.copy(
@@ -134,7 +214,7 @@ class WorkspaceRepository(
         url: String,
         onProgress: (RootfsInstallProgress) -> Unit = {},
     ): Boolean {
-        val workspace = dao.getById(id) ?: return false
+        val workspace = getById(id) ?: return false
         require(!workspace.isSsh()) { "SSH 工作区不需要安装本地环境" }
         updateShellState(workspace, WorkspaceShellStatus.INSTALLING.name)
         try {
@@ -166,8 +246,8 @@ class WorkspaceRepository(
         area: WorkspaceStorageArea,
         path: String,
     ): List<WorkspaceFileEntry> = withContext(Dispatchers.IO) {
-        val workspace = dao.getById(id) ?: return@withContext emptyList()
-        manager.ensureWorkspace(workspace.root)
+        val workspace = getById(id) ?: return@withContext emptyList()
+        if (!workspace.isSsh()) manager.ensureWorkspace(workspace.root)
         runInterruptible {
             remoteBackend(workspace)?.listFiles(area, path) ?: manager.listFiles(workspace.root, path, area)
         }
@@ -177,8 +257,8 @@ class WorkspaceRepository(
         id: String,
         path: String,
     ): String = withContext(Dispatchers.IO) {
-        val workspace = dao.getById(id) ?: error("Workspace not found: $id")
-        manager.ensureWorkspace(workspace.root)
+        val workspace = getById(id) ?: error("Workspace not found: $id")
+        if (!workspace.isSsh()) manager.ensureWorkspace(workspace.root)
         runInterruptible { remoteBackend(workspace)?.readText(path) ?: manager.readText(workspace.root, path) }
     }
 
@@ -188,7 +268,7 @@ class WorkspaceRepository(
         path: String,
         maxBytes: Int,
     ): WorkspaceTextPreview = withContext(Dispatchers.IO) {
-        val workspace = dao.getById(id) ?: error("Workspace not found: $id")
+        val workspace = getById(id) ?: error("Workspace not found: $id")
         require(maxBytes in 1..512 * 1024) { "Invalid preview limit" }
         runInterruptible {
             remoteBackend(workspace)?.readTextPreview(area, path, maxBytes)
@@ -203,7 +283,7 @@ class WorkspaceRepository(
         text: String,
         overwrite: Boolean,
     ): WorkspaceFileEntry = withContext(Dispatchers.IO) {
-        val workspace = dao.getById(id) ?: error("Workspace not found: $id")
+        val workspace = getById(id) ?: error("Workspace not found: $id")
         runInterruptible {
             val remote = remoteBackend(workspace)
             if (area == WorkspaceStorageArea.FILES) {
@@ -224,7 +304,7 @@ class WorkspaceRepository(
         text: String,
         expectedSshConfig: String? = null,
     ): WorkspaceFileEntry = editLocks.computeIfAbsent(id) { Mutex() }.withLock {
-        val workspace = dao.getById(id) ?: error("Workspace not found: $id")
+        val workspace = getById(id) ?: error("Workspace not found: $id")
         check(expectedSshConfig == null || workspace.sshConfig == expectedSshConfig) {
             "SSH 连接配置已变化，请重新打开文件；当前编辑内容已保留。"
         }
@@ -234,7 +314,7 @@ class WorkspaceRepository(
         check(!current.isBinary && !current.truncated && current.text == expectedText) {
             "远程文件已变化或无法完整读取，请重新打开后再保存；当前编辑内容已保留。"
         }
-        check(dao.getById(id)?.sshConfig == workspace.sshConfig) {
+        check(getById(id)?.sshConfig == workspace.sshConfig) {
             "SSH 连接配置已变化，请重新打开文件；当前编辑内容已保留。"
         }
         // Keep this captured backend: a concurrent connection edit must never redirect the save to another host.
@@ -250,8 +330,8 @@ class WorkspaceRepository(
         text: String,
         overwrite: Boolean,
     ): WorkspaceFileEntry = withContext(Dispatchers.IO) {
-        val workspace = dao.getById(id) ?: error("Workspace not found: $id")
-        manager.ensureWorkspace(workspace.root)
+        val workspace = getById(id) ?: error("Workspace not found: $id")
+        if (!workspace.isSsh()) manager.ensureWorkspace(workspace.root)
         runInterruptible {
             remoteBackend(workspace)?.writeText(path, text, overwrite)
                 ?: manager.writeText(workspace.root, path, text, overwrite)
@@ -265,8 +345,8 @@ class WorkspaceRepository(
         fileName: String,
         inputStream: InputStream,
     ): WorkspaceFileEntry = withContext(Dispatchers.IO) {
-        val workspace = dao.getById(id) ?: error("Workspace not found: $id")
-        manager.ensureWorkspace(workspace.root)
+        val workspace = getById(id) ?: error("Workspace not found: $id")
+        if (!workspace.isSsh()) manager.ensureWorkspace(workspace.root)
         runInterruptible {
             remoteBackend(workspace)?.importFile(area, destinationPath, fileName, inputStream)
                 ?: manager.importFile(workspace.root, destinationPath, area, fileName, inputStream)
@@ -278,7 +358,7 @@ class WorkspaceRepository(
         area: WorkspaceStorageArea,
         path: String,
     ): Long = withContext(Dispatchers.IO) {
-        val workspace = dao.getById(id) ?: error("Workspace not found: $id")
+        val workspace = getById(id) ?: error("Workspace not found: $id")
         runInterruptible { remoteBackend(workspace)?.fileSize(area, path) ?: manager.fileSize(workspace.root, path, area) }
     }
 
@@ -288,7 +368,7 @@ class WorkspaceRepository(
         path: String,
         outputStream: OutputStream,
     ) = withContext(Dispatchers.IO) {
-        val workspace = dao.getById(id) ?: error("Workspace not found: $id")
+        val workspace = getById(id) ?: error("Workspace not found: $id")
         val remote = remoteBackend(workspace)
         runInterruptible {
             if (remote != null) remote.exportFile(area, path, outputStream)
@@ -303,7 +383,7 @@ class WorkspaceRepository(
         recursive: Boolean,
     ): Boolean {
         val deleted = withContext(Dispatchers.IO) {
-            val workspace = dao.getById(id) ?: return@withContext false
+            val workspace = getById(id) ?: return@withContext false
             runInterruptible {
                 remoteBackend(workspace)?.deleteFile(area, path, recursive)
                     ?: manager.deleteFile(workspace.root, path, recursive, area)
@@ -318,8 +398,8 @@ class WorkspaceRepository(
         target: String,
         overwrite: Boolean,
     ): WorkspaceFileEntry = withContext(Dispatchers.IO) {
-        val workspace = dao.getById(id) ?: error("Workspace not found: $id")
-        manager.ensureWorkspace(workspace.root)
+        val workspace = getById(id) ?: error("Workspace not found: $id")
+        if (!workspace.isSsh()) manager.ensureWorkspace(workspace.root)
         runInterruptible {
             remoteBackend(workspace)?.moveFile(source, target, overwrite)
                 ?: manager.moveFile(workspace.root, source, target, overwrite)
@@ -333,17 +413,17 @@ class WorkspaceRepository(
         timeoutMillis: Long = WorkspaceManager.DEFAULT_COMMAND_TIMEOUT_MS,
         stdin: ByteArray? = null,
     ): WorkspaceCommandResult {
-        val workspace = dao.getById(id) ?: error("Workspace not found: $id")
+        val workspace = getById(id) ?: error("Workspace not found: $id")
         // runInterruptible 让协程取消转化为线程中断，从而打断阻塞的 Process.waitFor 并杀掉进程
         return runInterruptible(Dispatchers.IO) {
-            manager.ensureWorkspace(workspace.root)
+            if (!workspace.isSsh()) manager.ensureWorkspace(workspace.root)
             remoteBackend(workspace)?.executeCommand(command, cwd, timeoutMillis, stdin)
                 ?: manager.executeCommand(workspace.root, command, cwd, timeoutMillis, stdin)
         }
     }
 
     suspend fun delete(id: String): Boolean {
-        val workspace = dao.getById(id) ?: return false
+        val workspace = getById(id) ?: return false
         dao.deleteById(id)
         withContext(Dispatchers.IO) {
             sshPool.close(id)
@@ -355,7 +435,7 @@ class WorkspaceRepository(
         return true
     }
 
-    suspend fun layout(id: String): WorkspaceLayout? = dao.getById(id)?.let {
+    suspend fun layout(id: String): WorkspaceLayout? = getById(id)?.let {
         if (it.isSsh()) SshWorkspaceBackend.layoutOf(it.workspaceDir())
         else WorkspaceLayout("/workspace", listOf("/workspace", "/tmp", "/skills"))
     }
@@ -398,6 +478,7 @@ class WorkspaceRepository(
         requireNotNull(remoteBackend(workspace)).openShell(columns, rows)
 
     private fun remoteBackend(workspace: WorkspaceEntity): SshWorkspaceBackend? {
+        require(workspace.type in setOf("LOCAL", "SSH")) { "Unknown workspace type: ${workspace.type}" }
         if (!workspace.isSsh()) return null
         val settings = workspace.sshSettings() ?: error("SSH 工作区配置不可用")
         return SshWorkspaceBackend(sshPool, workspace.id, settings.connectionConfig(workspace.id))
@@ -428,8 +509,11 @@ class WorkspaceRepository(
         settingsStore.update { settings ->
             settings.copy(
                 assistants = settings.assistants.map { assistant ->
-                    if (assistant.workspaceId?.toString() == workspaceId) {
-                        assistant.copy(workspaceId = null)
+                    if (assistant.workspaceId?.toString() == workspaceId || assistant.workspaceIds.any { it.toString() == workspaceId }) {
+                        assistant.copy(
+                            workspaceId = assistant.workspaceId?.takeUnless { it.toString() == workspaceId },
+                            workspaceIds = assistant.workspaceIds.filterNot { it.toString() == workspaceId }.toSet(),
+                        )
                     } else {
                         assistant
                     }

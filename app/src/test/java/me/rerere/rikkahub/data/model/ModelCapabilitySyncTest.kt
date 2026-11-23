@@ -156,12 +156,14 @@ class ModelCapabilitySyncTest {
             val unrelatedProviders = store.settingsFlowRaw.first().providers.filterNot { it.id in targetIds }
             val sync = ModelCapabilitySync(context, store, { error("must not make another account request") })
             val remote = auto().copy(abilities = listOf(ModelAbility.TOOL), codexReasoningEfforts = listOf("high"))
-            sync.applyCodexMetadata(listOf(remote))
+            val added = remote.copy(modelId = "next-model")
+            repeat(2) { sync.applyCodexMetadata(listOf(remote, added), nativeProvider) }
             val providers = store.settingsFlowRaw.first().providers
             val nativeModels = providers.single { it.id == nativeProvider.id }.models
             val overrideModels = providers.single { it.id == overrideProvider.id }.models
             assertEquals(listOf(ModelAbility.TOOL), nativeModels.first().abilities)
-            assertEquals(manual, nativeModels.last())
+            assertEquals(manual, nativeModels[1])
+            assertEquals(listOf("next-model"), nativeModels.drop(2).map { it.modelId })
             assertEquals(listOf("high"), overrideModels.single().codexReasoningEfforts)
             assertEquals(override.id, overrideModels.single().id)
             assertEquals(unrelatedProviders, providers.filterNot { it.id in targetIds })

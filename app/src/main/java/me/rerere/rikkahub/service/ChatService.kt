@@ -17,6 +17,8 @@ import kotlinx.coroutines.flow.onStart
 import me.rerere.rikkahub.data.ai.mcp.normalizeMcpArguments
 import me.rerere.rikkahub.data.repository.ConversationNodeChanges
 
+import me.rerere.rikkahub.data.serein.isSereinCompletedReply
+import me.rerere.rikkahub.data.serein.sereinSuccessfulRequestStatus
 import android.app.Application
 import android.app.PendingIntent
 import android.content.Context
@@ -126,6 +128,8 @@ import me.rerere.rikkahub.data.ai.transformers.ImageHistoryLimitTransformer
 import me.rerere.rikkahub.data.ai.transformers.VoiceMessageTransformer
 import me.rerere.rikkahub.data.ai.transformers.WorkspaceReminderTransformer
 import me.rerere.rikkahub.data.repository.WorkspaceRepository
+import me.rerere.rikkahub.data.video.cameraFreeRequests
+import me.rerere.rikkahub.data.video.withoutHistoricalCameraImages
 import me.rerere.workspace.WorkspaceShellStatus
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.datastore.buildAnniversaryPrompt
@@ -136,6 +140,9 @@ import me.rerere.rikkahub.data.datastore.getCurrentAssistant
 import me.rerere.rikkahub.data.datastore.getCurrentChatModel
 import me.rerere.rikkahub.data.datastore.getChatModelForAssistant
 import me.rerere.rikkahub.data.files.FilesManager
+import me.rerere.rikkahub.data.video.FrameFileOwnership
+import me.rerere.rikkahub.data.video.VideoCallRuntime
+import me.rerere.rikkahub.data.video.VideoFrameStore
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.ConversationConfig
@@ -210,6 +217,7 @@ private val outputTransformers by lazy {
         Base64ImageToLocalFileTransformer,
         RegexOutputTransformer,
         me.rerere.rikkahub.data.ai.transformers.InteractionOutputTransformer,
+        me.rerere.rikkahub.data.ai.transformers.VideoCallOutputTransformer,
         SpeechOutputTransformer,
     )
 }
@@ -278,6 +286,13 @@ class ChatService(
     val generationDoneFlow: SharedFlow<Uuid> = _generationDoneFlow.asSharedFlow()
 
     // 前台状态管理
+    internal val visibleDoorbellChat = MutableStateFlow<Uuid?>(null)
+    internal fun hasQueuedDoorbell(target: Uuid, marker: String) = sessions[target]?.messageQueue?.let { queue ->
+        (queue.state.value.messages + queue.inFlightMessages).any {
+            me.rerere.rikkahub.data.gongdu.GongduDoorbell.hasReceipt(it.parts, marker)
+        }
+    } == true
+
     private val _isForeground = MutableStateFlow(false)
     val isForeground: StateFlow<Boolean> = _isForeground.asStateFlow()
 
@@ -356,21 +371,25 @@ class ChatService(
 
     // ---- Session 管理 ----
 
-    fun beginInteractionCall(conversationId: Uuid, startedAt: Long) = appScope.launch {
-        runCatching { beginChatInteractionCall(conversationId, startedAt) }
+    fun beginInteractionCall(conversationId: Uuid, startedAt: Long, videoCall: Boolean = false) = appScope.launch {
+        runCatching { beginChatInteractionCall(conversationId, startedAt, videoCall) }
     }
 
     internal val pendingIncomingCall = MutableStateFlow<me.rerere.ai.ui.UIMessageAnnotation.ChatInteraction?>(null)
 
     fun finishInteractionCalls(conversationId: Uuid, startJob: Job? = null, startedAt: Long? = null,
-        transcript: List<me.rerere.ai.ui.CallTranscriptEntry>? = null) {
+        transcript: List<me.rerere.ai.ui.CallTranscriptEntry>? = null, giftSummary: String = "",
+        videoCall: Boolean = false, linkedUserMessageIds: List<String> = emptyList()) {
         val endedAt = System.currentTimeMillis()
         val connectingIds = getConversationFlow(conversationId).value.currentMessages.flatMap { it.annotations }
             .filterIsInstance<me.rerere.ai.ui.UIMessageAnnotation.ChatInteraction>()
             .filter { it.kind == "call" && it.status == "connecting" }.map { it.id }.toSet()
         appScope.launch {
             startJob?.join()
-            runCatching { endChatInteractionCalls(conversationId, startedAt, endedAt, transcript, connectingIds) }
+            runCatching {
+                endChatInteractionCalls(conversationId, startedAt, endedAt, transcript, connectingIds, giftSummary,
+                    videoCall = videoCall, linkedUserMessageIds = linkedUserMessageIds)
+            }
         }
     }
     fun respondIncomingInteraction(conversationId: Uuid, action: String, onReady: () -> Unit) {
@@ -412,6 +431,22 @@ class ChatService(
                 onGenerationIdle = { processMessageQueue(it) },
                 onIdle = { removeSession(it) }
             ).also {
+                // 队列是"本轮附图"的唯一持有者：撤销/清空时由它终结文件（正常派发后的所有权
+                // 已经移交给请求本身，由 job 的 finally 删）。
+                it.messageQueue.onDiscardTransientImages = { discarded ->
+                    VideoFrameStore.deleteTransient(context, discarded.transientImageUrls)
+                }
+                // 队列项被彻底放弃（撤回/清空/暂停）：只终结**显式所有权**里的文件。
+                // 绝不能按目录把 parts 里的 Image 全删掉：用户重发一张历史里的截图时，
+                // 那也是一条 UIMessagePart.Image，删掉就等于把历史里的照片永久断链。
+                it.messageQueue.onMessageDiscarded = { discarded ->
+                    VideoFrameStore.deleteTransient(context, discarded.transientImageUrls)
+                    discarded.ownedImageUrls.forEach { url -> VideoFrameStore.deleteOwned(context, url) }
+                }
+                // 队列项被放弃/暂停：撤销这一轮的通话授权（恢复队列是一次全新请求）。
+                it.messageQueue.onRequestTokenRevoked = { token ->
+                    VideoCallRuntime.cancelTurnRequest(token)
+                }
                 if (id in deletedConversationIds) it.markDeleted()
                 _sessionsVersion.value++
                 Log.i(TAG, "createSession: $id (total: ${sessions.size + 1})")
@@ -593,7 +628,9 @@ class ChatService(
     /** Only this request can be withdrawn or interrupted; other callers retain their own turns. */
     fun cancelQueuedMessage(conversationId: Uuid, requestId: Uuid) {
         val session = sessions[conversationId] ?: return
-        if (session.messageQueue.remove(requestId) != null) {
+        session.messageQueue.remove(requestId)?.let {
+            // 队列自己已经终结了这次专用临时帧与"本次新建、还没落库"的永久帧；
+            // 正在进行的请求不在这里删（所有权在 job 的 finally）。
             processMessageQueue(conversationId)
             return
         }
@@ -611,6 +648,34 @@ class ChatService(
         enableTools: Boolean = true,
         interaction: UIMessageAnnotation.AvatarInteraction? = null,
         existingMessageId: Uuid? = null,
+        /** 只用于本次请求的图片（视频通话自动抓帧），不进聊天历史。 */
+        transientImageUrls: List<String> = emptyList(),
+        transientImageScope: me.rerere.rikkahub.data.video.VideoFrameRequestScope? = null,
+        /**
+         * 本次**新建**、还没有被聊天历史引用的永久帧（手动夹帧）。
+         *
+         * 所有权判定：请求的 finally 才知道这条用户消息到底有没有落库。
+         * 落库了 → 文件属于历史，永远不删；没落库（保存失败/取消）→ 删掉，避免孤儿照片。
+         */
+        ownedImageUrls: List<String> = emptyList(),
+        /** 队列暂停摘掉"本轮附图"之后要改用的 system prompt（视频 context 的无图版本）。 */
+        transientSystemPromptWithoutImages: String? = null,
+        /**
+         * 这一轮的授权 token（视频通话）。
+         *
+         * 随队列项**不可变**地传下去，由生成管线带到 `TransformerContext.requestToken`。
+         * 以前这里是一个"入队后再回调去登记"的可失败副作用；现在改成纯参数：
+         * 入队与授权要么一起成立，要么都不成立，不存在"回调失败但消息已经进队列"的中间态。
+         */
+        requestToken: String? = null,
+        /**
+         * 这一轮**只为本次请求**提供的一段录音（视频通话手动录的那一段）。
+         *
+         * 所有权在 [me.rerere.rikkahub.data.video.TransientAudioClip] 上：
+         * 请求开始（job 体）时认领，请求结束（正常/失败/取消）时释放并删除文件。
+         * 聊天历史里**不会**出现 audio part，所以下一轮不会再 base64 一次旧录音。
+         */
+        transientAudio: me.rerere.rikkahub.data.video.TransientAudioClip? = null,
     ): QueuedMessage? {
         if ((content.isEmptyInputMessage() && existingMessageId == null) || conversationId in deletedConversationIds) return null
         val session = getOrCreateSession(conversationId)
@@ -619,7 +684,20 @@ class ChatService(
             // A fresh send after stopping an empty queue is explicit intent to continue.
             // A manually paused backlog remains paused until the user resumes it.
             if (session.messageQueue.state.value.messages.isEmpty()) session.messageQueue.resume()
-            session.messageQueue.enqueue(content, answer, interaction, transientSystemPrompt, enableTools, existingMessageId)
+            session.messageQueue.enqueue(
+                parts = content,
+                answer = answer,
+                interaction = interaction,
+                transientSystemPrompt = transientSystemPrompt,
+                transientSystemPromptWithoutImages = transientSystemPromptWithoutImages,
+                enableTools = enableTools,
+                existingMessageId = existingMessageId,
+                transientImageUrls = transientImageUrls,
+                transientImageScope = transientImageScope,
+                ownedImageUrls = ownedImageUrls,
+                requestToken = requestToken,
+                transientAudio = transientAudio,
+            )
         } ?: return null
         queued.completion.invokeOnCompletion { cause ->
             if (cause is CancellationException && !queued.reply.isCompleted) cancelQueuedMessage(conversationId, queued.id)
@@ -663,6 +741,20 @@ class ChatService(
         val transientSystemPrompt = queued.transientSystemPrompt
         val enableTools = queued.enableTools
         val interaction = queued.interaction
+        // 本次请求专用的临时图片（视频通话自动抓帧）：请求结束（含失败/取消）后删除。
+        val transientImageUrls = queued.transientImageUrls
+        val transientImageScope = queued.transientImageScope
+        // 本次新建、还没被历史引用的永久帧（手动夹帧）：**只有没落库**才允许删。
+        val ownedImageUrls = queued.ownedImageUrls
+        // 临时图的锚点：就是这条用户消息自己的 ID；工具多步插进来的消息不会把它顶掉。
+        val transientImageAnchorMessageId = (queued.existingMessageId ?: queued.id).toString()
+        // 这一轮的授权 token（视频通话）；非通话请求为 null。
+        val requestToken = queued.requestToken
+        // 这一轮仅本次请求可用的录音（视频通话手动录音，直传路线）。
+        val transientAudio = queued.transientAudio
+        val audioOwnership = transientAudio?.let {
+            me.rerere.rikkahub.data.video.TransientAudioClip.RequestOwnership(it)
+        }
         // 用户一开口就立即撤销旧主动闹钟。新的休眠计时必须等本轮正常回复结束后再开始，
         // 避免 AI 正在聊天时主动器到点，也避免长回复吃掉休眠间隔。
         val currentProactiveSetting = settingsStore.settingsFlow.value.proactiveMessageSetting
@@ -679,9 +771,20 @@ class ChatService(
         }
 
         val trace = LoadingDiagnostics.begin(context, "chat.send", timeoutMillis = 0)
+        // 本次新建的永久帧（手动夹帧/留影）的归属状态。
+        // 必须在协程外面创建：`invokeOnCompletion` 的兜底和协程体的 finally 必须看**同一份**状态
+        // （旧实现把 Boolean 声明在 launch 里，兜底根本引用不到，编译就过不去；即使能引用，
+        // 一个布尔也区分不了"取消时事务可能已提交"这种真正危险的中间态）。
+        // 礼物/转账这种已有持久消息的请求从一开始就是 PUBLISHED：文件归历史所有，永不删除。
+        val frameOwnership = FrameFileOwnership(alreadyDurable = queued.existingMessageId != null)
         val job = appScope.launch(start = CoroutineStart.LAZY) {
             var failure: Throwable? = null
             try {
+                // 录音的所有权先交给请求：在构造 provider payload 之前认领，
+                // 这样"重新派发队列/暂停/撤回"都不可能把正在序列化的文件删掉。
+                check(audioOwnership == null || audioOwnership.beginRequest()) {
+                    "本轮录音已释放或正被其他请求使用，已停止发送"
+                }
                 trace.stage("initializing conversation")
                 initializeConversation(conversationId, updateSelectedAssistant = false)
                 val settings = settingsStore.settingsFlow.first()
@@ -710,7 +813,15 @@ class ChatService(
                         ).toMessageNode(),
                     )
                     trace.stage("saving user message")
-                    saveConversationLocked(conversationId, newConversation)
+                    // 归属交接就在这一句里：发布之前先标记"可能已发布"，成功之后才确认 PUBLISHED。
+                    // 取消落在 Room 的挂起提交中间时状态停在 PUBLISHING —— 两条兜底路径都不会删文件。
+                    saveConversationWithOwnership(
+                        session = session,
+                        conversationId = conversationId,
+                        conversation = newConversation,
+                        ownership = frameOwnership,
+                        publishedMessageId = queued.id,
+                    )
                     assistant to processedContent
                 }
 
@@ -745,35 +856,6 @@ class ChatService(
                     Log.w(TAG, "Failed to trigger message_sent event", e)
                 }
 
-                // 保存用户消息到外置记忆库（fire-and-forget，不阻塞后续生成流程）
-                try {
-                    val settingsRaw = settingsStore.settingsFlowRaw.first()
-                    val externalMemoryConfigs = settingsRaw.externalMemories.filter {
-                        it.enabled && it.id in assistant.externalMemoryIds && it.autoSaveMessages
-                    }
-                    if (externalMemoryConfigs.isNotEmpty()) {
-                        val messageText = processedContent.mapNotNull { part ->
-                            if (part is UIMessagePart.Text) part.text else null
-                        }.joinToString("\n")
-                        externalMemoryConfigs.forEach { config ->
-                            appScope.launch {
-                                runCatching {
-                                    val service = me.rerere.rikkahub.data.service.ExternalMemoryService(config)
-                                    service.saveMessage(
-                                        assistantId = assistant.id.toString(),
-                                        conversationId = conversationId.toString(),
-                                        role = "user",
-                                        content = messageText,
-                                    )
-                                }.onFailure {
-                                    Log.w(TAG, "Failed to save user message to external memory ${config.name}", it)
-                                }
-                            }
-                        }
-                    }
-                } catch (e: Exception) {
-                    Log.w(TAG, "Failed to save user message to external memory", e)
-                }
                 } else {
                     session.withStateLock {
                         check(session.state.value.currentMessages.any { it.id == queued.existingMessageId && it.role == MessageRole.USER }) {
@@ -789,6 +871,14 @@ class ChatService(
                         transientSystemPrompt = transientSystemPrompt,
                         enableTools = enableTools,
                         diagnosticTrace = trace,
+                        transientImageUrls = transientImageUrls,
+                        transientImageScope = transientImageScope,
+                        transientImageAnchorMessageId = transientImageAnchorMessageId,
+                        requestToken = requestToken,
+                        videoCallUserMessageId = queued.id.takeIf { requestToken != null },
+                        // 音频锚点与图片锚点是同一条用户消息（队列项 ID）；工具多步不会把它顶掉。
+                        transientAudioUrl = transientAudio?.fileUrl,
+                        transientAudioAnchorMessageId = transientImageAnchorMessageId,
                     )
                     if (!completed) {
                         failure = IllegalStateException("生成失败，请检查会话中的错误信息")
@@ -823,6 +913,29 @@ class ChatService(
                 activeQueueGenerations.computeIfPresent(conversationId) { _, owner ->
                     owner.takeUnless { it.message.id == queued.id }
                 }
+                // 请求作用域结束：删除本次专用的临时帧（自动抓帧），聊天历史里只有文字。
+                // 临时帧的所有权始终在本请求，任何队列清理都不会提前删掉它们。
+                VideoFrameStore.deleteTransient(context, transientImageUrls)
+                // 这一轮的录音到此为止：请求结束（完成/失败/取消）后立刻删文件，
+                // 不留任何"受管音频"在磁盘上；历史里本来就只有占位文字。
+                audioOwnership?.release()
+                // 本次**新建**的永久帧（手动夹帧）：只有"从未被历史引用"才删。
+                // 落库了它就是历史的一部分（旧实现按目录删 parts 里的 Image，会把历史照片删掉）。
+                // claimDeletion 是幂等的 CAS：这个 finally 和下面的 invokeOnCompletion 兜底
+                // 只有一条会真正删；状态一旦进过 PUBLISHING 就永远返回 false。
+                if (frameOwnership.claimDeletion()) {
+                    ownedImageUrls.forEach { url -> VideoFrameStore.deleteOwned(context, url) }
+                }
+                // 这一轮的通话授权（礼物/留影）：请求自己决定是"正常完成"还是"被取消"。
+                // complete 保留已经发出的留影许可（合法的异步留影落在请求结束之后）；
+                // cancel 会撤销这次请求的全部许可。
+                requestToken?.let { token ->
+                    if (failure == null) {
+                        VideoCallRuntime.completeTurnRequest(token)
+                    } else {
+                        VideoCallRuntime.cancelTurnRequest(token)
+                    }
+                }
                 // An API failure must not leave the proactive timer cancelled forever. Do not
                 // restart it for a cancelled job that was superseded by a newer user message.
                 if (coroutineContext.isActive && !session.messageQueue.hasPendingOrInFlight) {
@@ -841,6 +954,16 @@ class ChatService(
             activeQueueGenerations.computeIfPresent(conversationId) { _, owner ->
                     owner.takeUnless { it.message.id == queued.id }
                 }
+            // 连协程体都没跑起来就被取消：临时帧和授权都必须在这里收尾。
+            if (cause != null) {
+                VideoFrameStore.deleteTransient(context, transientImageUrls)
+                // 未启动只释放 QUEUED；已启动只凭本 job 的认领释放，不能删其他请求的录音。
+                audioOwnership?.release()
+                if (frameOwnership.claimDeletion()) {
+                    ownedImageUrls.forEach { url -> VideoFrameStore.deleteOwned(context, url) }
+                }
+                requestToken?.let { VideoCallRuntime.cancelTurnRequest(it) }
+            }
         }
         return job
     }
@@ -1131,22 +1254,21 @@ class ChatService(
                 val providerHandler = usageRecorder.wrap(
                     providerManager.getProviderByType(provider),
                     UsageTag(UsageSource.VOICE_EVENT, assistant.id, conversationId),
-                )
-
-                val historyMessages = buildConversationRequestMessages(
-                    assistant.systemPrompt, currentConversation.messagesForGeneration(),
-                    assistant.contextMessageSize, currentConversation.summaryForGeneration(),
-                )
+                ).cameraFreeRequests()
 
                 // 记录生成开始前的消息节点数量，作为"生成期间是否有新消息插入"的判断基准
                 val nodeCountBeforeGeneration = currentConversation.messageNodes.size
 
                 val eventDescription = "[系统事件] 你刚刚主动发起的语音通话邀请被用户直接挂断了（拒接，未接听）。请用你自己的语气自然地回应这件事，简短即可，不要提及\"系统事件\"\"工具\"等技术词汇，不要用引号或标注包裹，就当作正常聊天说一句话。"
 
-                val messages = buildList {
-                    addAll(historyMessages)
-                    add(UIMessage.user(eventDescription))
-                }
+                // 拒接后的这一轮只需要一句自然回应：历史里视频通话留下的画面不能跟着重放。
+                val messages = buildVoiceCallDeclinedRequestMessages(
+                    systemPrompt = assistant.systemPrompt,
+                    history = currentConversation.messagesForGeneration(),
+                    contextMessageSize = assistant.contextMessageSize,
+                    summary = currentConversation.summaryForGeneration(),
+                    eventDescription = eventDescription,
+                )
 
                 val result = providerHandler.generateText(
                     providerSetting = provider,
@@ -1265,13 +1387,13 @@ class ChatService(
                         )
                         saveConversationLocked(conversationId, newConversation)
                     }
-                    if (!handleMessageComplete(conversationId)) session.messageQueue.pause()
+                    if (!handleMessageComplete(conversationId, retryFailedRecall = true)) session.messageQueue.pause()
                 } else {
                     if (regenerateAssistantMsg) {
                         val conversation = session.state.value
                         val node = conversation.getMessageNodeByMessage(message)
                         val nodeIndex = conversation.messageNodes.indexOf(node)
-                        if (!handleMessageComplete(conversationId, messageRange = 0..<nodeIndex)) session.messageQueue.pause()
+                        if (!handleMessageComplete(conversationId, messageRange = 0..<nodeIndex, retryFailedRecall = true)) session.messageQueue.pause()
                     } else {
                         session.withStateLock {
                             saveConversationLocked(conversationId, session.state.value)
@@ -1371,6 +1493,15 @@ class ChatService(
         transientSystemPrompt: String? = null,
         enableTools: Boolean = true,
         diagnosticTrace: TaskWatchdog.Trace? = null,
+        retryFailedRecall: Boolean = false,
+        transientImageUrls: List<String> = emptyList(),
+        transientImageScope: me.rerere.rikkahub.data.video.VideoFrameRequestScope? = null,
+        transientImageAnchorMessageId: String? = null,
+        requestToken: String? = null,
+        videoCallUserMessageId: Uuid? = null,
+        /** 这一轮仅本次请求可用的录音（视频通话直传）；历史里永远不存 audio part。 */
+        transientAudioUrl: String? = null,
+        transientAudioAnchorMessageId: String? = null,
     ): Boolean {
         diagnosticTrace?.stage("reading generation settings")
         val initialConversation = bindConversationConfig(conversationId)
@@ -1405,6 +1536,7 @@ class ChatService(
         var hookUser: UIMessage? = null
         var hookRecall: me.rerere.rikkahub.data.serein.HookRecall? = null
         var hookElapsedMs = 0L
+        var completedGenerationReplyId: Uuid? = null
         val hookObservedAt = System.currentTimeMillis()
         val hookReceipt = "orangechat:${Uuid.random()}"
         suspend fun reportHook(status: String, delivered: List<String> = emptyList()) {
@@ -1443,20 +1575,17 @@ class ChatService(
             var regenerationMessageId: Uuid? = null
             val latestUserMessage = messagesForGeneration.lastOrNull { it.role == MessageRole.USER }
             diagnosticTrace?.stage("collecting extra information")
-            val (extraInfoContext, externalMemoryContext) = kotlinx.coroutines.coroutineScope {
-                // Independent read-only recall overlaps device context/Hook preparation.
-                val externalMemoryPending = async {
-                    generationHandler.recallExternalMemories(settings, assistant, messagesForGeneration)
-                }
+            val extraInfoContext = kotlinx.coroutines.coroutineScope {
                 val hookPending = async {
-                    if (latestUserMessage == null || messageRange != null || transientSystemPrompt != null || !hookIsCurrent()) null
+                    if (latestUserMessage == null || (messageRange != null && !retryFailedRecall) || transientSystemPrompt != null || !hookIsCurrent()) null
                     else {
                         hookParticipating = true
                         hookUser = latestUserMessage
                         val started = System.nanoTime()
                         try {
                             sereinHookRepository.prepare(hookConfig, assistant.id.toString(), conversationId.toString(),
-                                latestUserMessage, messagesForGeneration.lastOrNull()?.role == MessageRole.USER, ::hookIsCurrent)
+                                latestUserMessage, messagesForGeneration.lastOrNull()?.role == MessageRole.USER, ::hookIsCurrent,
+                                retryFailed = retryFailedRecall)
                                 .also { hookRecall = it }
                         } finally { hookElapsedMs = (System.nanoTime() - started) / 1_000_000 }
                     }
@@ -1488,7 +1617,7 @@ class ChatService(
                         hookTransformer = me.rerere.rikkahub.data.serein.SereinRecallTransformer(it.id, recalled, ::hookIsCurrent)
                     }
                 }
-                extra to externalMemoryPending.await()
+                extra
             }
             // Every historical user message keeps the snapshot it was first sent with, so the
             // request prefix stays byte-identical across turns and the provider cache survives.
@@ -1532,18 +1661,25 @@ class ChatService(
                 message.annotations.any { it is me.rerere.ai.ui.UIMessageAnnotation.ChatInteraction &&
                     it.kind in setOf("red_packet", "transfer") && it.status == "pending" }
             }) addError(IllegalStateException(paymentToolsUnavailableReason), conversationId, title = "红包/转账工具不可用")
+            val listenTurn = latestUserMessage?.let { user ->
+                org.koin.core.context.GlobalContext.get().get<me.rerere.rikkahub.data.listen.ListenRepository>()
+                    .captureTurn(conversationId.toString(), assistant.id.toString(), user.id)
+            }
             generationHandler.generateText(
+                listenRequestContext = listenTurn?.let { it::attach },
                 settings = settings,
                 model = model,
                 processingStatus = session.processingStatus,
                 messages = messagesForGeneration,
-                preparedExternalMemory = externalMemoryContext,
                 conversationContextSummary = conversation.summaryForGeneration(),
                 assistant = assistant,
                 conversationSystemPrompt = listOfNotNull(
                     conversation.customSystemPrompt?.takeIf { it.isNotBlank() },
-                    transientSystemPrompt?.takeIf { it.isNotBlank() },
+                    // 视频通话轮：这一轮的通话上下文走 appendedSystemContext（**追加**在主文后面），
+                    // 不再混进"对话级 prompt"里被 allowConversationSystemPrompt 开关整段丢掉。
+                    transientSystemPrompt?.takeIf { it.isNotBlank() && requestToken == null },
                 ).joinToString("\n\n").ifBlank { null },
+                appendedSystemContext = transientSystemPrompt?.takeIf { it.isNotBlank() && requestToken != null },
                 workspaceCwd = conversation.workspaceCwd,
                 memories = if (assistant.useGlobalMemory) {
                     memoryRepository.getGlobalMemories()
@@ -1554,6 +1690,8 @@ class ChatService(
                     addAll(inputTransformers)
                     add(templateTransformer)
                     add(workspaceReminderTransformer)
+                    add(me.rerere.rikkahub.data.reading.ReadContextTransformer(
+                        org.koin.core.context.GlobalContext.get().get(), conversationId.toString(), assistant.id.toString()))
                     add(requireNotNull(activityTransformer))
                     add(ExtraInfoRequestTransformer(extraInfoSnapshots))
                     hookTransformer?.let { add(it) }
@@ -1589,7 +1727,16 @@ class ChatService(
                 reactionSourceMessages = conversation.currentMessages.take(
                     conversation.currentMessages.indexOfLast { it.id in requestMessageIds } + 1,
                 ),
+                // 视频通话自动抓帧：只作为本次请求的临时图片输入，不写聊天历史。
+                transientImageUrls = transientImageUrls,
+                transientImageScope = transientImageScope,
+                transientImageAnchorMessageId = transientImageAnchorMessageId,
+                // 视频通话手动录音：只作为本次请求的临时音频输入，不写聊天历史。
+                transientAudioUrl = transientAudioUrl,
+                transientAudioAnchorMessageId = transientAudioAnchorMessageId,
+                requestToken = requestToken,
                 onReactionContextPrepared = { reactionTurn = it },
+                onGenerationCompleted = { completedGenerationReplyId = it },
                 onToolCheckpoint = { checkpointMessages ->
                     diagnosticTrace?.stage("saving tool checkpoint")
                     session.withStateLock {
@@ -1597,7 +1744,9 @@ class ChatService(
                         if (regenerationNodeId != null && regenerationMessageId == null) {
                             regenerationMessageId = checkpointMessages.firstOrNull { it.id !in requestMessageIds }?.id
                         }
-                        val mutation = session.state.value.generationMessageMutation(checkpointMessages, buildMap {
+                        val mutation = session.state.value.generationMessageMutation(
+                            me.rerere.rikkahub.data.interaction.associateVideoCallReplies(
+                                checkpointMessages, requestMessageIds, conversationId, videoCallUserMessageId), buildMap {
                             if (regenerationNodeId != null) regenerationMessageId?.let { put(it, regenerationNodeId) }
                         })
                         applyMessageMutationLocked(conversationId, mutation)
@@ -1637,7 +1786,9 @@ class ChatService(
                             regenerationMessageId = chunk.messages.firstOrNull { it.id !in requestMessageIds }?.id
                         }
                         session.withStateLock {
-                            val mutation = session.state.value.generationMessageMutation(chunk.messages, buildMap {
+                            val mutation = session.state.value.generationMessageMutation(
+                                me.rerere.rikkahub.data.interaction.associateVideoCallReplies(
+                                    chunk.messages, requestMessageIds, conversationId, videoCallUserMessageId), buildMap {
                                 if (regenerationNodeId != null) regenerationMessageId?.let { put(it, regenerationNodeId) }
                             })
                             applyMessageMutationLocked(conversationId, mutation)
@@ -1699,11 +1850,14 @@ class ChatService(
             val completedReply = finalConversation.currentMessages.lastOrNull()
             if (hookParticipating && hookIsCurrent() && completedReply != null) {
                 try {
-                    sereinHookRepository.acknowledge(hookConfig, conversationId.toString(), completedReply,
-                        hookTransformer?.deliveredIds.orEmpty())
-                    val valid = completedReply.role == MessageRole.ASSISTANT && completedReply.finishedAt != null &&
-                        completedReply.getTools().isEmpty() && completedReply.toText().isNotBlank() && completedReply.toText().trim() != "[SKIP]"
-                    reportHook(if (valid) "completed" else "interrupted", if (valid) hookTransformer?.deliveredIds.orEmpty() else emptyList())
+                    val status = sereinSuccessfulRequestStatus(completedGenerationReplyId, completedReply)
+                    if (status == "completed") {
+                        sereinHookRepository.acknowledge(hookConfig, conversationId.toString(), completedReply,
+                            hookTransformer?.deliveredIds.orEmpty())
+                    }
+                    val valid = completedReply.isSereinCompletedReply()
+                    // Completion is an observed model event; ACK/upload eligibility remains stricter.
+                    reportHook(status, if (status == "completed" && valid) hookTransformer?.deliveredIds.orEmpty() else emptyList())
                 } catch (e: CancellationException) { throw e }
                 catch (_: Exception) { Log.w(TAG, "Could not record Serein recall delivery") }
             }
@@ -1792,37 +1946,6 @@ class ChatService(
                 generateSuggestion(conversationId, finalConversation)
             }
 
-            // 保存 AI 回复到外置记忆库
-            try {
-                val externalMemoryConfigs = settings.externalMemories.filter {
-                    it.enabled && it.id in assistant.externalMemoryIds && it.autoSaveMessages
-                }
-                if (externalMemoryConfigs.isNotEmpty()) {
-                    val lastAssistantMessage = finalConversation.currentMessages.lastOrNull { it.role == MessageRole.ASSISTANT }
-                    val messageText = lastAssistantMessage?.toText() ?: ""
-                    if (messageText.isNotBlank()) {
-                        kotlinx.coroutines.coroutineScope {
-                            externalMemoryConfigs.forEach { config ->
-                                launch {
-                                    runCatching {
-                                        val service = me.rerere.rikkahub.data.service.ExternalMemoryService(config)
-                                        service.saveMessage(
-                                            assistantId = assistant.id.toString(),
-                                            conversationId = conversationId.toString(),
-                                            role = "assistant",
-                                            content = messageText,
-                                        )
-                                    }.onFailure {
-                                        Log.w(TAG, "Failed to save assistant message to external memory ${config.name}", it)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            } catch (e: Exception) {
-                Log.w(TAG, "Failed to save assistant message to external memory", e)
-            }
         }
         return generationResult.isSuccess
     }
@@ -1863,7 +1986,7 @@ class ChatService(
                 me.rerere.rikkahub.data.service.ProactiveMessageService.scheduleNext(context, current.proactiveMessageSetting)
                 if (time == null) "已取消当前会话的待执行约定。无约定时恢复按原间隔检查。" else
                     "已保存当前会话的唯一待执行约定：${java.time.Instant.ofEpochMilli(time).atZone(java.time.ZoneId.systemDefault())}。" +
-                        "到点读取最新聊天再生成回复，受活跃时段和连续追问上限约束；系统后台限制可能导致延后。"
+                        "到点尝试读取最新聊天，再决定是否发消息。不受普通活跃时段限制，仍遵守连续追问上限；系统后台限制可能导致延后。"
             }
         })
     }
@@ -1905,16 +2028,19 @@ class ChatService(
     ): List<Tool> = buildList {
         addAll(buildProactiveWakeupTools(settings, assistant, conversation))
         addAll(me.rerere.rikkahub.data.gongdu.gongduTools(settings, assistant.id))
+        val invocationContext = me.rerere.rikkahub.data.ai.tools.ToolInvocationContext(
+            callerAssistantId = assistant.id.toString(),
+            callerConversationId = conversationId.toString(),
+        )
+        addAll(me.rerere.rikkahub.data.listen.listenTools(invocationContext))
+        addAll(me.rerere.rikkahub.data.reading.readingTools(invocationContext))
         if (settings.enableWebSearch) {
             addAll(createSearchTools(settings))
         }
         addAll(
             localTools.getTools(
                 assistant.localTools.filterNot { it is me.rerere.rikkahub.data.ai.tools.LocalToolOption.RequestVoiceCall },
-                me.rerere.rikkahub.data.ai.tools.ToolInvocationContext(
-                    callerAssistantId = assistant.id.toString(),
-                    callerConversationId = conversationId.toString(),
-                ),
+                invocationContext,
             )
         )
         add(localTools.imageGenerationTool())
@@ -1933,7 +2059,7 @@ class ChatService(
             )
         }
 
-        addAll(createWorkspaceToolsIfReady(assistant.workspaceId?.toString(), conversation.workspaceCwd))
+        addAll(createWorkspaceTools(assistant.workspaceId?.toString(), workspaceRepository, assistantId = assistant.id.toString()))
         if (assistant.enabledSkills.isNotEmpty()) {
             addAll(
                 createSkillTools(
@@ -1989,19 +2115,6 @@ class ChatService(
             },
             onManageReactionPresets = ::manageReactionPresets,
         ))
-    }
-
-    private suspend fun createWorkspaceToolsIfReady(workspaceId: String?, cwd: String? = null): List<Tool> {
-        if (workspaceId.isNullOrBlank()) return emptyList()
-        val workspace = workspaceRepository.getById(workspaceId) ?: return emptyList()
-        if (workspace.shellStatus != WorkspaceShellStatus.READY.name) {
-            Log.d(
-                TAG,
-                "createWorkspaceToolsIfReady: skip workspace tools, workspace=$workspaceId, status=${workspace.shellStatus}"
-            )
-            return emptyList()
-        }
-        return createWorkspaceTools(workspaceId, workspaceRepository, cwd)
     }
 
     // ---- 检查无效消息 ----
@@ -2647,6 +2760,45 @@ class ChatService(
         }
     }
 
+    /**
+     * 在**已持有 saveMutex** 的前提下保存对话，并同步推进永久帧文件的归属状态。
+     *
+     * 这是"文件所有权"和"数据库取消"之间唯一被允许的交接点：
+     *
+     * 1. [saveConversationLocked] 第一件事是 `updateConversation()`，也就是把新消息发布进
+     *    内存里的会话状态（UI 立刻可见），**然后**才是 Room 的挂起提交。所以"发布"和
+     *    "提交"之间天然有窗口，取消可以落在里面。
+     * 2. 因此进入保存之前先 [FrameFileOwnership.markPublishing]：从这一刻起这些文件
+     *    就当"可能已经被引用"处理，任何取消路径都不许删。
+     * 3. 正常返回 → [FrameFileOwnership.markPublished]（历史真的引用了它）。
+     * 4. 抛出普通异常 → 事务一定回滚了，但消息**可能**已经被发布进内存状态（那样它迟早会
+     *    被别的保存写进数据库）。这里直接查会话状态里有没有这条消息来决定能不能删文件，
+     *    而不是猜。只有"确实从没被引用"才退回可删除，正常失败仍然能清理干净。
+     *
+     * @param ownership 本次新建的永久帧；`null` 表示这次请求没有新建永久文件。
+     * @param publishedMessageId 这次保存要发布的消息 ID，用于失败时判断是否真的发布过。
+     */
+    internal suspend fun saveConversationWithOwnership(
+        session: ConversationSession,
+        conversationId: Uuid,
+        conversation: Conversation,
+        ownership: FrameFileOwnership?,
+        publishedMessageId: Uuid,
+    ) {
+        ownership?.markPublishing()
+        try {
+            saveConversationLocked(conversationId, conversation)
+        } catch (cancelled: CancellationException) {
+            // 不知道事务提交没有：状态停在 PUBLISHING，文件归历史（保守，宁可留孤儿）。
+            throw cancelled
+        } catch (error: Throwable) {
+            val published = session.state.value.currentMessages.any { it.id == publishedMessageId }
+            if (published) ownership?.markPublished() else ownership?.markSaveFailed()
+            throw error
+        }
+        ownership?.markPublished()
+    }
+
     // Caller holds saveMutex. Publish before the first database suspension so a
     // streaming chunk cannot be overwritten by the snapshot after exists().
     internal suspend fun saveConversationLocked(conversationId: Uuid, conversation: Conversation) {
@@ -3072,3 +3224,23 @@ class ChatService(
         return null
     }
 }
+
+/**
+ * One natural reply to a declined/ended call event.
+ *
+ * This turn has no camera capability even when it follows a video call, so historical
+ * `video_call_frames|clips|snapshots` images are removed before the request is assembled while
+ * ordinary attachments stay untouched. The historical event text itself is unchanged.
+ */
+internal fun buildVoiceCallDeclinedRequestMessages(
+    systemPrompt: String,
+    history: List<UIMessage>,
+    contextMessageSize: Int,
+    summary: String?,
+    eventDescription: String,
+): List<UIMessage> = buildConversationRequestMessages(
+    systemPrompt = systemPrompt,
+    messages = history.withoutHistoricalCameraImages(),
+    contextMessageSize = contextMessageSize,
+    summary = summary,
+) + UIMessage.user(eventDescription)

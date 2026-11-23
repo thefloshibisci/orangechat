@@ -36,7 +36,6 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.util.fastForEach
 import androidx.core.net.toUri
 import coil3.compose.AsyncImage
 import me.rerere.ai.ui.UIMessagePart
@@ -46,6 +45,7 @@ import me.rerere.hugeicons.stroke.Files02
 import me.rerere.hugeicons.stroke.MusicNote03
 import me.rerere.hugeicons.stroke.Video01
 import me.rerere.rikkahub.data.files.FilesManager
+import me.rerere.rikkahub.data.gongdu.gongduShareSummary
 import me.rerere.rikkahub.ui.hooks.ChatInputState
 import org.koin.compose.koinInject
 
@@ -76,8 +76,15 @@ internal fun MediaFileInputRow(
             .padding(horizontal = 6.dp, vertical = 6.dp)
             .horizontalScroll(rememberScrollState())
     ) {
-        state.messageContent.fastForEach { part ->
+        state.messageContent.forEachIndexed { index, part ->
             when (part) {
+                is UIMessagePart.Text -> gongduShareSummary(part.text)?.let { summary ->
+                    AttachmentChip(
+                        title = summary,
+                        leading = { AttachmentLeadingIcon(icon = HugeIcons.Files02) },
+                        onRemove = { state.removeMessagePart(index) },
+                    )
+                }
                 is UIMessagePart.Image -> {
                     AttachmentChip(
                         title = attachmentNameFromUrl(

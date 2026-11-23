@@ -52,9 +52,6 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.ClipboardManager
-import androidx.compose.ui.platform.LocalClipboardManager
-import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
@@ -74,6 +71,7 @@ import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.plugin.model.PluginConfigField
 import me.rerere.rikkahub.plugin.model.PluginFolder
 import me.rerere.rikkahub.plugin.model.PluginInfo
+import me.rerere.rikkahub.plugin.model.effectivePluginConfig
 import me.rerere.rikkahub.plugin.model.PluginToolDefinition
 import me.rerere.rikkahub.ui.components.ai.ModelSelector
 import org.koin.androidx.compose.koinViewModel
@@ -131,6 +129,8 @@ fun PluginDetailPage(
         configValues = plugin.config.toMutableMap()
     }
 
+    // Keep only explicit overrides in the draft; displaying/saving must not freeze defaults.
+    val effectiveConfig = effectivePluginConfig(plugin.manifest.config, configValues)
     val folders by viewModel.folders.collectAsState()
 
     Scaffold(
@@ -158,12 +158,6 @@ fun PluginDetailPage(
                 .verticalScroll(rememberScrollState())
         ) {
             PluginInfoSection(plugin)
-
-            // Supabase 记忆库插件的数据库初始化说明
-            if (plugin.manifest.id == "com.orangechat.plugin.supabase_memory") {
-                Spacer(modifier = Modifier.height(16.dp))
-                SupabaseSetupInstructions()
-            }
 
             Spacer(modifier = Modifier.height(24.dp))
 
@@ -223,13 +217,21 @@ fun PluginDetailPage(
                 plugin.manifest.config.forEach { field ->
                     ConfigField(
                         field = field,
-                        value = configValues[field.name],
+                        value = effectiveConfig[field.name],
                         onValueChange = { value ->
                             configValues = configValues.toMutableMap().apply {
                                 if (value != null) put(field.name, value) else remove(field.name)
                             }
                         }
                     )
+                    TextButton(
+                        enabled = configValues.containsKey(field.name),
+                        onClick = {
+                            configValues = configValues.toMutableMap().apply { remove(field.name) }
+                        }
+                    ) {
+                        Text("恢复默认")
+                    }
                 }
                 Spacer(modifier = Modifier.height(16.dp))
                 Button(
@@ -405,17 +407,11 @@ private fun StringConfigField(
     onValueChange: (JsonElement?) -> Unit,
     isPassword: Boolean = false
 ) {
-    var textValue by remember(field.name) {
-        val v = value as? JsonPrimitive
-        val d = field.default as? JsonPrimitive
-        mutableStateOf(v?.contentOrNull ?: d?.contentOrNull ?: "")
-    }
+    // JsonNull displays as empty, but remains JsonNull until the user actually edits it.
+    val textValue = (value as? JsonPrimitive)?.contentOrNull ?: ""
     OutlinedTextField(
         value = textValue,
-        onValueChange = {
-            textValue = it
-            onValueChange(if (it.isEmpty()) null else JsonPrimitive(it))
-        },
+        onValueChange = { onValueChange(JsonPrimitive(it)) },
         label = { Text(field.label) },
         placeholder = { Text(field.placeholder ?: "") },
         supportingText = field.description?.let { { Text(it) } },
@@ -432,11 +428,7 @@ private fun BooleanConfigField(
     value: JsonElement?,
     onValueChange: (JsonElement?) -> Unit
 ) {
-    var checked by remember(field.name) {
-        val v = value as? JsonPrimitive
-        val d = field.default as? JsonPrimitive
-        mutableStateOf(v?.booleanOrNull ?: d?.booleanOrNull ?: false)
-    }
+    val checked = (value as? JsonPrimitive)?.booleanOrNull ?: false
     Row(
         modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -447,7 +439,7 @@ private fun BooleanConfigField(
                 Text(text = field.description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
-        Switch(checked = checked, onCheckedChange = { checked = it; onValueChange(JsonPrimitive(it)) })
+        Switch(checked = checked, onCheckedChange = { onValueChange(JsonPrimitive(it)) })
     }
 }
 
@@ -457,11 +449,7 @@ private fun SelectConfigField(
     value: JsonElement?,
     onValueChange: (JsonElement?) -> Unit
 ) {
-    var selectedValue by remember(field.name) {
-        val v = value as? JsonPrimitive
-        val d = field.default as? JsonPrimitive
-        mutableStateOf(v?.contentOrNull ?: d?.contentOrNull ?: field.options?.firstOrNull()?.value ?: "")
-    }
+    val selectedValue = (value as? JsonPrimitive)?.contentOrNull ?: ""
     Column(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
         Text(text = field.label, style = MaterialTheme.typography.bodyLarge)
         if (field.description != null) {
@@ -516,112 +504,5 @@ private fun ModelConfigField(
                 onValueChange(JsonPrimitive(model.id.toString()))
             }
         )
-    }
-}
-
-/**
- * Supabase 记忆库插件的数据库初始化说明
- */
-@Composable
-private fun SupabaseSetupInstructions() {
-    val clipboardManager: ClipboardManager = LocalClipboardManager.current
-    var copiedIndex by remember { mutableStateOf(-1) }
-
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.primaryContainer
-        )
-    ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Text(
-                text = "数据库初始化",
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onPrimaryContainer
-            )
-            
-            Spacer(modifier = Modifier.height(8.dp))
-            
-            Text(
-                text = "首次使用需要在 Supabase 数据库中创建表。复制以下 SQL 到 Supabase Dashboard 的 SQL Editor 中执行：",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onPrimaryContainer
-            )
-            
-            Spacer(modifier = Modifier.height(12.dp))
-            
-            val sql = """create table chat_messages (
-  id uuid default gen_random_uuid() primary key,
-  assistant_id text not null,
-  conversation_id text not null,
-  role text not null,
-  content text not null,
-  created_at timestamp with time zone default now()
-);
-
-create index idx_chat_messages_conversation on chat_messages(conversation_id);
-create index idx_chat_messages_created on chat_messages(created_at);"""
-            
-            CopyableCodeBlock(
-                code = sql,
-                index = 0,
-                copiedIndex = copiedIndex,
-                onCopy = { idx, text ->
-                    clipboardManager.setText(AnnotatedString(text))
-                    copiedIndex = idx
-                }
-            )
-        }
-    }
-}
-
-/**
- * 可复制的代码块
- */
-@Composable
-private fun CopyableCodeBlock(
-    code: String,
-    index: Int,
-    copiedIndex: Int,
-    onCopy: (Int, String) -> Unit
-) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface
-        )
-    ) {
-        Column(modifier = Modifier.padding(12.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "SQL",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                
-                TextButton(
-                    onClick = { onCopy(index, code) },
-                    modifier = Modifier.padding(0.dp)
-                ) {
-                    Text(
-                        text = if (copiedIndex == index) "已复制 ✓" else "复制",
-                        style = MaterialTheme.typography.labelSmall
-                    )
-                }
-            }
-            
-            Spacer(modifier = Modifier.height(4.dp))
-            
-            Text(
-                text = code,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurface,
-                modifier = Modifier.fillMaxWidth()
-            )
-        }
     }
 }

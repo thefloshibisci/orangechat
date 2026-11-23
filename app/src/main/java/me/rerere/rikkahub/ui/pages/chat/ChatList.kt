@@ -93,6 +93,7 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.util.fastCoerceAtLeast
 import androidx.compose.ui.zIndex
@@ -112,6 +113,7 @@ import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.model.MessageNode
 import me.rerere.rikkahub.data.interaction.MessageReaction
 import me.rerere.rikkahub.data.interaction.avatarInteraction
+import me.rerere.rikkahub.data.interaction.withoutVideoCallCardMessages
 import me.rerere.rikkahub.service.ChatError
 import me.rerere.rikkahub.ui.components.message.ChatMessage
 import me.rerere.rikkahub.utils.repliedUserMessageIds
@@ -172,8 +174,11 @@ fun ChatList(
     reactionPresets: List<String> = emptyList(),
     onReact: ((UIMessage, String, String) -> Unit)? = null,
     onAvatarInteraction: ((UIMessage) -> Unit)? = null,
+    modifier: Modifier = Modifier,
+    fixedTopInset: Dp? = null,
 ) {
     AnimatedContent(
+        modifier = modifier,
         targetState = previewMode,
         label = "ChatListMode",
         transitionSpec = {
@@ -192,6 +197,7 @@ fun ChatList(
             )
         } else {
             ChatListNormal(
+                fixedTopInset = fixedTopInset,
                 innerPadding = innerPadding,
                 conversation = conversation,
                 showCompressedHistory = showCompressedHistory,
@@ -228,6 +234,7 @@ fun ChatList(
 
 @Composable
 private fun ChatListNormal(
+    fixedTopInset: Dp?,
     showCompressedHistory: Boolean,
     innerPadding: PaddingValues,
     conversation: Conversation,
@@ -341,23 +348,34 @@ private fun ChatListNormal(
             }
         }
 
+        val historySource = remember(conversation.id, conversation.messageNodes) {
+            me.rerere.rikkahub.ui.pages.voice.CallHistorySource(conversation.id, conversation.currentMessages)
+        }
         // Filter out [SKIP] messages and proactive message context markers
         val inlineCards = remember(conversation.messageNodes, showCompressedHistory) {
             me.rerere.rikkahub.data.interaction.inlineInteractionCards(
                 (if (showCompressedHistory) conversation.messageNodes else conversation.visibleMessageNodes).map { it.currentMessage })
         }
-        val displayNodes = remember(conversation.messageNodes, conversation.compressionRevision, showCompressedHistory) {
+        val videoCallCovered = remember(historySource, conversation.compressionRevision, showCompressedHistory) {
+            me.rerere.rikkahub.data.interaction.videoCallCoveredMessageIds(
+                (if (showCompressedHistory) conversation.messageNodes else conversation.visibleMessageNodes)
+                    .map { it.currentMessage }, historySource.messages, historySource.conversationId)
+        }
+        val displayNodes = remember(historySource, conversation.compressionRevision, showCompressedHistory) {
             val legacyGiftFollowups = me.rerere.rikkahub.data.interaction.legacyGiftFollowupIds(conversation.currentMessages)
             me.rerere.rikkahub.data.interaction.interactionDisplayNodes(
                 if (showCompressedHistory) conversation.messageNodes else conversation.visibleMessageNodes
-            ).filter { node ->
-                val msg = node.currentMessage
-                val text = msg.toText().trim()
-                msg.id !in legacyGiftFollowups &&
-                msg.annotations.filterIsInstance<me.rerere.ai.ui.UIMessageAnnotation.ChatInteraction>().none { it.id in inlineCards } &&
-                !(msg.role == MessageRole.ASSISTANT && text == "[SKIP]") &&
-                !(msg.role == MessageRole.USER && text.contains("[主动消息上下文]"))
-            }
+            )
+                // 视频通话卡吸收的纯文字气泡：只在显示层去掉，上下文原文一个字节都不动。
+                .withoutVideoCallCardMessages(videoCallCovered)
+                .filter { node ->
+                    val msg = node.currentMessage
+                    val text = msg.toText().trim()
+                    msg.id !in legacyGiftFollowups &&
+                    msg.annotations.filterIsInstance<me.rerere.ai.ui.UIMessageAnnotation.ChatInteraction>().none { it.id in inlineCards } &&
+                    !(msg.role == MessageRole.ASSISTANT && text == "[SKIP]") &&
+                    !(msg.role == MessageRole.USER && text.contains("[主动消息上下文]"))
+                }
         }
 
         val compressionDividers = remember(conversation, displayNodes, showCompressedHistory) {
@@ -421,15 +439,21 @@ private fun ChatListNormal(
         }
         toggleAnchor.nodes = displayNodes
 
+        val topInset = innerPadding.calculateTopPadding()
+        val viewportTop = fixedTopInset?.coerceAtMost(topInset) ?: topInset
+        // Reserve the whole header at rest, but let messages scroll behind the reading glass.
         LazyColumn(
             state = state,
-            contentPadding = PaddingValues(16.dp) + PaddingValues(bottom = 32.dp + innerPadding.calculateBottomPadding()),
+            contentPadding = PaddingValues(16.dp) + PaddingValues(
+                top = topInset - viewportTop,
+                bottom = 32.dp + innerPadding.calculateBottomPadding(),
+            ),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(12.dp),
             modifier = Modifier
                 .fillMaxSize()
                 .hazeSource(state = hazeState)
-                .padding(top = innerPadding.calculateTopPadding()),
+                .padding(top = viewportTop),
         ) {
             itemsIndexed(
                 items = displayNodes,
@@ -448,69 +472,74 @@ private fun ChatListNormal(
                         selectedKeys = selectedItems,
                         enabled = selecting,
                     ) {
-                        ChatMessage(
-                            node = node,
-                            inlineCards = inlineCards,
-                            conversationId = conversation.id,
-                            hasAssistantResponse = node.currentMessage.id in repliedUserIds,
-                            hasUserRead = node.currentMessage.id in readAssistantIds,
-                            onQuote = onQuote,
-                            reactions = reactionsByMessageId[node.currentMessage.id.toString()].orEmpty(),
-                            reactionPresets = reactionPresets,
-                            onReact = if (interactionAssistant?.enableMessageReactions == true &&
-                                !(loading && index == displayNodes.lastIndex)
-                            ) {
-                                onReact?.let { callback ->
-                                    { emoji, quote -> callback(node.currentMessage, emoji, quote) }
-                                }
-                            } else {
-                                null
-                            },
-                            onAvatarInteraction = if (!loading && interactionAssistant?.enableAvatarInteractions == true) {
-                                onAvatarInteraction
-                            } else {
-                                null
-                            },
-                            avatarPulse = if (node.currentMessage.id.toString() == avatarTargetId) {
-                                avatarEvent?.id?.toString()
-                            } else {
-                                null
-                            },
-                            readOnly = node.id in compressedNodeIds,
-                            model = node.currentMessage.modelId?.let { settings.findModelById(it) },
-                            assistant = interactionAssistant,
-                            loading = loading && index == displayNodes.lastIndex,
-                            onRegenerate = {
-                                onRegenerate(node.currentMessage)
-                            },
-                            onEdit = {
-                                onEdit(node.currentMessage)
-                            },
-                            onFork = {
-                                onForkMessage(node.currentMessage)
-                            },
-                            onDelete = {
-                                onDelete(node.currentMessage)
-                            },
-                            onShare = {
-                                selecting = true  // 使用 CoroutineScope 延迟状态更新
-                                selectedItems.clear()
-                                selectedItems.addAll(conversation.messageNodes.map { it.id }
-                                    .subList(0, conversation.messageNodes.indexOf(node) + 1))
-                            },
-                            onUpdate = {
-                                onUpdateMessage(it)
-                            },
-                            isFavorite = node.isFavorite,
-                            onToggleFavorite = {
-                                onToggleFavorite?.invoke(node)
-                            },
-                            onTranslate = onTranslate,
-                            onClearTranslation = onClearTranslation,
-                            onToolApproval = onToolApproval,
-                            onToolAnswer = onToolAnswer,
-                            lastMessage = index == displayNodes.lastIndex,
-                        )
+                        androidx.compose.runtime.CompositionLocalProvider(
+                            me.rerere.rikkahub.ui.pages.voice.LocalCallHistorySource provides historySource
+                        ) {
+                            ChatMessage(
+                                node = node,
+                                hideVideoCallTranscriptText = node.currentMessage.id in videoCallCovered,
+                                inlineCards = inlineCards,
+                                conversationId = conversation.id,
+                                hasAssistantResponse = node.currentMessage.id in repliedUserIds,
+                                hasUserRead = node.currentMessage.id in readAssistantIds,
+                                onQuote = onQuote,
+                                reactions = reactionsByMessageId[node.currentMessage.id.toString()].orEmpty(),
+                                reactionPresets = reactionPresets,
+                                onReact = if (interactionAssistant?.enableMessageReactions == true &&
+                                    !(loading && index == displayNodes.lastIndex)
+                                ) {
+                                    onReact?.let { callback ->
+                                        { emoji, quote -> callback(node.currentMessage, emoji, quote) }
+                                    }
+                                } else {
+                                    null
+                                },
+                                onAvatarInteraction = if (!loading && interactionAssistant?.enableAvatarInteractions == true) {
+                                    onAvatarInteraction
+                                } else {
+                                    null
+                                },
+                                avatarPulse = if (node.currentMessage.id.toString() == avatarTargetId) {
+                                    avatarEvent?.id?.toString()
+                                } else {
+                                    null
+                                },
+                                readOnly = node.id in compressedNodeIds,
+                                model = node.currentMessage.modelId?.let { settings.findModelById(it) },
+                                assistant = interactionAssistant,
+                                loading = loading && index == displayNodes.lastIndex,
+                                onRegenerate = {
+                                    onRegenerate(node.currentMessage)
+                                },
+                                onEdit = {
+                                    onEdit(node.currentMessage)
+                                },
+                                onFork = {
+                                    onForkMessage(node.currentMessage)
+                                },
+                                onDelete = {
+                                    onDelete(node.currentMessage)
+                                },
+                                onShare = {
+                                    selecting = true  // 使用 CoroutineScope 延迟状态更新
+                                    selectedItems.clear()
+                                    selectedItems.addAll(conversation.messageNodes.map { it.id }
+                                        .subList(0, conversation.messageNodes.indexOf(node) + 1))
+                                },
+                                onUpdate = {
+                                    onUpdateMessage(it)
+                                },
+                                isFavorite = node.isFavorite,
+                                onToggleFavorite = {
+                                    onToggleFavorite?.invoke(node)
+                                },
+                                onTranslate = onTranslate,
+                                onClearTranslation = onClearTranslation,
+                                onToolApproval = onToolApproval,
+                                onToolAnswer = onToolAnswer,
+                                lastMessage = index == displayNodes.lastIndex,
+                            )
+                        }
                     }
                     compressionDividers[node.id].orEmpty().forEach { text ->
                         CompressionHistoryDivider(text)

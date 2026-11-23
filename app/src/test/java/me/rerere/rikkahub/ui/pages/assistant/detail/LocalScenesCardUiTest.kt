@@ -58,10 +58,12 @@ class LocalScenesCardUiTest {
             compose.onNodeWithText("标题").performTextInput("茶的口味")
             compose.onNodeWithText("记忆内容").performTextInput("喜欢清淡的茶")
             compose.onNodeWithText("保存").performClick()
+            waitForEditorToClose()
             waitFor("茶的口味")
             compose.onNodeWithText("茶的口味").performClick()
             compose.onNodeWithText("记忆内容").performTextReplacement("喜欢清淡的绿茶")
             compose.onNodeWithText("保存").performClick()
+            waitForEditorToClose()
             waitFor("喜欢清淡的绿茶")
             compose.onNodeWithText("茶的口味").performClick()
             compose.onNodeWithText("查看修订").performScrollTo().performClick()
@@ -83,6 +85,11 @@ class LocalScenesCardUiTest {
             }
             assertTrue(runBlocking { repo.search(owner).isEmpty() })
         } finally { db.close() }
+    }
+
+    private fun waitForEditorToClose() {
+        // The edited text is also present before the asynchronous save completes.
+        compose.waitUntil(10_000) { compose.onAllNodesWithText("记忆内容").fetchSemanticsNodes().isEmpty() }
     }
 
     private fun waitFor(text: String) {
