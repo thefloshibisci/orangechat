@@ -69,6 +69,7 @@ import me.rerere.ai.core.Tool
 import me.rerere.ai.provider.Model
 import me.rerere.ai.provider.ModelAbility
 import me.rerere.rikkahub.data.service.MemoryBankService
+import me.rerere.rikkahub.data.service.acceptsWindow
 import me.rerere.ai.provider.ProviderManager
 import me.rerere.ai.provider.TextGenerationParams
 import me.rerere.ai.ui.ToolApprovalState
@@ -102,6 +103,21 @@ import me.rerere.rikkahub.data.ai.GenerationChunk
 import me.rerere.rikkahub.data.ai.GenerationHandler
 import me.rerere.rikkahub.data.ai.mcp.McpManager
 import me.rerere.rikkahub.data.ai.tools.LocalTools
+import me.rerere.rikkahub.data.ai.tools.LocalMomentsBudgetRegistry
+import me.rerere.rikkahub.data.ai.tools.LocalMomentsChatDraftAccess
+import me.rerere.rikkahub.data.ai.tools.LocalMomentsChatDraftAccessSnapshot
+import me.rerere.rikkahub.data.ai.tools.LocalMomentsChatDraftContract
+import me.rerere.rikkahub.data.ai.tools.LocalMomentsChatDraftIdentity
+import me.rerere.rikkahub.data.ai.tools.LocalMomentsChatDraftInstruction
+import me.rerere.rikkahub.data.ai.tools.LocalMomentsChatDraftPolicy
+import me.rerere.rikkahub.data.ai.tools.LocalMomentsChatSelection
+import me.rerere.rikkahub.data.ai.tools.LocalMomentsChatSelectionPrepareResult
+import me.rerere.rikkahub.data.ai.tools.LocalMomentsChatSelectionStore
+import me.rerere.rikkahub.data.ai.tools.buildLocalMomentsChatDraftTool
+import me.rerere.rikkahub.plugin.localdata.LocalDataApi
+import me.rerere.rikkahub.plugin.localtasks.LocalTaskIds
+import me.rerere.rikkahub.plugin.localtasks.LocalTaskSettingsStore
+import me.rerere.rikkahub.plugin.localtasks.SharedPreferencesLocalTaskStore
 import me.rerere.rikkahub.data.ai.tools.SystemTools
 import me.rerere.rikkahub.data.ai.tools.ToolNaming
 import me.rerere.rikkahub.data.ai.tools.createSearchTools
@@ -187,6 +203,32 @@ import me.rerere.rikkahub.data.ai.UsageTag
 
 private const val TAG = "ChatService"
 
+/**
+ * R2-3: the tool context must describe the model that will actually run this turn, not the
+ * assistant's default. `getChatModelOf` resolves the explicit conversation override first and
+ * falls back to the assistant/global model; doing the same lookup here keeps `modelCanSeeImages`
+ * in sync with the request provider + model. Callers that cannot resolve a turn (headless
+ * workflow / sub-agent) keep the conservative false default in [ToolInvocationContext].
+ *
+ * Internal + Android-free so the conversation-override regression is JVM-testable.
+ */
+internal fun buildToolInvocationContext(
+    settings: me.rerere.rikkahub.data.datastore.Settings,
+    assistant: Assistant,
+    conversationId: Uuid,
+    conversation: Conversation,
+    headless: Boolean,
+): me.rerere.rikkahub.data.ai.tools.ToolInvocationContext {
+    val actualModel = settings.getChatModelOf(conversation)
+    return me.rerere.rikkahub.data.ai.tools.ToolInvocationContext(
+        callerAssistantId = assistant.id.toString(),
+        callerConversationId = conversationId.toString(),
+        isHeadless = headless,
+        modelCanSeeImages = actualModel?.inputModalities
+            ?.contains(me.rerere.ai.provider.Modality.IMAGE) == true,
+    )
+}
+
 data class ChatError(
     val id: Uuid = Uuid.random(),
     val title: String? = null,
@@ -251,6 +293,10 @@ class ChatService(
 
     // 统一会话管理
     private val sessions = ConcurrentHashMap<Uuid, ConversationSession>()
+    // R2-4: LocalMoments read budget is scoped to the user turn (conversation + newest user
+    // message), not to one buildAvailableTools call, so an approval-resume rebuild reuses it.
+    // Owned here (one registry per service/process) rather than a global singleton.
+    private val localMomentsTurnBudgets = LocalMomentsBudgetRegistry()
     private data class QueueGenerationOwner(val message: QueuedMessage, val job: Job)
     private val activeQueueGenerations = ConcurrentHashMap<Uuid, QueueGenerationOwner>()
     private val deletedConversationIds = ConcurrentHashMap.newKeySet<Uuid>()
@@ -367,6 +413,7 @@ class ChatService(
         }
         sessions.values.forEach { it.cleanup() }
         sessions.clear()
+        localMomentsTurnBudgets.clear()
     }
 
     // ---- Session 管理 ----
@@ -605,6 +652,7 @@ class ChatService(
 
     fun removeQueuedMessage(conversationId: Uuid, messageId: Uuid) {
         sessions[conversationId]?.messageQueue?.remove(messageId)
+        LocalMomentsChatSelectionStore.clearIfAnchor(conversationId.toString(), messageId.toString())
         processMessageQueue(conversationId)
     }
 
@@ -676,6 +724,7 @@ class ChatService(
          * 聊天历史里**不会**出现 audio part，所以下一轮不会再 base64 一次旧录音。
          */
         transientAudio: me.rerere.rikkahub.data.video.TransientAudioClip? = null,
+        newMessageId: Uuid? = null,
     ): QueuedMessage? {
         if ((content.isEmptyInputMessage() && existingMessageId == null) || conversationId in deletedConversationIds) return null
         val session = getOrCreateSession(conversationId)
@@ -697,6 +746,7 @@ class ChatService(
                 ownedImageUrls = ownedImageUrls,
                 requestToken = requestToken,
                 transientAudio = transientAudio,
+                newMessageId = newMessageId,
             )
         } ?: return null
         queued.completion.invokeOnCompletion { cause ->
@@ -724,6 +774,168 @@ class ChatService(
         enableTools: Boolean = true,
         interaction: UIMessageAnnotation.AvatarInteraction? = null,
     ): Job? = submitMessage(conversationId, content, answer, transientSystemPrompt, enableTools, interaction)?.completion
+
+    /**
+     * User entry: "let the assistant organize a Moments draft from my selection".
+     *
+     * It validates the host-owned selection, binds it to the exact user instruction message this
+     * call enqueues (one-shot anchor), and submits a *real user message* through the normal queue.
+     * The model then decides whether to call `moments_chat_draft`; the native tool approval stays
+     * the pre-write gate. No draft is written here and nothing is published.
+     */
+    fun prepareMomentsChatSelection(
+        conversation: Conversation,
+        selectedMessages: List<UIMessage>,
+        includeImages: Boolean = false,
+    ): LocalMomentsChatSelectionPrepareResult {
+        val conversationId = conversation.id
+        if (!conversation.messageNodesLoaded) {
+            return LocalMomentsChatSelectionPrepareResult.Rejected("消息尚未完整加载，请重新打开会话后操作")
+        }
+        val requestedIds = selectedMessages.map { it.id.toString() }.distinct()
+        if (requestedIds.isEmpty()) {
+            return LocalMomentsChatSelectionPrepareResult.Rejected("请先选择要整理的消息")
+        }
+        if (requestedIds.size > LocalDataApi.MAX_CHAT_MESSAGES) {
+            return LocalMomentsChatSelectionPrepareResult.Rejected(
+                "一张朋友圈卡片最多 ${LocalDataApi.MAX_CHAT_MESSAGES} 条消息，请减少选择后重试",
+            )
+        }
+        // Re-read from the authoritative conversation instead of trusting the UI list.
+        val currentMessages = conversation.currentMessages
+        val byId = currentMessages.associateBy { it.id.toString() }
+        val ordered = requestedIds.mapNotNull { byId[it] }
+        if (ordered.size != requestedIds.size) {
+            return LocalMomentsChatSelectionPrepareResult.Rejected("选中的消息已变化，请重新选择")
+        }
+        if (ordered.any { it.role != MessageRole.USER && it.role != MessageRole.ASSISTANT }) {
+            return LocalMomentsChatSelectionPrepareResult.Rejected("只能整理你和助手的聊天消息")
+        }
+        if (ordered.none { message ->
+                message.parts.any { part ->
+                    (part is UIMessagePart.Text && part.text.isNotBlank()) ||
+                        (part is UIMessagePart.Image && part.url.isNotBlank())
+                }
+            }
+        ) {
+            return LocalMomentsChatSelectionPrepareResult.Rejected(
+                "选中的消息没有可写入的正文或图片；系统内容、思考过程和工具结果不会进入卡片",
+            )
+        }
+
+        val settings = settingsStore.settingsFlow.value
+        val assistant = settings.getAssistantOf(conversation)
+        val model = settings.getChatModelOf(conversation)
+            ?: return LocalMomentsChatSelectionPrepareResult.Rejected("请先为会话选择可用的聊天模型")
+        if (!model.abilities.contains(ModelAbility.TOOL)) {
+            return LocalMomentsChatSelectionPrepareResult.Rejected(
+                "当前模型不支持工具调用，无法让助手整理朋友圈草稿",
+            )
+        }
+        val pluginManager = localTools.hostPluginManager
+        if (pluginManager.getPlugin(LocalMomentsChatDraftContract.PLUGIN_ID) == null &&
+            pluginManager.isLoading.value
+        ) {
+            return LocalMomentsChatSelectionPrepareResult.Rejected("插件列表正在加载，请稍后重试")
+        }
+        val access = momentsChatDraftAccess(
+            conversationId = conversationId,
+            assistantId = assistant.id.toString(),
+            includeImages = includeImages,
+        )
+        access.denial?.let {
+            return LocalMomentsChatSelectionPrepareResult.Rejected(it.message)
+        }
+        if (!access.canUseImages && ordered.none { message ->
+                message.parts.any { part -> part is UIMessagePart.Text && part.text.isNotBlank() }
+            }
+        ) {
+            return LocalMomentsChatSelectionPrepareResult.Rejected(
+                "选中的消息只有图片，但当前未授权图片草稿；请开启图片或改选含正文的消息",
+            )
+        }
+
+        val anchor = Uuid.random()
+        val selection = LocalMomentsChatSelection(
+            conversationId = conversationId.toString(),
+            assistantId = assistant.id.toString(),
+            anchorMessageId = anchor.toString(),
+            title = conversation.title,
+            messages = currentMessages,
+            selectedMessageIds = requestedIds,
+            includeImagesRequested = includeImages,
+            includeImages = access.canUseImages,
+            identity = LocalMomentsChatDraftIdentity(
+                userName = settings.displaySetting.userNickname.ifBlank { "我" },
+                assistantName = assistant.name.ifBlank { "助手" },
+                userAvatar = settings.displaySetting.userAvatar,
+                assistantAvatar = assistant.avatar,
+            ),
+        )
+        val prepared = LocalMomentsChatSelectionStore.prepare(selection)
+        if (prepared is LocalMomentsChatSelectionPrepareResult.Rejected) return prepared
+        val queued = submitMessage(
+            conversationId = conversationId,
+            content = listOf(
+                UIMessagePart.Text(
+                    LocalMomentsChatDraftInstruction.text(
+                        messageCount = ordered.size,
+                        includeImages = access.canUseImages,
+                    ),
+                ),
+            ),
+            newMessageId = anchor,
+        )
+        if (queued == null) {
+            LocalMomentsChatSelectionStore.clear(conversationId.toString())
+            return LocalMomentsChatSelectionPrepareResult.Rejected(
+                "整理请求没有进入发送队列，请稍后重试；未写入任何草稿",
+            )
+        }
+        return LocalMomentsChatSelectionPrepareResult.Prepared(
+            anchorMessageId = anchor.toString(),
+            messageCount = ordered.size,
+            imageOmissionReason = access.imageOmissionReason,
+        )
+    }
+
+    /** Host-side preflight so a click fails with a readable reason before anything is sent. */
+    private fun momentsChatDraftAccess(
+        conversationId: Uuid,
+        assistantId: String,
+        includeImages: Boolean,
+    ): LocalMomentsChatDraftAccess {
+        val pluginManager = localTools.hostPluginManager
+        val plugin = pluginManager.getPlugin(LocalMomentsChatDraftContract.PLUGIN_ID)
+        val approved = context.getSharedPreferences(
+            LocalMomentsChatDraftContract.HOST_GRANT_PREFERENCES,
+            Context.MODE_PRIVATE,
+        ).getStringSet(LocalMomentsChatDraftContract.PLUGIN_ID, emptySet()).orEmpty()
+        val taskSettings = LocalTaskSettingsStore(
+            SharedPreferencesLocalTaskStore(
+                context,
+                LocalTaskIds.storeName(LocalMomentsChatDraftContract.PLUGIN_ID),
+            ),
+        ).get()
+        return LocalMomentsChatDraftPolicy.evaluate(
+            LocalMomentsChatDraftAccessSnapshot(
+                pluginInstalled = plugin != null,
+                pluginEnabled = plugin?.isEnabled == true,
+                pluginLoadError = plugin?.loadError,
+                grantedCapabilities = plugin?.manifest?.permissions?.toSet().orEmpty()
+                    .intersect(approved),
+                taskSettings = taskSettings,
+                assistantId = assistantId,
+                turnAssistantId = assistantId,
+                assistantKnown = true,
+                headless = false,
+                conversationId = conversationId.toString(),
+                turnConversationId = conversationId.toString(),
+                userSelectionAvailable = true,
+                imagesRequested = includeImages,
+            ),
+        )
+    }
 
     private fun processMessageQueue(conversationId: Uuid) {
         val session = sessions[conversationId] ?: return
@@ -759,7 +971,10 @@ class ChatService(
         // 避免 AI 正在聊天时主动器到点，也避免长回复吃掉休眠间隔。
         val currentProactiveSetting = settingsStore.settingsFlow.value.proactiveMessageSetting
         if (currentProactiveSetting.enabled) {
-            if (currentProactiveSetting.allowAiScheduledWakeup &&
+            me.rerere.rikkahub.data.service.ProactiveMessageService.resetConversationSlot(context, conversationId.toString())
+            if (currentProactiveSetting.assistantConfigs.orEmpty().any {
+                    it.enabled && it.conversationId != conversationId.toString()
+                } || currentProactiveSetting.allowAiScheduledWakeup &&
                 me.rerere.rikkahub.data.service.ProactiveWakeupStore(context).all().isNotEmpty()
             ) {
                 // Other conversations keep their appointments while this one is chatting.
@@ -941,6 +1156,9 @@ class ChatService(
                 if (coroutineContext.isActive && !session.messageQueue.hasPendingOrInFlight) {
                     val proactiveSetting = settingsStore.settingsFlow.value.proactiveMessageSetting
                     if (proactiveSetting.enabled) {
+                        // Other participants kept their alarms while this request ran. Start
+                        // this conversation's full idle interval only after its queue is done.
+                        me.rerere.rikkahub.data.service.ProactiveMessageService.resetConversationSlot(context, conversationId.toString())
                         me.rerere.rikkahub.data.service.ProactiveMessageService.resetTimer(context, proactiveSetting)
                     }
                 }
@@ -1210,6 +1428,61 @@ class ChatService(
             )
             updateConversation(conversationId, updated)
             saveConversationLocked(conversationId, updated)
+        }
+    }
+
+    /** Isolated background output enters chat only at this guarded, non-suspending publication point.
+     * Both deletion and normal user writes share the session lock. Never recreate a deleted window. */
+    internal suspend fun publishProactiveMessages(
+        conversationId: Uuid,
+        assistantId: Uuid,
+        anchorId: Uuid,
+        task: me.rerere.rikkahub.data.service.ProactiveTask,
+        messages: List<UIMessage>,
+        executor: me.rerere.rikkahub.data.service.ProactiveTaskExecutor,
+    ): Boolean {
+        val session = getOrCreateSession(conversationId)
+        return session.withStateLock {
+            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+            if (conversationId in deletedConversationIds || session.isDeleted) return@withStateLock false
+            if (!conversationRepo.existsConversationById(conversationId)) return@withStateLock false
+            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+            session.requireActive()
+            if (conversationId in deletedConversationIds) return@withStateLock false
+            val current = session.state.value
+            if (current.assistantId != assistantId ||
+                current.currentMessages.lastOrNull { it.role == MessageRole.USER }?.id != anchorId ||
+                messages.isEmpty() || messages.any { message ->
+                    message.role != MessageRole.ASSISTANT || current.messageNodes.any { node ->
+                        node.messages.any { it.id == message.id }
+                    }
+                }
+            ) return@withStateLock false
+            if (!executor.prepareCommit(task, messages)) return@withStateLock false
+            val committing = executor.startCommit(task) ?: return@withStateLock false
+            val payload = executor.decodeCommitPayload(committing) ?: run {
+                executor.store.abandonCommit(task.taskId,
+                    me.rerere.rikkahub.data.service.ProactiveTaskStatus.Failed, "invalid_commit_payload")
+                return@withStateLock false
+            }
+            val saved = withContext(NonCancellable) {
+                conversationRepo.appendProactiveMessagesIdempotently(conversationId, assistantId, anchorId, payload)
+            } ?: run {
+                // A null result is a definitive guard rejection, not an ambiguous database failure.
+                // Retaining CommitPending here used to lock out every subsequent proactive task.
+                executor.store.abandonCommit(task.taskId,
+                    me.rerere.rikkahub.data.service.ProactiveTaskStatus.Interrupted, "publication_guard_changed")
+                return@withStateLock false
+            }
+            // Room already committed. A ledger receipt failure must not hide the saved message or
+            // cause regeneration: keep its payload for exact-ID reconciliation on the next check.
+            runCatching { executor.markCommitSent(committing) }.onFailure {
+                Log.w(TAG, "Proactive message committed; ledger receipt needs reconciliation", it)
+            }
+            updateConversation(conversationId, saved)
+            session.persistedConversation = saved
+            session.messageJournal.invalidate()
+            true
         }
     }
 
@@ -1652,6 +1925,9 @@ class ChatService(
             val availableTools = if (enableTools) buildAvailableTools(
                 settings = settings, assistant = assistant, conversationId = conversationId,
                 conversation = conversation, allowAppUsage = true,
+                // Scope LocalMoments budget to the user message this request answers; an older
+                // assistant regeneration must not borrow a newer user turn's budget.
+                momentsTurnAnchorUserId = latestUserMessage?.id,
             ) else emptyList()
             val paymentToolsUnavailableReason = me.rerere.rikkahub.data.interaction.paymentToolUnavailableReason(
                 model, model.findProvider(settings.providers))
@@ -1955,14 +2231,22 @@ class ChatService(
         assistant: Assistant,
         conversation: Conversation,
     ): List<Tool> {
-        val setting = settings.proactiveMessageSetting
-        if (!setting.enabled || !setting.allowAiScheduledWakeup) return emptyList()
+        fun canSchedule(current: me.rerere.rikkahub.data.datastore.Settings): Boolean {
+            val setting = current.proactiveMessageSetting
+            if (!setting.enabled || !setting.allowAiScheduledWakeup) return false
+            val roleId = assistant.id.toString()
+            val participants = setting.assistantConfigs
+                ?: return roleId == setting.assistantId.ifBlank { current.getCurrentAssistant().id.toString() }
+            return participants.singleOrNull { it.assistantId == roleId }
+                ?.acceptsWindow(conversation.id.toString(), appointment = true) == true
+        }
+        if (!canSchedule(settings)) return emptyList()
         val anchor = conversation.currentMessages.lastOrNull { it.role == MessageRole.USER }?.id
         return listOf(me.rerere.rikkahub.data.ai.tools.buildProactiveWakeupTool { time, reason ->
             kotlinx.coroutines.currentCoroutineContext().ensureActive()
             val current = settingsStore.settingsFlow.first()
-            check(current.proactiveMessageSetting.enabled && current.proactiveMessageSetting.allowAiScheduledWakeup) {
-                "AI scheduled wakeup is disabled"
+            check(canSchedule(current)) {
+                "此角色或会话未启用 AI 约定唤醒"
             }
             check(current.assistants.any { it.id == assistant.id }) { "Assistant no longer exists" }
             val session = getOrCreateSession(conversation.id)
@@ -2025,25 +2309,64 @@ class ChatService(
         conversationId: Uuid,
         conversation: Conversation,
         allowAppUsage: Boolean,
+        allowImageGeneration: Boolean = false,
+        headless: Boolean = false,
+        /**
+         * The user message this request answers. It can differ from the conversation's newest
+         * USER message when an older assistant reply is regenerated, and it is the LocalMoments
+         * budget anchor. Null falls back to the newest USER message in [conversation].
+         */
+        momentsTurnAnchorUserId: Uuid? = null,
     ): List<Tool> = buildList {
         addAll(buildProactiveWakeupTools(settings, assistant, conversation))
         addAll(me.rerere.rikkahub.data.gongdu.gongduTools(settings, assistant.id))
-        val invocationContext = me.rerere.rikkahub.data.ai.tools.ToolInvocationContext(
-            callerAssistantId = assistant.id.toString(),
-            callerConversationId = conversationId.toString(),
+        if (settings.enableWebSearch) {
+            addAll(createSearchTools(settings))
+        }
+        val invocationContext = buildToolInvocationContext(
+            settings = settings,
+            assistant = assistant,
+            conversationId = conversationId,
+            conversation = conversation,
+            headless = headless,
         )
         addAll(me.rerere.rikkahub.data.listen.listenTools(invocationContext))
         addAll(me.rerere.rikkahub.data.reading.readingTools(invocationContext))
-        if (settings.enableWebSearch) {
-            addAll(createSearchTools(settings))
+        // Scope the LocalMoments read budget to this user turn. `conversation` may be rebuilt after
+        // a tool approval, but the same user-message anchor is supplied again, so the tools receive
+        // the same budget and the per-turn limits cannot reset mid-task. A headless rebuild has no
+        // user-facing moments tools at all, so it gets no registry entry.
+        val momentsBudgetAnchorUserId = if (headless) {
+            null
+        } else {
+            (momentsTurnAnchorUserId
+                ?: conversation.currentMessages.lastOrNull { it.role == MessageRole.USER }?.id)?.toString()
         }
         addAll(
             localTools.getTools(
                 assistant.localTools.filterNot { it is me.rerere.rikkahub.data.ai.tools.LocalToolOption.RequestVoiceCall },
                 invocationContext,
+                momentsBudgetRegistry = localMomentsTurnBudgets,
+                momentsBudgetAnchorUserId = momentsBudgetAnchorUserId,
             )
         )
-        add(localTools.imageGenerationTool())
+        // The user's explicit one-shot selection for this turn. The store only returns a turn while
+        // the conversation, the assistant and the newest user message still match the anchor, so a
+        // selection can never leak into another conversation or be replayed in a later turn.
+        addAll(
+            buildLocalMomentsChatDraftTool(
+                context = context,
+                settingsStore = settingsStore,
+                pluginManager = localTools.hostPluginManager,
+                invocationContext = invocationContext,
+                turn = LocalMomentsChatSelectionStore.turnFor(
+                    conversationId = conversationId.toString(),
+                    assistantId = assistant.id.toString(),
+                    messages = conversation.currentMessages,
+                ),
+            ),
+        )
+        if (allowImageGeneration) add(localTools.imageGenerationTool())
 
         val systemToolsOptions = settings.systemToolsSetting.getEnabledOptions().toMutableSet()
         if (!allowAppUsage) {
@@ -2553,6 +2876,8 @@ class ChatService(
         conversationLifecycleLocks.getOrPut(conversation.id) { Mutex() }.withLock {
             val session = getOrCreateSession(conversation.id)
             deletedConversationIds.add(conversation.id)
+            LocalMomentsChatSelectionStore.clear(conversation.id.toString())
+            localMomentsTurnBudgets.remove(conversation.id.toString())
             var deletedSnapshot = conversation
             try {
                 session.deleteAndAwait {
@@ -3135,6 +3460,8 @@ class ChatService(
         stopGenerationInternal(conversationId, requestId = null, pauseQueue = true)
 
     private suspend fun stopGenerationInternal(conversationId: Uuid, requestId: Uuid?, pauseQueue: Boolean) {
+        // A cancelled turn can never be approved for writing, so retire the one-shot selection.
+        LocalMomentsChatSelectionStore.clear(conversationId.toString())
         val session = sessions[conversationId] ?: return
         session.stopQueuedGeneration(
             pauseQueue = pauseQueue,

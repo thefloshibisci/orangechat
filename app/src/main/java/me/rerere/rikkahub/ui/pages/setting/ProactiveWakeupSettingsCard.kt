@@ -93,6 +93,26 @@ internal fun ProactiveWakeupSettingsCard(
             confirmButton = {
                 TextButton(onClick = { selectedRecord = null }) { Text("关闭") }
             },
+            dismissButton = {
+                if (record.status != ProactiveWakeupStatus.Pending && record.status != ProactiveWakeupStatus.Running) {
+                    TextButton(onClick = {
+                        scope.launch {
+                            try {
+                                records = withContext(Dispatchers.IO) {
+                                    store.deleteHistory(record.appointment.token)
+                                    store.snapshot()
+                                }
+                                selectedRecord = null
+                            } catch (cancelled: CancellationException) {
+                                throw cancelled
+                            } catch (_: Exception) {
+                                selectedRecord = null
+                                error = "删除记录失败"
+                            }
+                        }
+                    }) { Text("删除记录") }
+                }
+            },
         )
     }
     val items = buildCardGroupItems {

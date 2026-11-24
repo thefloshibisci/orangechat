@@ -176,7 +176,7 @@ class GongduReadUiTest {
             runBlocking {
                 repository.importParsed(book)
                 appSettings.settingsFlow.value = appSettings.settingsFlow.value.copy(
-                    assistants = listOf(Assistant(id = conversation.assistantId, name = "小林")))
+                    assistants = listOf(Assistant(id = conversation.assistantId, name = "南枳")))
                 conversations.insertConversation(conversation)
             }
             compose.setContent {
@@ -197,9 +197,9 @@ class GongduReadUiTest {
             compose.onNodeWithText("备份与恢复").assertIsDisplayed()
             snapshot("read-room-quark-shelf-menu")
             compose.onNodeWithText("阅读统计").performClick()
-            compose.waitUntil(10_000) { compose.onAllNodesWithText("看小林的·全部书籍").fetchSemanticsNodes().isNotEmpty() }
-            compose.onNodeWithText("看小林的·全部书籍").performClick()
-            compose.onNodeWithText("小林的阅读记录").assertIsDisplayed()
+            compose.waitUntil(10_000) { compose.onAllNodesWithText("看南枳的·全部书籍").fetchSemanticsNodes().isNotEmpty() }
+            compose.onNodeWithText("看南枳的·全部书籍").performClick()
+            compose.onNodeWithText("南枳的阅读记录").assertIsDisplayed()
             compose.onNodeWithText("看我的·全部书籍").assertIsDisplayed()
             compose.onNodeWithContentDescription("关闭阅读统计").performClick()
             compose.waitForIdle()

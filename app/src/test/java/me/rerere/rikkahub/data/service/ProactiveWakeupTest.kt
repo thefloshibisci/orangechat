@@ -65,7 +65,7 @@ class ProactiveWakeupTest {
         } finally { pool.shutdownNow() }
     }
 
-    @Test fun `appointments override interval and wait until exact time`() {
+    @Test fun `earliest appointment or ordinary check determines alarm`() {
         val late = appointment()
         val early = appointment("chat-b", "2026-10-28T19:01:00+08:00")
         assertEquals(early, nextProactiveWakeup(listOf(late, early), setting))
@@ -183,6 +183,59 @@ class ProactiveWakeupTest {
         clock += 60_000
         val next = build().description
         assertEquals(first, next)
+    }
+
+    @Test fun `scoped participants all awaiting an appointment never schedule an early fallback`() {
+        val appt = appointment("chat-a", "2026-10-28T20:30:00+08:00")
+        // Scoped mode, no scopedDue, and a future appointment -> unbounded (no random wake).
+        assertEquals(Long.MAX_VALUE, proactiveFallbackTime(
+            scopedMode = true, scopedDue = null, legacyDurableDue = null,
+            delayOverrideMinutes = null, hasAppointment = true, now = now,
+        ) { error("fallback must not run while appointment clamps the trigger") })
+        // The appointment still clamps the unbounded fallback to its own active-hours time.
+        assertEquals(appt.timeMillis, proactiveTriggerTime(appt, Long.MAX_VALUE, setting, now, zone))
+    }
+
+    @Test fun `peer due slot wakes before another assistant future appointment`() {
+        val appointment = appointment(at = "2026-10-29T01:30:00+08:00")
+        val peerDue = now + 60_000
+        val appointmentAlarm = proactiveTriggerTime(appointment, peerDue, setting, now, zone)
+        assertEquals(peerDue, minOf(appointmentAlarm, nextProactiveActiveTime(setting, peerDue, zone)))
+        assertEquals(time("2026-10-29T01:30:00+08:00"), appointmentAlarm)
+    }
+
+    @Test fun `fallback chain is unchanged outside the all-appointed scoped case`() {
+        val defaultDue = now + 90 * 60_000L
+        // Scoped mode without an appointment still produces a concrete default.
+        assertEquals(defaultDue, proactiveFallbackTime(
+            scopedMode = true, scopedDue = null, legacyDurableDue = null,
+            delayOverrideMinutes = null, hasAppointment = false, now = now,
+        ) { defaultDue })
+        // A scopedDue always wins.
+        assertEquals(now + 5_000, proactiveFallbackTime(
+            scopedMode = true, scopedDue = now + 5_000, legacyDurableDue = now + 999,
+            delayOverrideMinutes = 7, hasAppointment = true, now = now,
+        ) { defaultDue })
+        // Legacy (non-scoped) mode uses a future durable slot before the override.
+        assertEquals(now + 60_000, proactiveFallbackTime(
+            scopedMode = false, scopedDue = null, legacyDurableDue = now + 60_000,
+            delayOverrideMinutes = 7, hasAppointment = false, now = now,
+        ) { defaultDue })
+        // Legacy durable slot is ignored once scoped, and an expired durable slot is skipped.
+        assertEquals(now + 7 * 60_000L, proactiveFallbackTime(
+            scopedMode = true, scopedDue = null, legacyDurableDue = now + 60_000,
+            delayOverrideMinutes = 7, hasAppointment = false, now = now,
+        ) { defaultDue })
+        assertEquals(now + 7 * 60_000L, proactiveFallbackTime(
+            scopedMode = false, scopedDue = null, legacyDurableDue = now - 60_000,
+            delayOverrideMinutes = 7, hasAppointment = false, now = now,
+        ) { defaultDue })
+    }
+
+    @Test fun `unbounded fallback without an appointment is rejected`() {
+        assertTrue(runCatching {
+            proactiveTriggerTime(null, Long.MAX_VALUE, setting, now, zone)
+        }.isFailure)
     }
 
     @Test fun `past appointment feedback includes current time`() = runBlocking {

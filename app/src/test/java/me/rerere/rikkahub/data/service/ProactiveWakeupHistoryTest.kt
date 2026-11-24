@@ -36,6 +36,26 @@ class ProactiveWakeupHistoryTest {
         assertEquals(ProactiveWakeupStatus.Running, record(old.token).status)
     }
 
+    @Test fun `cold start leaves overdue appointment available for its alarm`() {
+        val pending = appointment()
+        store().put(pending)
+        ProactiveTaskExecutor.initialize(context)
+        assertEquals(listOf(pending), store().all())
+    }
+
+    @Test fun `deleting terminal history preserves pending and running appointments`() {
+        val ended = appointment("ended")
+        val pending = appointment("pending")
+        val running = appointment("running")
+        val ledger = store()
+        listOf(ended, pending, running).forEach(ledger::put)
+        assertTrue(ledger.consume(running))
+        assertTrue(ledger.cancel(ended.conversationId, ended.token))
+        listOf(ended, pending, running).forEach { ledger.deleteHistory(it.token) }
+        assertEquals(setOf(pending, running), ledger.snapshot().map { it.appointment }.toSet())
+        assertEquals(listOf(pending), ledger.all())
+    }
+
     @Test fun `claimed appointment persists final send and never becomes pending again`() {
         val pending = appointment()
         store().put(pending)

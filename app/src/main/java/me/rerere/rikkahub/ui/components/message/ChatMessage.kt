@@ -501,6 +501,7 @@ fun ChatMessage(
                 annotations = message.annotations,
                 loading = loading,
                 model = model,
+                conversationId = conversationId?.toString(),
                 onToolApproval = onToolApproval,
                 onToolAnswer = onToolAnswer,
                 onUserMessageClick = if (!readOnly && message.role == MessageRole.USER) onEdit else null,
@@ -655,6 +656,7 @@ fun ChatMessage(
                         parts = message.parts.filter { it is UIMessagePart.Reasoning || it is UIMessagePart.Tool },
                         annotations = emptyList(),
                         loading = loading,
+                        conversationId = conversationId?.toString(),
                         onToolApproval = onToolApproval,
                         onToolAnswer = onToolAnswer,
                     )
@@ -684,6 +686,7 @@ private fun MessagePartsBlock(
     parts: List<UIMessagePart>,
     annotations: List<UIMessageAnnotation>,
     loading: Boolean,
+    conversationId: String? = null,
     onToolApproval: ((toolCallId: String, approved: Boolean, reason: String) -> Unit)? = null,
     onToolAnswer: ((toolCallId: String, answer: String) -> Unit)? = null,
     onUserMessageClick: (() -> Unit)? = null,
@@ -769,6 +772,7 @@ private fun MessagePartsBlock(
                                         allParts = parts,
                                         onToolApproval = onToolApproval,
                                         onToolAnswer = onToolAnswer,
+                                        conversationId = conversationId,
                                     )
                                 }
                             }

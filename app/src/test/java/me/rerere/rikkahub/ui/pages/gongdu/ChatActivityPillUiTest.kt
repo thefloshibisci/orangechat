@@ -105,7 +105,7 @@ class ChatActivityPillUiTest {
     @Test fun activityIslandsRetainTheirFinishesAndControls() {
         val context = compose.activity.applicationContext
         val model = Model(modelId = "reader-test", displayName = "reader-test")
-        val assistant = Assistant(name = "小林", chatModelId = model.id)
+        val assistant = Assistant(name = "南枳", chatModelId = model.id)
         val settings = Settings(assistants = listOf(assistant), assistantId = assistant.id,
             providers = listOf(ProviderSetting.OpenAI(name = "测试", models = listOf(model))))
         val conversation = Conversation(assistantId = assistant.id, title = "叽里咕噜对话", messageNodes = emptyList())
@@ -151,7 +151,7 @@ class ChatActivityPillUiTest {
                                         bigScreen = false, previewMode = false, onClickMenu = {}, onNewChat = {},
                                         onUpdateTitle = {}, onConversationSettings = {}, onShareReadExcerpt = { true },
                                         showReading = true)
-                                    FloatingCallPill(callTheme.value, name = "小林",
+                                    FloatingCallPill(callTheme.value, name = "南枳",
                                         onOpen = { openedCall = true }, onEnd = { endedCall = true })
                                     ListenMiniBar(chatId) { openedListen = true }
                                 }
@@ -164,7 +164,7 @@ class ChatActivityPillUiTest {
             for (isDark in listOf(false, true)) for (theme in listOf("ice", "sakura", "lavender")) {
                 compose.runOnIdle { dark.value = isDark; callTheme.value = theme }
                 val bounds = tags.map { compose.onNodeWithTag(it).assertIsDisplayed().fetchSemanticsNode().boundsInRoot }
-                val subtitle = compose.onNodeWithText("小林 / reader-test (测试)").assertIsDisplayed()
+                val subtitle = compose.onNodeWithText("南枳 / reader-test (测试)").assertIsDisplayed()
                     .fetchSemanticsNode().boundsInRoot
                 compose.runOnIdle {
                     val view = compose.activity.window.decorView
@@ -262,7 +262,7 @@ class ChatActivityPillUiTest {
     private fun verifyMessagesScrollBehindCapsule(listening: Boolean, calling: Boolean = false) {
         val context = compose.activity.applicationContext
         val read = ReadRepository(context)
-        val assistant = Assistant(name = "小林", useAssistantAvatar = true)
+        val assistant = Assistant(name = "南枳", useAssistantAvatar = true)
         val settings = Settings(assistants = listOf(assistant), assistantId = assistant.id,
             displaySetting = DisplaySetting(showMessageJumper = false))
         val firstMessage = "这是一条会滚过共读玻璃的消息"

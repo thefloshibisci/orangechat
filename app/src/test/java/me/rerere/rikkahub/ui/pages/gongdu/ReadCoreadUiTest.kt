@@ -147,18 +147,18 @@ class ReadCoreadUiTest {
         val records = listOf(ReadRecord("human", book.id, "chat", "ai", "human_reading", timestamp, seconds = 3600),
             ReadRecord("assistant", book.id, "chat", "ai", "assistant_reading", timestamp, characters = 28, author = "assistant"))
         compose.setContent { Theme { Box(Modifier.padding(20.dp)) {
-            ReadStatisticsContent(records, false, "chat", "ai", "小林", readingPosition = position)
+            ReadStatisticsContent(records, false, "chat", "ai", "南枳", readingPosition = position)
         } } }
         compose.onAllNodesWithText("1 时 0 分").onFirst().assertExists()
         val plot = compose.onNodeWithContentDescription("近12周阅读时间分布", substring = true)
         plot.performScrollTo()
         val center = compose.onNodeWithTag("read-statistics").fetchSemanticsNode().boundsInRoot.center.x
         assertEquals(center, plot.fetchSemanticsNode().boundsInRoot.center.x, 1f)
-        compose.onNodeWithText("看小林的·这本书").performScrollTo().assertHasClickAction()
+        compose.onNodeWithText("看南枳的·这本书").performScrollTo().assertHasClickAction()
         compose.onNodeWithText("我的阅读统计").performScrollTo()
         compose.onNodeWithText(position, substring = true).assertIsDisplayed()
         screenshot("statistics")
-        compose.onNodeWithText("看小林的·这本书").performClick()
+        compose.onNodeWithText("看南枳的·这本书").performClick()
         compose.onNodeWithText("28 字").assertIsDisplayed()
         compose.onNodeWithText("累计片段").assertIsDisplayed()
         compose.onNodeWithText("1 时 0 分").assertDoesNotExist()
@@ -169,7 +169,7 @@ class ReadCoreadUiTest {
     }
 
     @Test fun statisticsSwitchFitsTheMeasuredHeadingInBothViews() {
-        var name by mutableStateOf("小林")
+        var name by mutableStateOf("南枳")
         var allBooks by mutableStateOf(false)
         var scale by mutableFloatStateOf(1f)
         compose.setContent { Theme(ReadSettings(), scale) {
@@ -182,7 +182,7 @@ class ReadCoreadUiTest {
             assertTrue("Button must fit under the heading", button.right <= heading.right)
         }
         fun checkFullLabel(scope: String) {
-            val label = "看小林的·$scope"
+            val label = "看南枳的·$scope"
             checkBounds("我的阅读统计", label)
             compose.onNodeWithText(label, useUnmergedTree = true)
                 .performSemanticsAction(SemanticsActions.GetTextLayoutResult) { getResults ->

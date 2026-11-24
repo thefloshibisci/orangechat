@@ -23,6 +23,9 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceResponse
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
@@ -33,10 +36,21 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.Row
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.OutlinedTextField
+import me.rerere.rikkahub.plugin.localtasks.LocalTaskSettings
+import me.rerere.rikkahub.plugin.localtasks.LocalTaskSubmitResult
+import me.rerere.rikkahub.plugin.localtasks.LocalAssistantPolicy
+import me.rerere.rikkahub.plugin.localtasks.LocalTaskBridgeRequestParser
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -46,15 +60,23 @@ import androidx.compose.material3.Text
 import me.rerere.rikkahub.ui.theme.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.layout.size
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
@@ -133,6 +155,283 @@ fun PluginWebViewPage(
         PluginDataStore(context, pluginId)
     }
     val scope = rememberCoroutineScope()
+    val cssTokens = me.rerere.rikkahub.ui.theme.WebThemeTokens.current()
+    val currentCssTokens = androidx.compose.runtime.rememberUpdatedState(cssTokens)
+    val localDataBridge = remember(pluginInfo?.manifest) {
+        pluginInfo?.let { LocalDataWebBridge(context, it, settingsStore, usageRecorder, filesManager) { currentCssTokens.value } }
+    }
+    DisposableEffect(localDataBridge) { onDispose { localDataBridge?.close() } }
+    var taskSettings by remember { mutableStateOf<LocalTaskSettings?>(null) }
+    var nativeReviews by remember { mutableStateOf<List<me.rerere.rikkahub.plugin.localtasks.LocalTaskPendingActionDto>?>(null) }
+    var publishSettings by remember(pluginId) { mutableStateOf<LocalTaskSettings?>(null) }
+    var taskReview by remember { mutableStateOf<Pair<String, (Boolean) -> Unit>?>(null) }
+    var nativeReview by remember { mutableStateOf<me.rerere.rikkahub.plugin.localtasks.LocalTaskPendingActionDto?>(null) }
+    var nativeReviewThumbnail by remember { mutableStateOf<ImageBitmap?>(null) }
+    var nativeReviewBody by remember { mutableStateOf("") }
+    val hostSettings by settingsStore.settingsFlow.collectAsStateWithLifecycle()
+    if (taskSettings != null) {
+        val draft = taskSettings!!
+        fun saveSettings(): LocalTaskSettings? = try {
+            val bridge = requireNotNull(localDataBridge)
+            val mediaGranted = "localdata.media" in bridge.grantedCapabilities()
+            bridge.tasks().updateSettings(draft.copy(
+                allowImages = draft.allowImages && mediaGranted,
+                allowGeneratedImages = draft.allowGeneratedImages && draft.allowImages && mediaGranted,
+            )).also { taskSettings = null }
+        } catch (error: Exception) {
+            Toast.makeText(context, "设置保存失败", Toast.LENGTH_LONG).show()
+            null
+        }
+        AlertDialog(onDismissRequest = { taskSettings = null },
+            title = { Text("本机助手互动设置") },
+            text = { Column(Modifier.verticalScroll(rememberScrollState())) {
+                Text("仅显式开始才调用模型，使用各助手实际模型。离页可继续至本轮结束；进程退出不保证继续。")
+                Row { Checkbox(draft.enabled, { taskSettings = draft.copy(enabled = it, globalStop = !it) }); Text("启用互动") }
+                Row { Checkbox(draft.commentUserPosts, { taskSettings = draft.copy(commentUserPosts = it) }); Text("评论用户动态") }
+                Row { Checkbox(draft.commentAssistantPosts, { taskSettings = draft.copy(commentAssistantPosts = it) }); Text("评论助手动态") }
+                Row { Checkbox(draft.autoLike, { taskSettings = draft.copy(autoLike = it) }); Text("允许点赞") }
+                Row { Checkbox(draft.requireReview, { taskSettings = draft.copy(requireReview = it) }); Text("发布动态或评论前审核") }
+                val mediaGranted = "localdata.media" in (localDataBridge?.grantedCapabilities() ?: emptySet())
+                Row { Checkbox(draft.allowImages && mediaGranted, {
+                    taskSettings = draft.copy(allowImages = it && mediaGranted,
+                        allowGeneratedImages = it && mediaGranted && draft.allowGeneratedImages)
+                }); Text("允许助手使用用户选择的图片") }
+                Row { Checkbox(draft.allowGeneratedImages && draft.allowImages && mediaGranted, {
+                    taskSettings = draft.copy(allowGeneratedImages = it && mediaGranted && draft.allowImages)
+                }, enabled = mediaGranted && draft.allowImages); Text("允许按需生成图片（使用模型调用预算）") }
+                if (!mediaGranted) Text("先在宿主授权 localdata.media 才能启用图片。")
+                OutlinedTextField(draft.maxRounds.toString(), { it.toIntOrNull()?.let { n -> taskSettings = draft.copy(maxRounds = n.coerceIn(0, 10)) } }, label = { Text("最多轮次（0 停止）") })
+                OutlinedTextField(draft.maxRepliesPerAssistantPerPost.toString(), { it.toIntOrNull()?.let { n -> taskSettings = draft.copy(maxRepliesPerAssistantPerPost = n.coerceIn(0, 5)) } }, label = { Text("每助手每条最多回复") })
+                OutlinedTextField(draft.maxModelCallsPerPost.toString(), { it.toIntOrNull()?.let { n -> taskSettings = draft.copy(maxModelCallsPerPost = n.coerceIn(1, 50)) } }, label = { Text("每条模型调用上限") })
+                OutlinedTextField(draft.dailyModelCallBudget.toString(), { it.toIntOrNull()?.let { n -> taskSettings = draft.copy(dailyModelCallBudget = n.coerceIn(0, 10000)) } }, label = { Text("每日模型调用预算") })
+                OutlinedTextField(draft.maxOutputChars.toString(), { it.toIntOrNull()?.let { n -> taskSettings = draft.copy(maxOutputChars = n.coerceIn(40, 2000)) } }, label = { Text("回复字数上限") })
+                OutlinedTextField((draft.intervalMs / 1000).toString(), { it.toLongOrNull()?.let { n -> taskSettings = draft.copy(intervalMs = n.coerceIn(0, 3600) * 1000) } }, label = { Text("调用间隔（秒）") })
+                Text("参与助手（默认仅草稿；互评可发表评论/点赞）")
+                hostSettings.assistants.forEach { assistant ->
+                    val id = assistant.id.toString()
+                    Row { Checkbox(id in draft.participants, { checked ->
+                        taskSettings = draft.copy(participants = if (checked) (draft.participants + id).distinct() else draft.participants - id)
+                    }); Text(assistant.name.ifBlank { "助手" }, maxLines = 1) }
+                    if (id in draft.participants) {
+                        val policy = draft.effectivePolicy(id)
+                        TextButton(onClick = {
+                            val next = if (policy == LocalAssistantPolicy.DRAFT_ONLY) LocalAssistantPolicy.AUTO_PUBLISH else LocalAssistantPolicy.DRAFT_ONLY
+                            taskSettings = draft.copy(assistantPolicies = draft.assistantPolicies + (id to next))
+                        }) { Text(if (policy == LocalAssistantPolicy.AUTO_PUBLISH) "发布策略：允许自动发布" else "发布策略：仅草稿") }
+                        val replyLimit = draft.replyLimitFor(id)
+                        OutlinedTextField(replyLimit.toString(), { it.toIntOrNull()?.let { n -> taskSettings = draft.copy(
+                            assistantReplyLimits = draft.assistantReplyLimits + (id to n.coerceIn(0, 5))) } }, label = { Text("此助手回复上限") })
+                    }
+                }
+                Text("自动发布另需插件已获 localdata.publish 权限。生成图片须单独原生授权，并仍受基础媒体权限与模型预算限制。")
+                TextButton(
+                    enabled = draft.enabled && !draft.globalStop && hostSettings.assistants.any {
+                        draft.effectivePolicy(it.id.toString()) != LocalAssistantPolicy.DISABLED
+                    },
+                    onClick = { publishSettings = saveSettings() },
+                ) { Text("保存设置并让助手发帖") }
+            } },
+            confirmButton = { TextButton(onClick = { saveSettings() }) { Text("保存") } },
+            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+            dismissButton = {
+                Row {
+                    TextButton(onClick = {
+                        val bridge = localDataBridge
+                        if (bridge != null) {
+                            runCatching { nativeReviews = bridge.tasks().pendingReviews() }
+                                .onFailure { Toast.makeText(context, "无法读取审核队列", Toast.LENGTH_LONG).show() }
+                        }
+                    }) { Text("待审核") }
+                    TextButton(onClick = { localDataBridge?.tasks()?.stopAll(); taskSettings = null }) {
+                        Text("停止全部")
+                    }
+                }
+            })
+    }
+    publishSettings?.let { settings ->
+        val bridge = localDataBridge ?: return@let
+        val assistants = hostSettings.assistants.filter {
+            settings.effectivePolicy(it.id.toString()) != LocalAssistantPolicy.DISABLED
+        }
+        var selectedId by remember(assistants) { mutableStateOf(assistants.firstOrNull()?.id) }
+        var selectedUris by remember { mutableStateOf(emptyList<Uri>()) }
+        var submitting by remember { mutableStateOf(false) }
+        val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(9)) { uris ->
+            if (uris.isNotEmpty()) selectedUris = uris
+        }
+        AlertDialog(
+            onDismissRequest = { if (!submitting) publishSettings = null },
+            title = { Text("助手发帖") },
+            text = { Column(Modifier.verticalScroll(rememberScrollState())) {
+                assistants.forEach { assistant ->
+                    Row {
+                        androidx.compose.material3.RadioButton(selectedId == assistant.id, { selectedId = assistant.id }, enabled = !submitting)
+                        Text(assistant.name.ifBlank { "助手" })
+                    }
+                }
+                Text("助手将按已保存的发布策略生成动态。")
+                if (settings.allowImages && "localdata.media" in bridge.grantedCapabilities()) {
+                    TextButton(enabled = !submitting, onClick = {
+                        picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                    }) { Text(if (selectedUris.isEmpty()) "选择图片" else "已选 ${selectedUris.size} 张，重新选择") }
+                    if (selectedUris.isNotEmpty()) {
+                        TextButton(enabled = !submitting, onClick = { selectedUris = emptyList() }) { Text("清除图片") }
+                    }
+                }
+            } },
+            confirmButton = { TextButton(enabled = selectedId != null && !submitting, onClick = {
+                val assistantId = selectedId ?: return@TextButton
+                val uris = selectedUris
+                submitting = true
+                scope.launch {
+                    try {
+                        val result = withContext(Dispatchers.IO) {
+                            val mediaIds = if (uris.isEmpty()) emptyList() else bridge.importSelectedImages(uris).map { it.resourceId }
+                            bridge.tasks().startPublish(assistantId.toString(), mediaIds)
+                        }
+                        when (result) {
+                            is LocalTaskSubmitResult.Accepted -> {
+                                publishSettings = null
+                                Toast.makeText(context, "已加入助手发帖队列", Toast.LENGTH_LONG).show()
+                            }
+                            is LocalTaskSubmitResult.Rejected -> Toast.makeText(context, result.message, Toast.LENGTH_LONG).show()
+                        }
+                    } catch (error: CancellationException) {
+                        throw error
+                    } catch (error: Exception) {
+                        Toast.makeText(context, "无法开始发帖：${error.localizedMessage.orEmpty()}", Toast.LENGTH_LONG).show()
+                    } finally {
+                        submitting = false
+                    }
+                }
+            }) { Text("开始") } },
+            dismissButton = { TextButton(enabled = !submitting, onClick = { publishSettings = null }) { Text("取消") } },
+        )
+    }
+    if (nativeReviews != null) {
+        AlertDialog(onDismissRequest = { nativeReviews = null },
+            title = { Text("待审核内容（${nativeReviews!!.size}）") },
+            text = { Column(Modifier.verticalScroll(rememberScrollState())) {
+                if (nativeReviews!!.isEmpty()) Text("没有待审核内容")
+                nativeReviews!!.forEach { review ->
+                    TextButton(onClick = {
+                        nativeReview = review
+                        nativeReviewBody = review.body
+                        nativeReviewThumbnail = null
+                    }) {
+                        Text("${review.assistantName} · ${review.kind}" +
+                            (if (review.mediaSource == me.rerere.rikkahub.plugin.localtasks.LocalTaskMediaSource.GENERATED) " · 助手生成图" else "") +
+                            "\n${review.body.take(180)}")
+                    }
+                }
+            } }, confirmButton = { TextButton(onClick = { nativeReviews = null }) { Text("关闭") } })
+    }
+    if (nativeReview != null) {
+        val item = nativeReview!!
+        var resolving by remember(item.id) { mutableStateOf(false) }
+        val generatedMedia = item.mediaSource == me.rerere.rikkahub.plugin.localtasks.LocalTaskMediaSource.GENERATED
+        fun resolve(approve: Boolean) {
+            val bridge = localDataBridge ?: return
+            if (resolving) return
+            resolving = true
+            val editedBody = nativeReviewBody.takeIf { approve && it != item.body }
+            scope.launch {
+                try {
+                    val (result, remaining) = withContext(Dispatchers.IO) {
+                        val tasks = bridge.tasks()
+                        tasks.resolveReview(item.id, approve, editedBody) to tasks.pendingReviews()
+                    }
+                    nativeReviews = remaining
+                    if (remaining.none { it.id == item.id }) nativeReview = null
+                    if ((approve && !result.applied) || result.state == "not_found") {
+                        Toast.makeText(context, result.detail ?: "审核操作未完成", Toast.LENGTH_LONG).show()
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Toast.makeText(context, e.localizedMessage ?: "审核操作失败", Toast.LENGTH_LONG).show()
+                } finally {
+                    resolving = false
+                }
+            }
+        }
+        AlertDialog(onDismissRequest = { if (!resolving) nativeReview = null }, title = { Text("审核助手操作") },
+            text = { Column(Modifier.verticalScroll(rememberScrollState())) {
+                LaunchedEffect(item.id, item.mediaIds.firstOrNull(), item.mediaSource) {
+                    nativeReviewThumbnail = null
+                    val resourceId = item.mediaIds.firstOrNull()
+                    if (item.mediaSource == me.rerere.rikkahub.plugin.localtasks.LocalTaskMediaSource.GENERATED &&
+                        resourceId != null && "localdata.media" in (localDataBridge?.grantedCapabilities() ?: emptySet())) {
+                        val bitmap = withContext(Dispatchers.IO) {
+                            val response = localDataBridge?.openMedia("https://localdata.invalid/media/$resourceId/thumb")
+                            response?.data?.use { input -> BitmapFactory.decodeStream(input)?.asImageBitmap() }
+                        }
+                        nativeReviewThumbnail = bitmap
+                    }
+                }
+                Text("助手：${item.assistantName}\n类型：${item.kind}\n动态：${item.postId.orEmpty()}\n点赞：${item.like}\n回复目标：${item.replyToId.orEmpty()}")
+                if (item.mediaSource == me.rerere.rikkahub.plugin.localtasks.LocalTaskMediaSource.NATIVE_SELECTION) Text("用户选择的图片")
+                if (generatedMedia) Text("助手生成图${if (item.mediaIds.isEmpty()) "（缺少媒体资源）" else ""}")
+                nativeReviewThumbnail?.let { Image(it, contentDescription = "助手生成图预览", modifier = Modifier.size(160.dp), contentScale = ContentScale.Fit) }
+                if (generatedMedia && nativeReviewThumbnail != null) {
+                    Text("请确认预览内容及发布正文后再批准。")
+                }
+                if (generatedMedia && nativeReviewThumbnail == null) {
+                    Text("生成图片预览不可用。为避免在未查看图片时批准，不提供批准操作；仍可拒绝。")
+                }
+                if (item.body.isNotBlank()) OutlinedTextField(nativeReviewBody, { nativeReviewBody = it }, enabled = !resolving, label = { Text("审核正文，可编辑") })
+            } },
+            confirmButton = {
+                TextButton(enabled = !resolving && (!generatedMedia || nativeReviewThumbnail != null) &&
+                    (item.body.isBlank() || nativeReviewBody.isNotBlank()), onClick = { resolve(true) }) { Text("批准并应用") }
+            },
+            dismissButton = { TextButton(enabled = !resolving, onClick = { resolve(false) }) { Text("拒绝") } })
+    }
+    if (taskReview != null) {
+        AlertDialog(onDismissRequest = { taskReview?.second?.invoke(false); taskReview = null },
+            title = { Text("确认处理待审核内容") },
+            text = { Text(taskReview!!.first, modifier = Modifier.verticalScroll(rememberScrollState())) },
+            confirmButton = { TextButton(onClick = { taskReview?.second?.invoke(true); taskReview = null }) { Text("确认") } },
+            dismissButton = { TextButton(onClick = { taskReview?.second?.invoke(false); taskReview = null }) { Text("取消") } })
+    }
+    var toolConsent by remember { mutableStateOf<Pair<String, (Boolean) -> Unit>?>(null) }
+    if (toolConsent != null) {
+        AlertDialog(onDismissRequest = { toolConsent?.second?.invoke(false); toolConsent = null },
+            title = { Text("允许调用其他插件工具？") },
+            text = { Text(toolConsent!!.first + "\n工具可能使用其已配置的模型或网络服务。仅导入本次真实工具返回的图片。") },
+            confirmButton = { TextButton(onClick = { toolConsent?.second?.invoke(true); toolConsent = null }) { Text("允许并记住") } },
+            dismissButton = { TextButton(onClick = { toolConsent?.second?.invoke(false); toolConsent = null }) { Text("拒绝") } })
+    }
+    val localConsentRequests = remember(pluginId, htmlEntryPath) { mutableStateListOf<(Boolean) -> Unit>() }
+    fun resolveLocalConsent(approved: Boolean) {
+        if (approved) localDataBridge?.approve()
+        val requests = localConsentRequests.toList()
+        localConsentRequests.clear()
+        requests.forEach { it(approved) }
+    }
+    var localPickerCallback by remember { mutableStateOf<((List<Uri>?) -> Unit)?>(null) }
+    var localBackupCallback by remember { mutableStateOf<((Uri?) -> Unit)?>(null) }
+    val localPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(9)) { uris ->
+        val callback = localPickerCallback
+        localPickerCallback = null
+        callback?.invoke(uris)
+    }
+    val localBackupExport = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri ->
+        val callback = localBackupCallback; localBackupCallback = null; callback?.invoke(uri)
+    }
+    val localBackupRestore = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        val callback = localBackupCallback; localBackupCallback = null; callback?.invoke(uri)
+    }
+    if (localConsentRequests.isNotEmpty()) {
+        AlertDialog(
+            onDismissRequest = { resolveLocalConsent(false) },
+            title = { Text("允许 ${pluginInfo?.manifest?.name.orEmpty()} 访问本机插件数据？") },
+            text = { Text("仅读取此插件的数据与本机助手目录；写入、评论、点赞及媒体导入会按下列权限开放。媒体仅在系统选择器中选择；备份通过系统文件选择器保存。授权保存在宿主中，插件无法自行更改。\n\n" +
+                localDataBridge?.requestedCapabilities().orEmpty().sorted().joinToString(separator = "\n")) },
+            confirmButton = { TextButton(onClick = { resolveLocalConsent(true) }) { Text("允许并记住") } },
+            dismissButton = { TextButton(onClick = { resolveLocalConsent(false) }) { Text("拒绝") } },
+        )
+    }
 
     // Overlay WebView reference for pomodoro lock screen
     var overlayWebView by remember { mutableStateOf<WebView?>(null) }
@@ -448,11 +747,42 @@ fun PluginWebViewPage(
             TopAppBar(
                 title = {
                     Column {
-                        Text(pluginInfo?.manifest?.name ?: "\u63D2\u4EF6\u7BA1\u7406")
+                        Text(
+                            text = pluginInfo?.manifest?.name ?: "插件管理",
+                            style = MaterialTheme.typography.titleSmall,
+                            maxLines = 1,
+                            softWrap = false,
+                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                        )
                         if (pluginInfo?.manifest?.permissions?.contains("ai_chat") == true) {
                             Text(if (conversationId.isBlank()) "AI：助手默认模型" else "AI：当前会话模型",
                                 style = MaterialTheme.typography.labelSmall)
                         }
+                    }
+                },
+                actions = {
+                    if (pluginInfo?.manifest?.permissions?.contains("localdata.read") == true) {
+                        // One compact settings entry replaces the old 待审/互动/助手发帖/停止 row.
+                        // Pending reviews and stop-all are inside the native settings dialog.
+                        TextButton(onClick = {
+                            val bridge = localDataBridge ?: return@TextButton
+                            val open: () -> Unit = { runCatching { taskSettings = bridge.tasks().settings() }.onFailure {
+                                Toast.makeText(context, "无法读取任务设置", Toast.LENGTH_LONG).show()
+                            } }
+                            if (bridge.needsConsent()) {
+                                localConsentRequests.add { approved -> if (approved) open() }
+                            } else open()
+                        }) { Text("助手设置") }
+                    }
+                    if (pluginInfo?.manifest?.permissions?.contains("localdata.backup") == true) {
+                        TextButton(onClick = {
+                            val view = webView ?: return@TextButton
+                            (view.webViewClient as? PluginWebViewClient)?.nativeBackup(view, false)
+                        }) { Text("备份") }
+                        TextButton(onClick = {
+                            val view = webView ?: return@TextButton
+                            (view.webViewClient as? PluginWebViewClient)?.nativeBackup(view, true)
+                        }) { Text("恢复") }
                     }
                 },
                 navigationIcon = {
@@ -507,6 +837,7 @@ fun PluginWebViewPage(
 
                             webViewClient = PluginWebViewClient(
                                 pluginInfo = pluginInfo,
+                                androidContext = ctx.applicationContext,
                                 dataStore = dataStore,
                                 pluginLoader = pluginLoader,
                                 pluginManager = pluginManager,
@@ -514,6 +845,30 @@ fun PluginWebViewPage(
                                 conversationRepository = conversationRepository,
                                 settingsStore = settingsStore,
                                 aiCall = aiCall,
+                                localData = requireNotNull(localDataBridge),
+                                onTaskReview = { description, callback ->
+                                    if (taskReview != null) callback(false) else taskReview = description to callback
+                                },
+                                onToolConsent = { description, callback ->
+                                    if (toolConsent != null) callback(false) else toolConsent = description to callback
+                                },
+                                onLocalConsent = { request -> localConsentRequests.add(request) },
+                                onLocalPickImages = { callback ->
+                                    if (localPickerCallback != null) callback(null) else {
+                                        localPickerCallback = callback
+                                        try { localPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }
+                                        catch (_: Exception) { localPickerCallback = null; callback(null) }
+                                    }
+                                },
+                                onLocalBackup = { restore, callback ->
+                                    if (localBackupCallback != null) callback(null) else {
+                                        localBackupCallback = callback
+                                        try {
+                                            if (restore) localBackupRestore.launch(arrayOf("application/zip", "application/octet-stream"))
+                                            else localBackupExport.launch("orangechat-localdata-backup.zip")
+                                        } catch (_: Exception) { localBackupCallback = null; callback(null) }
+                                    }
+                                },
                                 chatService = chatService,
                                 filesManager = filesManager,
                                 scope = scope,
@@ -634,7 +989,12 @@ fun PluginWebViewPage(
                                         existingOverlay.destroy()
                                     }
 
+                                    val overlayDocumentUrl = OVERLAY_ORIGIN + java.util.UUID.randomUUID().toString() + "/index.html"
+                                    var overlayToken = java.util.UUID.randomUUID().toString()
                                     val overlayWv = WebView(context).apply {
+                                        settings.allowFileAccess = false
+                                        settings.allowContentAccess = false
+                                        settings.mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
                                         settings.javaScriptEnabled = true
                                         settings.domStorageEnabled = true
                                         isFocusable = true
@@ -644,9 +1004,16 @@ fun PluginWebViewPage(
 
                                     // Inject bridge JS for overlay
                                     overlayWv.webViewClient = object : WebViewClient() {
+                                        override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
+                                            overlayToken = java.util.UUID.randomUUID().toString()
+                                            super.onPageStarted(view, url, favicon)
+                                        }
+
                                         override fun onPageFinished(view: WebView?, url: String?) {
                                             super.onPageFinished(view, url)
-                                            view?.evaluateJavascript(overlayBridgeJavascript, null)
+                                            if (!isTrustedOverlayPage(url, overlayDocumentUrl) ||
+                                                !isTrustedOverlayPage(view?.url, overlayDocumentUrl)) return
+                                            view?.evaluateJavascript(overlayBridgeJavascript.replace("__OVERLAY_PAGE_TOKEN__", overlayToken), null)
                                             // Auto-focus input/textarea on click so keyboard appears
                                             view?.evaluateJavascript(
                                                 "document.addEventListener('click', function(e){ if(e.target.tagName==='INPUT'||e.target.tagName==='TEXTAREA'){ e.target.focus(); } });",
@@ -661,7 +1028,10 @@ fun PluginWebViewPage(
                                             val url = request?.url?.toString() ?: return false
                                             if (url.startsWith("bridge://")) {
                                                 val uri = Uri.parse(url)
-                                                val method = uri.host ?: return false
+                                                if (view == null || !allowsOverlayBridge(request.isForMainFrame,
+                                                        view.url, overlayDocumentUrl, uri.getQueryParameter("pageToken"), overlayToken)) return true
+                                                val acceptedToken = overlayToken
+                                                val method = uri.host ?: return true
                                                 val params = uri.queryParameterNames.associateWith {
                                                     uri.getQueryParameter(it) ?: ""
                                                 }
@@ -672,6 +1042,7 @@ fun PluginWebViewPage(
                                                         } catch (e: Exception) {
                                                             Log.w(TAG, "Error removing overlay", e)
                                                         }
+                                                        overlayToken = ""
                                                         overlayWv.destroy()
                                                         overlayWebView = null
                                                     }
@@ -718,14 +1089,24 @@ fun PluginWebViewPage(
                                                                 "你是一个番茄钟陪伴助手。用户正在使用番茄钟专注。请用简短温暖的话回应，鼓励用户保持专注。当前上下文：$contextJson"
                                                             }
                                                             overlayWv.post {
-                                                                overlayWv.evaluateJavascript(pluginAiResultJavascript(cbId, aiResult), null)
+                                                                if (overlayToken == acceptedToken &&
+                                                                    isTrustedOverlayPage(overlayWv.url, overlayDocumentUrl)) {
+                                                                    overlayWv.evaluateJavascript(pluginAiResultJavascript(cbId, aiResult), null)
+                                                                }
                                                             }
                                                         }
                                                     }
                                                 }
+                                                if (method != "hideOverlay") view.evaluateJavascript(
+                                                    "window.__overlayBridgeAccepted && window.__overlayBridgeAccepted();", null)
                                                 return true
                                             }
-                                            return false
+                                            if (request.isForMainFrame && isTrustedOverlayPage(url, overlayDocumentUrl)) return false
+                                            if (request.isForMainFrame && (request.url.scheme == "https" || request.url.scheme == "http")) {
+                                                runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, request.url)) }
+                                            }
+                                            // No remote or child-frame navigation may acquire the overlay origin/bridge.
+                                            return true
                                         }
                                     }
 
@@ -751,7 +1132,7 @@ fun PluginWebViewPage(
 
                                     // Load HTML content
                                     overlayWv.loadDataWithBaseURL(
-                                        "https://rikkahub.local",
+                                        overlayDocumentUrl,
                                         html,
                                         "text/html",
                                         "UTF-8",
@@ -835,6 +1216,14 @@ fun PluginWebViewPage(
             pendingImportAudioCallback = null
             pendingSaveCallbackId = null
             pendingSaveBase64Data = null
+            localPickerCallback = null
+            localBackupCallback = null
+            localConsentRequests.clear()
+            toolConsent?.second?.invoke(false)
+            toolConsent = null
+            taskReview?.second?.invoke(false)
+            taskReview = null
+            taskSettings = null
             webViewFileChooserCallback?.onReceiveValue(null)
             webViewFileChooserCallback = null
             // Clean up main WebView
@@ -857,6 +1246,7 @@ fun PluginWebViewPage(
 
 private class PluginWebViewClient(
     private val pluginInfo: PluginInfo,
+    private val androidContext: Context,
     private val dataStore: PluginDataStore,
     private val pluginLoader: PluginLoader,
     private val pluginManager: PluginManager,
@@ -864,6 +1254,12 @@ private class PluginWebViewClient(
     private val conversationRepository: ConversationRepository,
     private val settingsStore: SettingsStore,
     private val aiCall: PluginAiCall,
+    private val localData: LocalDataWebBridge,
+    private val onTaskReview: (String, (Boolean) -> Unit) -> Unit,
+    private val onToolConsent: (String, (Boolean) -> Unit) -> Unit,
+    private val onLocalConsent: ((Boolean) -> Unit) -> Unit,
+    private val onLocalPickImages: ((List<Uri>?) -> Unit) -> Unit,
+    private val onLocalBackup: (Boolean, (Uri?) -> Unit) -> Unit,
     private val chatService: ChatService,
     private val filesManager: FilesManager,
     private val scope: CoroutineScope,
@@ -881,6 +1277,137 @@ private class PluginWebViewClient(
 ) : WebViewClient() {
     private val json = Json { ignoreUnknownKeys = true }
     private val chatImageTransfers = mutableMapOf<String, StringBuilder>()
+    @Volatile private var trustedPage = false
+    @Volatile private var pageEpoch = 0L
+    private var pageToken = java.util.UUID.randomUUID().toString()
+
+    override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
+        trustedPage = false
+        pageEpoch++
+        pageToken = java.util.UUID.randomUUID().toString()
+        super.onPageStarted(view, url, favicon)
+    }
+
+    override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
+        val url = request?.url ?: return null
+        if (isLocalDataMediaRequest(url.toString())) {
+            val referer = request.requestHeaders.entries.firstOrNull { it.key.equals("Referer", true) }?.value
+            val trustedReferer = referer == null || isTrustedLocalPluginPage(referer, pluginInfo.directory)
+            return if (trustedPage && trustedReferer && request.method == "GET") {
+                localData.openMedia(url.toString())
+            } else deniedMedia()
+        }
+        // Prevent another plugin's local file from being embedded under this page's media authority.
+        if (url.scheme == "file" && !isTrustedLocalPluginPage(url.toString(), pluginInfo.directory)) return deniedMedia()
+        return super.shouldInterceptRequest(view, request)
+    }
+
+    fun nativeBackup(webView: WebView, restore: Boolean) {
+        if (!isTrustedLocalPluginPage(webView.url, pluginInfo.directory)) return
+        handleLocalData(webView, if (restore) "localDataRestoreBackup" else "localDataExportBackup", emptyMap())
+    }
+
+    private fun handleLocalData(webView: WebView, method: String, params: Map<String, String>) {
+        val epoch = pageEpoch
+        fun active() = epoch == pageEpoch && isTrustedLocalPluginPage(webView.url, pluginInfo.directory)
+        fun reply(result: String) {
+            webView.post {
+                if (active()) {
+                    if (params["callbackId"] == null) {
+                        val success = runCatching { JSONObject(result).optBoolean("ok") }.getOrDefault(false)
+                        Toast.makeText(webView.context, if (success) "操作完成" else "操作未完成，请检查权限或备份文件", Toast.LENGTH_LONG).show()
+                    } else webView.evaluateJavascript(pluginBridgeJsonJavascript(params["callbackId"], result), null)
+                }
+            }
+        }
+        fun fail(code: String, message: String) = reply(localDataFailure(code, message).toString())
+        val action: () -> Unit = action@{
+            if (!active()) return@action
+            when (method) {
+                "localData", "localDataHostInfo" -> scope.launch(Dispatchers.IO) {
+                    try {
+                        reply(if (method == "localDataHostInfo") localData.hostInfo().toString()
+                            else localData.call(params["requestJson"].orEmpty()))
+                    } catch (e: CancellationException) { throw e }
+                    catch (_: Exception) { fail("unavailable", "Local data request failed") }
+                }
+                "localDataTask" -> scope.launch {
+                    try {
+                        val raw = params["requestJson"].orEmpty()
+                        val request = LocalTaskBridgeRequestParser.parse(raw)
+                        if (request.method == LocalTaskBridgeRequestParser.METHOD_REVIEW_RESOLVE) {
+                            val root = JSONObject(raw).getJSONObject("params")
+                            val review = localData.tasks().pendingReviews().find { it.id == root.optString("reviewId") }
+                            if (review == null) { fail("not_found", "Review does not exist"); return@launch }
+                            val requestedApproval = root.optBoolean("approve")
+                            if (requestedApproval && review.mediaSource == me.rerere.rikkahub.plugin.localtasks.LocalTaskMediaSource.GENERATED) {
+                                fail("capability_denied", "生成图片审核请使用原生待审列表预览后批准")
+                                return@launch
+                            }
+                            val body = if (root.has("body")) root.getString("body") else review.body
+                            val approved = kotlinx.coroutines.suspendCancellableCoroutine<Boolean> { continuation ->
+                                onTaskReview("${review.assistantName} · ${review.kind}\n\n$body\n\n" +
+                                    if (requestedApproval) "确认后将应用以上内容。" else "确认后将拒绝此内容。") { value ->
+                                    if (continuation.isActive) continuation.resumeWith(Result.success(value))
+                                }
+                            }
+                            if (!approved || !active()) { fail("capability_denied", "Review was not confirmed"); return@launch }
+                        }
+                        reply(withContext(Dispatchers.IO) { localData.taskCall(raw) })
+                    } catch (e: CancellationException) { throw e }
+                    catch (_: Exception) { fail("invalid_request", "Task request failed") }
+                }
+                "localDataPickImages" -> {
+                    if ("localdata.media" !in localData.grantedCapabilities()) {
+                        fail("capability_denied", "Media permission is required")
+                    } else onLocalPickImages { uris ->
+                        if (uris.isNullOrEmpty()) fail("cancelled", "Image selection cancelled")
+                        else if (active()) scope.launch(Dispatchers.IO) {
+                            try { reply(localData.importImages(uris).toString()) }
+                            catch (e: CancellationException) { throw e }
+                            catch (_: Exception) { fail("unavailable", "Image import failed") }
+                        }
+                    }
+                }
+                "localDataExportBackup", "localDataRestoreBackup" -> {
+                    if ("localdata.backup" !in localData.grantedCapabilities()) {
+                        fail("capability_denied", "Backup permission is required")
+                    } else onLocalBackup(method == "localDataRestoreBackup") { uri ->
+                        if (uri == null) fail("cancelled", "File selection cancelled")
+                        else if (active()) scope.launch(Dispatchers.IO) {
+                            val temporary = File.createTempFile("localdata-backup-", ".zip", webView.context.cacheDir)
+                            try {
+                                if (method == "localDataRestoreBackup") {
+                                    webView.context.contentResolver.openInputStream(uri)?.use { input ->
+                                        temporary.outputStream().use { output ->
+                                            val buffer = ByteArray(8192); var total = 0L
+                                            while (true) {
+                                                val count = input.read(buffer); if (count < 0) break
+                                                total += count; check(total <= 256L * 1024 * 1024)
+                                                output.write(buffer, 0, count)
+                                            }
+                                        }
+                                    } ?: error("Cannot open backup")
+                                    localData.restoreBackup(temporary)
+                                } else {
+                                    localData.exportBackup(temporary)
+                                    webView.context.contentResolver.openOutputStream(uri, "wt")?.use { output ->
+                                        temporary.inputStream().use { it.copyTo(output) }
+                                    } ?: error("Cannot save backup")
+                                }
+                                reply(localDataSuccess(JSONObject().put("completed", true)).toString())
+                            } catch (e: CancellationException) { throw e }
+                            catch (_: Exception) { fail("unavailable", "Backup failed or is incompatible") }
+                            finally { temporary.delete() }
+                        }
+                    }
+                }
+            }
+        }
+        if (localData.needsConsent()) onLocalConsent { approved ->
+            if (approved) action() else fail("capability_denied", "Permission was declined")
+        } else action()
+    }
 
     override fun shouldOverrideUrlLoading(
         view: WebView?,
@@ -888,7 +1415,13 @@ private class PluginWebViewClient(
     ): Boolean {
         val url = request?.url?.toString() ?: return false
         if (url.startsWith("bridge://")) {
-            handleBridgeCall(view!!, url)
+            if (view != null && request.isForMainFrame &&
+                isTrustedLocalPluginPage(view.url, pluginInfo.directory) &&
+                request.url.getQueryParameter("pageToken") == pageToken
+            ) {
+                handleBridgeCall(view, url)
+                view.evaluateJavascript("window.__bridgeAccepted && window.__bridgeAccepted();", null)
+            }
             return true
         }
         if (!url.startsWith("file://") && !url.startsWith("about:blank")) {
@@ -906,15 +1439,23 @@ private class PluginWebViewClient(
 
     override fun onPageFinished(view: WebView?, url: String?) {
         super.onPageFinished(view, url)
-        view?.evaluateJavascript(bridgeJavascript, null)
+        trustedPage = isTrustedLocalPluginPage(url, pluginInfo.directory) &&
+            isTrustedLocalPluginPage(view?.url, pluginInfo.directory)
+        if (trustedPage) {
+            view?.evaluateJavascript(bridgeJavascript.replace("__ORANGE_PAGE_TOKEN__", pageToken), null)
+            val theme = JSONObject(localData.themeTokens())
+            view?.evaluateJavascript("(function(t){Object.keys(t).forEach(function(k){document.documentElement.style.setProperty(k,t[k]);});})($theme);", null)
+        }
     }
 
     private fun handleBridgeCall(webView: WebView, url: String) {
+        if (!isTrustedLocalPluginPage(webView.url, pluginInfo.directory)) return
         val uri = Uri.parse(url)
         val method = uri.host ?: return
         val params = uri.queryParameterNames.associateWith { uri.getQueryParameter(it) ?: "" }
 
         when (method) {
+            "localData", "localDataHostInfo", "localDataPickImages", "localDataTask" -> handleLocalData(webView, method, params)
             "getPluginConfig" -> {
                 scope.launch(Dispatchers.IO) {
                     try {
@@ -1548,6 +2089,20 @@ private class PluginWebViewClient(
         return "\"$escaped\""
     }
 
+    private suspend fun authorizeTool(target: PluginInfo, toolName: String): Boolean {
+        if (target.manifest.id == pluginInfo.manifest.id) return true
+        val preferences = androidContext.getSharedPreferences("localdata_host_tool_grants", Context.MODE_PRIVATE)
+        val grantKey = "${pluginInfo.manifest.id}|${target.manifest.id}|$toolName"
+        if (preferences.getBoolean(grantKey, false)) return true
+        val approved = kotlinx.coroutines.suspendCancellableCoroutine<Boolean> { continuation ->
+            onToolConsent("${pluginInfo.manifest.name} → ${target.manifest.name}: $toolName") { allowed ->
+                if (continuation.isActive) continuation.resumeWith(Result.success(allowed))
+            }
+        }
+        if (approved) preferences.edit().putBoolean(grantKey, true).apply()
+        return approved
+    }
+
     private suspend fun callPluginTool(toolName: String, params: String): String {
         return try {
             pluginManager.awaitInitialization()
@@ -1562,6 +2117,10 @@ private class PluginWebViewClient(
                 return JSONObject().put("success", false).put("error", "Tool not found: $toolName").toString()
             }
 
+            if (!authorizeTool(target, toolName)) {
+                return localDataFailure("capability_denied", "Tool permission was declined").toString()
+            }
+            check(pluginManager.plugins.value.any { it.manifest.id == target.manifest.id && it.isEnabled && it.loadError == null })
             val jsonParams = Json.parseToJsonElement(params)
 
             val result = pluginLoader.callTool(
@@ -1572,7 +2131,8 @@ private class PluginWebViewClient(
 
             return result.fold(
                 onSuccess = { jsonElement: kotlinx.serialization.json.JsonElement ->
-                    Json.encodeToString(kotlinx.serialization.json.JsonElement.serializer(), jsonElement)
+                    localData.importToolImage(target.manifest.id,
+                        Json.encodeToString(kotlinx.serialization.json.JsonElement.serializer(), jsonElement))
                 },
                 onFailure = { error: Throwable ->
                     JSONObject().put("success", false).put("error", error.message ?: "Plugin call failed").toString()
@@ -1588,7 +2148,19 @@ private class PluginWebViewClient(
 
 private const val bridgeJavascript = """
 (function() {
-    if (window.Bridge) return;
+    if (window.__orangeNativeBridgeReady) return;
+    window.__orangeNativeBridgeReady = true;
+    var pendingUrls = [];
+    var navigationBusy = false;
+    function sendNext() {
+        if (navigationBusy || !pendingUrls.length) return;
+        navigationBusy = true;
+        window.location.href = pendingUrls.shift();
+    }
+    window.__bridgeAccepted = function() {
+        navigationBusy = false;
+        setTimeout(sendNext, 0);
+    };
 
     window.__bridgeCallbacks = {};
     window.__bridgeResultId = 0;
@@ -1609,20 +2181,15 @@ private const val bridgeJavascript = """
             var callbackId = 'cb_' + (++window.__bridgeResultId);
             window.__bridgeCallbacks[callbackId] = resolve;
 
-            var url = 'bridge://' + method + '?callbackId=' + encodeURIComponent(callbackId);
+            var url = 'bridge://' + method + '?callbackId=' + encodeURIComponent(callbackId) + '&pageToken=__ORANGE_PAGE_TOKEN__';
             for (var key in params) {
                 if (params.hasOwnProperty(key)) {
                     url += '&' + encodeURIComponent(key) + '=' + encodeURIComponent(String(params[key]));
                 }
             }
 
-            var iframe = document.createElement('iframe');
-            iframe.style.display = 'none';
-            iframe.src = url;
-            document.body.appendChild(iframe);
-            setTimeout(function() {
-                document.body.removeChild(iframe);
-            }, 100);
+            pendingUrls.push(url);
+            sendNext();
         });
     }
 
@@ -1761,6 +2328,17 @@ private const val bridgeJavascript = """
         }
     };
 
+    window.OrangeBridge = {
+        localData: function(requestJson) {
+            return bridgeCall('localData', {requestJson: typeof requestJson === 'string' ? requestJson : JSON.stringify(requestJson)});
+        },
+        localDataTask: function(requestJson) {
+            return bridgeCall('localDataTask', {requestJson: typeof requestJson === 'string' ? requestJson : JSON.stringify(requestJson)});
+        },
+        localDataPickImages: function() { return bridgeCall('localDataPickImages', {}); },
+        localDataHostInfo: function() { return bridgeCall('localDataHostInfo', {}); }
+    };
+    window.dispatchEvent(new Event('OrangeBridgeReady'));
     window.onTimerEnd = window.onTimerEnd || function() {};
     window.onMusicCompleted = window.onMusicCompleted || function() {};
 
@@ -1772,6 +2350,17 @@ private const val overlayBridgeJavascript = """
 (function() {
     if (window.__overlayBridgeReady) return;
     window.__overlayBridgeReady = true;
+    var pendingUrls = [];
+    var navigationBusy = false;
+    function sendNext() {
+        if (navigationBusy || !pendingUrls.length) return;
+        navigationBusy = true;
+        window.location.href = pendingUrls.shift();
+    }
+    window.__overlayBridgeAccepted = function() {
+        navigationBusy = false;
+        setTimeout(sendNext, 0);
+    };
 
     window.__bridgeCallbacks = {};
     window.__bridgeResultId = 0;
@@ -1791,17 +2380,14 @@ private const val overlayBridgeJavascript = """
         return new Promise(function(resolve, reject) {
             var callbackId = 'cb_' + (++window.__bridgeResultId);
             window.__bridgeCallbacks[callbackId] = resolve;
-            var url = 'bridge://' + method + '?callbackId=' + encodeURIComponent(callbackId);
+            var url = 'bridge://' + method + '?callbackId=' + encodeURIComponent(callbackId) + '&pageToken=__OVERLAY_PAGE_TOKEN__';
             for (var key in params) {
                 if (params.hasOwnProperty(key)) {
                     url += '&' + encodeURIComponent(key) + '=' + encodeURIComponent(String(params[key]));
                 }
             }
-            var iframe = document.createElement('iframe');
-            iframe.style.display = 'none';
-            iframe.src = url;
-            document.body.appendChild(iframe);
-            setTimeout(function() { document.body.removeChild(iframe); }, 100);
+            pendingUrls.push(url);
+            sendNext();
         });
     }
 

@@ -143,10 +143,12 @@ class MessageQueue internal constructor(
         ownedImageUrls: List<String> = emptyList(),
         requestToken: String? = null,
         transientAudio: me.rerere.rikkahub.data.video.TransientAudioClip? = null,
+        newMessageId: Uuid? = null,
     ): QueuedMessage? {
         if (parts.isEmptyInputMessage() && existingMessageId == null) return null
         if (existingMessageId != null && (state.value.messages + inFlight.values).any { it.existingMessageId == existingMessageId }) return null
         val message = QueuedMessage(
+            id = newMessageId ?: Uuid.random(),
             parts = parts.toList(), answer = answer, interaction = interaction,
             transientSystemPrompt = transientSystemPrompt,
             transientSystemPromptWithoutImages = transientSystemPromptWithoutImages,

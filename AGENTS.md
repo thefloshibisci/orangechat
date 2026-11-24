@@ -15,6 +15,20 @@
 
 构建应用需要在 `app/` 下提供 `google-services.json`（用于 Firebase）。
 
+首次克隆后需初始化子模块，否则 `:material3` 编译失败（找不到 `dynamiccolor`）：
+
+```bash
+git submodule update --init --depth 1 material3/material-color-utilities
+```
+
+只跑 JVM/Robolectric 测试时不需要 `google-services.json`；本机没有 `pnpm` 时用 `-x :web:buildWebUi` 跳过网页前端打包，
+并通过 `ANDROID_HOME` 指向 Android SDK。例如一起听的 UI 测试（截图输出到
+`app/build/reports/tests/gongdu-listen-screenshots/`）：
+
+```bash
+./gradlew :app:testDebugUnitTest --tests "me.rerere.rikkahub.ui.pages.gongdu.GongduListenUiTest" -x :web:buildWebUi
+```
+
 ## Coding Style & Naming Conventions
 
 本仓库使用 `.editorconfig` 统一格式：

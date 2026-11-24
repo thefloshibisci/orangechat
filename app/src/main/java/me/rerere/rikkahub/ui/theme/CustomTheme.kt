@@ -23,8 +23,12 @@ data class CustomTheme(
     val primaryColorArgb: Long = 0xFF6750A4,
     val secondaryColorArgb: Long? = null,
     val tertiaryColorArgb: Long? = null,
+    val packageTokens: me.rerere.rikkahub.theme.packageio.ThemeTokens? = null,
 ) {
     fun generateColorScheme(dark: Boolean): ColorScheme {
+        packageTokens?.let { tokens ->
+            runCatching { tokens.toColorScheme(dark) }.getOrNull()?.let { return it }
+        }
         val sourceHct = Hct.fromInt(primaryColorArgb.toInt())
         val specVersion = DynamicScheme.DEFAULT_SPEC_VERSION
         val platform = DynamicScheme.DEFAULT_PLATFORM

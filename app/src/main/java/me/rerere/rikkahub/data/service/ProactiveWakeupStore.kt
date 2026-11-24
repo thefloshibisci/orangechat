@@ -33,6 +33,7 @@ internal fun proactiveWakeupOutcome(outcome: String): String = when (outcome) {
     "sent" -> "已发送到会话"
     "appointment_assistant_removed" -> "角色已删除"
     "appointment_conversation_removed" -> "原会话已删除或已变更角色"
+    "appointment_participant_changed" -> "此会话已不在主动消息的参与范围内"
     "no_user_message" -> "原会话没有用户消息"
     "no_model" -> "未配置聊天模型"
     "no_provider" -> "找不到此会话模型的服务商"
@@ -99,7 +100,10 @@ internal fun proactiveTriggerTime(
     now: Long,
     zone: ZoneId,
 ): Long = when {
-    appointment == null -> nextProactiveActiveTime(setting, fallbackTime, zone)
+    appointment == null -> {
+        require(fallbackTime != Long.MAX_VALUE) { "Proactive fallback time is unavailable" }
+        nextProactiveActiveTime(setting, fallbackTime, zone)
+    }
     // A blocked, overdue appointment gets a bounded retry instead of a tight alarm loop.
     appointment.timeMillis <= now -> now + 60_000L
     else -> appointment.timeMillis
@@ -162,7 +166,7 @@ internal class ProactiveWakeupStore(
                     when (outcome) {
                         "sent" -> ProactiveWakeupStatus.Sent
                         "pass", "wait", "stop", "follow_up_limit", "disabled_or_quiet_hours",
-                        "appointment_disabled", "appointment_not_due" -> ProactiveWakeupStatus.Skipped
+                        "appointment_disabled", "appointment_not_due", "appointment_participant_changed" -> ProactiveWakeupStatus.Skipped
                         "user_returned", "cancelled" -> ProactiveWakeupStatus.Interrupted
                         else -> ProactiveWakeupStatus.Failed
                     },
@@ -176,6 +180,14 @@ internal class ProactiveWakeupStore(
         write(emptyList(), readHistory() + read().map {
             record(it, ProactiveWakeupStatus.Cancelled, "已关闭 AI 约定主动唤醒")
         })
+    }
+
+    fun deleteHistory(token: String) = synchronized(lock) {
+        val history = readHistory()
+        val remaining = history.filterNot {
+            it.appointment.token == token && it.status != ProactiveWakeupStatus.Running
+        }
+        if (remaining.size != history.size) write(read(), remaining)
     }
 
     private fun read(): List<ProactiveWakeup> = json.decodeFromString(prefs.getString("pending", "[]") ?: "[]")

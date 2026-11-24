@@ -104,8 +104,9 @@ class BackupVM(
         return file
     }
 
-    suspend fun restoreFromLocalFile(file: File) {
-        webDavSync.restoreFromLocalFile(file, settings.value.webDavConfig)
+    suspend fun restoreFromLocalFile(file: File, restoreLocalTaskSettings: Boolean = false) {
+        webDavSync.restoreFromLocalFile(file, settings.value.webDavConfig,
+            restoreLocalTaskSettings = restoreLocalTaskSettings)
     }
 
     suspend fun restoreFromChatBox(file: File): ChatboxRestoreResult {
