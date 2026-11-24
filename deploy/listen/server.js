@@ -81,7 +81,20 @@ function createListenService(options = {}) {
   const store = options.store || createMusicAuthStore({ file: path.join(dataDir, 'netease-auth.json') });
   const now = options.now || Date.now;
   const pendingQr = new Map();
+  const noteWriteQueues = new Map();
   let accountVersion = 0;
+
+  function withNoteLock(id, fn) {
+    const prev = noteWriteQueues.get(id) || Promise.resolve();
+    const run = prev.catch(() => {}).then(fn);
+    const tail = run.then(() => {}, () => {}).finally(() => {
+      if (noteWriteQueues.get(id) === tail) {
+        noteWriteQueues.delete(id);
+      }
+    });
+    noteWriteQueues.set(id, tail);
+    return run;
+  }
 
   async function withCookie(operation) {
     const version = accountVersion;
@@ -219,19 +232,22 @@ function createListenService(options = {}) {
       }
       if (method === 'GET' && endpoint === '/notes') return readNotes(query.get('id'));
       if (method === 'POST' && endpoint === '/notes') {
-        const file = notesFile(query.get('id'));
+        const id = songId(query.get('id'));
         validateNotesUpdate(body);
-        const previous = readNotes(query.get('id'));
-        const notes = normalizeNotes(Object.assign(previous, body));
-        fs.mkdirSync(path.dirname(file), { recursive: true });
-        const temporary = file + '.tmp-' + crypto.randomUUID();
-        try {
-          fs.writeFileSync(temporary, JSON.stringify(notes), { mode: 0o600 });
-          fs.renameSync(temporary, file);
-        } finally {
-          if (fs.existsSync(temporary)) fs.unlinkSync(temporary);
-        }
-        return notes;
+        return withNoteLock(id, () => {
+          const file = notesFile(id);
+          const previous = readNotes(id);
+          const notes = normalizeNotes(Object.assign(previous, body));
+          fs.mkdirSync(path.dirname(file), { recursive: true });
+          const temporary = file + '.tmp-' + crypto.randomUUID();
+          try {
+            fs.writeFileSync(temporary, JSON.stringify(notes), { mode: 0o600 });
+            fs.renameSync(temporary, file);
+          } finally {
+            if (fs.existsSync(temporary)) fs.unlinkSync(temporary);
+          }
+          return notes;
+        });
       }
       throw inputError('接口不存在', 'LISTEN_NOT_FOUND', 404);
     }

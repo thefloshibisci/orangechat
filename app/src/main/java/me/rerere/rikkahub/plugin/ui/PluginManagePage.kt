@@ -181,7 +181,7 @@ fun PluginManagePage(
                         Text("")
                         Text("申请的权限:", style = MaterialTheme.typography.labelLarge)
                         manifest.permissions.forEach { perm ->
-                            Text("• $perm", style = MaterialTheme.typography.bodySmall)
+                            Text("• ${describePluginPermission(perm)}", style = MaterialTheme.typography.bodySmall)
                         }
                     }
                     if (!PluginNetworkPolicy(manifest.allowedHosts).allowsAllHosts) {
@@ -788,3 +788,14 @@ private fun RenameFolderDialog(
         }
     )
 }
+
+private fun describePluginPermission(permission: String): String =
+    when (permission.trim()) {
+        "ai_chat" -> "调用 AI 对话 (ai_chat)"
+        "conversation_sync" -> "读取/发送聊天消息 (conversation_sync)"
+        "provider_credentials" -> "读取模型 API Key (provider_credentials)"
+        "memory_bank" -> "记忆库读写 (memory_bank)"
+        "overlay" -> "系统悬浮窗与番茄钟 (overlay)"
+        "disable_native_selection" -> "自定义 WebView 文本选区 (disable_native_selection)"
+        else -> permission
+    }

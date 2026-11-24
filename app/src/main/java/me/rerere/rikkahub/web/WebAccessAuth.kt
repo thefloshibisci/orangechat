@@ -86,16 +86,21 @@ internal fun createWebJwt(secret: String): Pair<String, Long> {
         .withSubject(WEB_JWT_SUBJECT)
         .withIssuedAt(Date(now))
         .withExpiresAt(Date(expiresAt))
-        .sign(Algorithm.HMAC256(secret))
+        .sign(Algorithm.HMAC256(deriveWebJwtKey(secret)))
     return token to expiresAt
 }
 
 private fun buildWebJwtVerifier(secret: String): JWTVerifier {
-    return JWT.require(Algorithm.HMAC256(secret))
+    return JWT.require(Algorithm.HMAC256(deriveWebJwtKey(secret)))
         .withIssuer(WEB_JWT_ISSUER)
         .withAudience(WEB_JWT_AUDIENCE)
         .withSubject(WEB_JWT_SUBJECT)
         .build()
+}
+
+private fun deriveWebJwtKey(secret: String): ByteArray {
+    return MessageDigest.getInstance("SHA-256")
+        .digest("rikkahub-web-jwt-v1:$secret".toByteArray(Charsets.UTF_8))
 }
 
 private fun extractBearerToken(authorizationHeader: String?): String? {

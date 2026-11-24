@@ -1,6 +1,14 @@
 // 天气查询插件 - 使用 wttr.in API 获取真实天气数据
 // fetch 由橘瓣插件沙箱注入，是同步函数（不需要 await）
 
+function parseJsonSafe(body) {
+  try {
+    return JSON.parse(body);
+  } catch (e) {
+    return null;
+  }
+}
+
 function get_weather(params) {
   var city = params.city || "Beijing";
   var url = "https://wttr.in/" + encodeURIComponent(city) + "?format=j1";
@@ -13,9 +21,12 @@ function get_weather(params) {
     return { success: false, error: "Failed to fetch weather data" };
   }
   
-  var data = JSON.parse(response.body);
+  var data = parseJsonSafe(response.body);
+  if (!data || !data.current_condition || !data.current_condition.length) {
+    return { success: false, error: "Invalid weather data response" };
+  }
   var current = data.current_condition[0];
-  var weatherDesc = current.weatherDesc[0].value;
+  var weatherDesc = current.weatherDesc && current.weatherDesc[0] ? current.weatherDesc[0].value : "";
   var tempC = current.temp_C;
   var humidity = current.humidity;
   var windSpeed = current.windspeedKmph;
@@ -77,7 +88,10 @@ function get_weather_forecast(params) {
     return { success: false, error: "Failed to fetch weather forecast" };
   }
   
-  var data = JSON.parse(response.body);
+  var data = parseJsonSafe(response.body);
+  if (!data) {
+    return { success: false, error: "Invalid weather forecast response" };
+  }
   var forecasts = [];
   
   var weatherList = data.weather || [];
@@ -97,6 +111,8 @@ function get_weather_forecast(params) {
         wind_speed: hourlyList[h].windspeedKmph + " km/h"
       });
     }
+
+    var midday = (hourlyList.length > 4) ? hourlyList[4] : (hourlyList.length > 0 ? hourlyList[0] : null);
     
     forecasts.push({
       date: day.date,
@@ -106,9 +122,9 @@ function get_weather_forecast(params) {
       total_snow: day.totalSnow_cm + " cm",
       sun_hour: day.sunHour,
       uv_index: day.uvIndex,
-      chance_of_rain: day.hourly && day.hourly.length > 0 ? day.hourly[4].chanceofrain + "%" : "N/A",
-      chance_of_snow: day.hourly && day.hourly.length > 0 ? day.hourly[4].chanceofsnow + "%" : "N/A",
-      description: day.hourly && day.hourly.length > 4 && day.hourly[4].weatherDesc && day.hourly[4].weatherDesc[0] ? day.hourly[4].weatherDesc[0].value : "",
+      chance_of_rain: midday ? midday.chanceofrain + "%" : "N/A",
+      chance_of_snow: midday ? midday.chanceofsnow + "%" : "N/A",
+      description: midday && midday.weatherDesc && midday.weatherDesc[0] ? midday.weatherDesc[0].value : "",
       astronomy: astro ? {
         sunrise: astro.sunrise,
         sunset: astro.sunset,

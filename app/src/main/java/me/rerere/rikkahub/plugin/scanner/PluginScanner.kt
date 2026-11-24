@@ -30,6 +30,9 @@ class PluginScanner(
         const val PLUGINS_DIR = "plugins"
         const val LEGACY_PLUGINS_DIR = "Orangechat/plugins"
         const val MANIFEST_FILE = "manifest.json"
+        private const val MAX_PLUGIN_ZIP_ENTRIES = 2_000
+        private const val MAX_PLUGIN_ZIP_ENTRY_BYTES = 20L * 1024 * 1024
+        private const val MAX_PLUGIN_ZIP_TOTAL_BYTES = 64L * 1024 * 1024
     }
 
     private val json = Json {
@@ -311,22 +314,49 @@ class PluginScanner(
     private fun unzip(zipFile: File, destDir: File) {
         destDir.mkdirs()
         val canonicalDest = destDir.canonicalFile
+        val buffer = ByteArray(8192)
+        var entryCount = 0
+        var totalBytes = 0L
         ZipInputStream(zipFile.inputStream().buffered()).use { zis ->
             var entry: java.util.zip.ZipEntry? = zis.nextEntry
             while (entry != null) {
-                val normalizedName = entry.name.replace('\\', '/').trimStart('/')
-                require(normalizedName.isNotBlank()) { "ZIP 包含空文件名" }
-                val file = File(canonicalDest, normalizedName).canonicalFile
-                require(file.toPath().startsWith(canonicalDest.toPath())) {
-                    "ZIP 包含非法路径: ${entry.name}"
-                }
-                if (entry.isDirectory) {
-                    file.mkdirs()
-                } else {
-                    file.parentFile?.mkdirs()
-                    FileOutputStream(file).use { output ->
-                        zis.copyTo(output)
+                try {
+                    entryCount++
+                    require(entryCount <= MAX_PLUGIN_ZIP_ENTRIES) { "ZIP 包含过多条目" }
+                    val normalizedName = entry.name.replace('\\', '/').trimStart('/')
+                    require(normalizedName.isNotBlank()) { "ZIP 包含空文件名" }
+                    val file = File(canonicalDest, normalizedName).canonicalFile
+                    require(file.toPath().startsWith(canonicalDest.toPath())) {
+                        "ZIP 包含非法路径: ${entry.name}"
                     }
+                    if (entry.isDirectory) {
+                        file.mkdirs()
+                    } else {
+                        file.parentFile?.mkdirs()
+                        var entryBytes = 0L
+                        try {
+                            FileOutputStream(file).use { output ->
+                                while (true) {
+                                    val read = zis.read(buffer)
+                                    if (read < 0) break
+                                    entryBytes += read
+                                    totalBytes += read
+                                    require(entryBytes <= MAX_PLUGIN_ZIP_ENTRY_BYTES) {
+                                        "ZIP 单文件超过 20 MB 上限"
+                                    }
+                                    require(totalBytes <= MAX_PLUGIN_ZIP_TOTAL_BYTES) {
+                                        "ZIP 总解压体积超过 64 MB 上限"
+                                    }
+                                    output.write(buffer, 0, read)
+                                }
+                            }
+                        } catch (error: Throwable) {
+                            file.delete()
+                            throw error
+                        }
+                    }
+                } finally {
+                    zis.closeEntry()
                 }
                 entry = zis.nextEntry
             }

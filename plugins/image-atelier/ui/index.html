@@ -372,11 +372,20 @@ $('presetDelete').onclick = function() { safe(async function() {
 
 $('import').onclick = function() { safe(async function() {
   var data = JSON.parse($('presetJson').value), n = NAI.copy(S), maps = data.presets || data;
+  if (!maps || typeof maps !== 'object' || Array.isArray(maps)) throw Error('预设 JSON 格式无效');
   ['styles', 'negatives', 'characters'].forEach(function(k) {
-    if (!maps[k]) return;
-    Object.keys(maps[k]).forEach(function(name) {
-      var x = maps[k][name], text = typeof x === 'string' ? x : (x.text || [x.base, x.signature].filter(Boolean).join(', '));
-      if (text) { n.presets[k][name] = { text: text }; if (k === 'styles') n.presets[k][name].negative = x.negative || ''; }
+    if (!Object.prototype.hasOwnProperty.call(maps, k)) return;
+    var bucket = maps[k];
+    if (!bucket || typeof bucket !== 'object' || Array.isArray(bucket)) return;
+    Object.keys(bucket).forEach(function(name) {
+      if (['__proto__', 'constructor', 'prototype'].indexOf(name) >= 0) return;
+      var x = bucket[name];
+      var text = typeof x === 'string' ? x : (x && typeof x === 'object' ? (x.text || [x.base, x.signature].filter(Boolean).join(', ')) : '');
+      if (text) {
+        var entry = { text: text };
+        if (k === 'styles') entry.negative = (x && typeof x === 'object' && x.negative) || '';
+        Object.defineProperty(n.presets[k], name, { value: entry, writable: true, enumerable: true, configurable: true });
+      }
     });
   });
   await save(n); fill(); say('预设导入成功');

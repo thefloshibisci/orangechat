@@ -32,6 +32,39 @@ import me.rerere.rikkahub.web.routes.assetsRoutes
 import me.rerere.rikkahub.web.routes.conversationRoutes
 import me.rerere.rikkahub.web.routes.filesRoutes
 import me.rerere.rikkahub.web.routes.settingsRoutes
+import java.util.ArrayDeque
+
+private class AuthFailureRateLimiter(
+    private val maxFailures: Int = 10,
+    private val windowMs: Long = 60_000L,
+) {
+    private val failures = ArrayDeque<Long>()
+
+    @Synchronized
+    fun isRateLimited(nowMs: Long = System.currentTimeMillis()): Boolean {
+        pruneExpired(nowMs)
+        return failures.size >= maxFailures
+    }
+
+    @Synchronized
+    fun recordFailure(nowMs: Long = System.currentTimeMillis()) {
+        pruneExpired(nowMs)
+        failures.addLast(nowMs)
+    }
+
+    @Synchronized
+    fun reset() {
+        failures.clear()
+    }
+
+    private fun pruneExpired(nowMs: Long) {
+        while (true) {
+            val oldest = failures.peekFirst() ?: break
+            if (nowMs - oldest <= windowMs) break
+            failures.removeFirst()
+        }
+    }
+}
 
 /**
  * Configure Web API for the Ktor application.
@@ -75,9 +108,22 @@ fun Application.configureWebApi(
         WebAccessPolicy(settings.webServerJwtEnabled, settings.webServerAccessPassword)
     }
 
+    val authRateLimiter = AuthFailureRateLimiter()
+
     routing {
         route("/api") {
             post("/auth/token") {
+                if (authRateLimiter.isRateLimited()) {
+                    call.respond(
+                        HttpStatusCode.TooManyRequests,
+                        ErrorResponse(
+                            "Too many failed authentication attempts, please try again later",
+                            HttpStatusCode.TooManyRequests.value
+                        )
+                    )
+                    return@post
+                }
+
                 val settings = settingsStore.settingsFlow.value
                 if (!settings.webServerJwtEnabled) {
                     throw BadRequestException("JWT auth is disabled")
@@ -90,9 +136,11 @@ fun Application.configureWebApi(
 
                 val request = call.receive<WebAuthTokenRequest>()
                 if (!secureEquals(request.password, accessPassword)) {
+                    authRateLimiter.recordFailure()
                     throw UnauthorizedException("Invalid password")
                 }
 
+                authRateLimiter.reset()
                 val (token, expiresAt) = createWebJwt(accessPassword)
                 call.respond(
                     HttpStatusCode.OK,

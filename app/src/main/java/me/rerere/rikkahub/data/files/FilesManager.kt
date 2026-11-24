@@ -12,7 +12,10 @@ import android.net.Uri
 import android.util.Log
 import androidx.core.net.toFile
 import androidx.core.net.toUri
+import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.IOException
+import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import kotlinx.coroutines.Dispatchers
@@ -43,6 +46,10 @@ class FilesManager(
 ) {
     companion object {
         private const val TAG = "FilesManager"
+        private const val MAX_ZIP_EXTRACT_FILES = 100
+        private const val MAX_ZIP_SINGLE_FILE_BYTES = 20L * 1024 * 1024
+        private const val MAX_ZIP_TOTAL_BYTES = 64L * 1024 * 1024
+        private const val MAX_ZIP_UNKNOWN_TEXT_BYTES = 100_000
     }
 
     private val managedFileMutex = Mutex()
@@ -566,6 +573,8 @@ class FilesManager(
             val documents = mutableListOf<UIMessagePart.Document>()
             val images = mutableListOf<Uri>()
             val skippedFiles = mutableListOf<String>()
+            var extractedFilesCount = 0
+            var totalExtractedBytes = 0L
 
             val dir = context.filesDir.resolve(FileFolders.UPLOAD)
             if (!dir.exists()) dir.mkdirs()
@@ -594,13 +603,30 @@ class FilesManager(
                             continue
                         }
 
+                        if (extractedFilesCount >= MAX_ZIP_EXTRACT_FILES) {
+                            skippedFiles.add(fileName)
+                            zis.closeEntry()
+                            entry = zis.nextEntry
+                            continue
+                        }
+
+                        val remainingTotalBytes = MAX_ZIP_TOTAL_BYTES - totalExtractedBytes
+                        if (remainingTotalBytes <= 0L) {
+                            skippedFiles.add(fileName)
+                            zis.closeEntry()
+                            entry = zis.nextEntry
+                            continue
+                        }
+
                         val ext = fileName.substringAfterLast(".", "").lowercase()
 
                         when {
                             ext in IMAGE_EXTENSIONS -> {
                                 val savedName = buildUuidFileName(displayName = fileName, mimeType = "image/$ext")
                                 val file = dir.resolve(savedName)
-                                file.outputStream().use { output -> zis.copyTo(output) }
+                                val written = copyZipEntryBounded(zis, file, MAX_ZIP_SINGLE_FILE_BYTES, remainingTotalBytes)
+                                totalExtractedBytes += written
+                                extractedFilesCount++
                                 trackManagedFile(
                                     folder = FileFolders.UPLOAD,
                                     file = file,
@@ -614,7 +640,9 @@ class FilesManager(
                                 val mime = FileUtils.guessMimeTypeFromExtension(ext)
                                 val savedName = buildUuidFileName(displayName = fileName, mimeType = mime)
                                 val file = dir.resolve(savedName)
-                                file.outputStream().use { output -> zis.copyTo(output) }
+                                val written = copyZipEntryBounded(zis, file, MAX_ZIP_SINGLE_FILE_BYTES, remainingTotalBytes)
+                                totalExtractedBytes += written
+                                extractedFilesCount++
                                 trackManagedFile(
                                     folder = FileFolders.UPLOAD,
                                     file = file,
@@ -636,7 +664,9 @@ class FilesManager(
                                 val mime = FileUtils.guessMimeTypeFromExtension(ext)
                                 val savedName = buildUuidFileName(displayName = fileName, mimeType = mime)
                                 val file = dir.resolve(savedName)
-                                file.outputStream().use { output -> zis.copyTo(output) }
+                                val written = copyZipEntryBounded(zis, file, MAX_ZIP_SINGLE_FILE_BYTES, remainingTotalBytes)
+                                totalExtractedBytes += written
+                                extractedFilesCount++
                                 trackManagedFile(
                                     folder = FileFolders.UPLOAD,
                                     file = file,
@@ -657,14 +687,17 @@ class FilesManager(
                             }
 
                             else -> {
-                                if (entry.size in 1..100_000) {
-                                    val bytes = zis.readBytes()
+                                val maxUnknown = minOf(MAX_ZIP_UNKNOWN_TEXT_BYTES.toLong(), remainingTotalBytes).toInt()
+                                val bytes = readZipEntryUpTo(zis, maxUnknown)
+                                if (bytes != null) {
                                     val text = runCatching { String(bytes, Charsets.UTF_8) }.getOrNull()
                                     if (text != null && text.isValidUtf8Text()) {
                                         val mime = "text/plain"
                                         val savedName = buildUuidFileName(displayName = fileName, mimeType = mime)
                                         val file = dir.resolve(savedName)
                                         file.writeBytes(bytes)
+                                        totalExtractedBytes += bytes.size
+                                        extractedFilesCount++
                                         trackManagedFile(
                                             folder = FileFolders.UPLOAD,
                                             file = file,
@@ -710,6 +743,49 @@ class FilesManager(
 
             return ZipExtractResult(documents = documents, images = images)
         }
+    }
+
+    private fun copyZipEntryBounded(
+        input: InputStream,
+        target: File,
+        maxSingleBytes: Long,
+        remainingTotalBytes: Long,
+    ): Long {
+        val limit = minOf(maxSingleBytes, remainingTotalBytes)
+        val buffer = ByteArray(8192)
+        var total = 0L
+        try {
+            target.outputStream().use { output ->
+                while (true) {
+                    val read = input.read(buffer)
+                    if (read < 0) break
+                    total += read
+                    if (total > limit) {
+                        throw IOException("ZIP entry exceeds allowed extraction size limit")
+                    }
+                    output.write(buffer, 0, read)
+                }
+            }
+            return total
+        } catch (error: Throwable) {
+            target.delete()
+            throw error
+        }
+    }
+
+    private fun readZipEntryUpTo(input: InputStream, maxBytes: Int): ByteArray? {
+        if (maxBytes <= 0) return null
+        val output = ByteArrayOutputStream()
+        val buffer = ByteArray(4096)
+        var total = 0
+        while (true) {
+            val read = input.read(buffer)
+            if (read < 0) break
+            total += read
+            if (total > maxBytes) return null
+            output.write(buffer, 0, read)
+        }
+        return output.toByteArray().takeIf { it.isNotEmpty() }
     }
 
     private fun String.isValidUtf8Text(): Boolean {

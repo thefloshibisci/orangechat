@@ -2,6 +2,7 @@ import * as React from "react";
 
 import { ExternalLink } from "lucide-react";
 
+import { safeExternalUrl } from "~/lib/safe-url";
 import { cn } from "~/lib/utils";
 import type { UIMessageAnnotation } from "~/types";
 
@@ -47,15 +48,28 @@ export function ChatMessageAnnotationsRow({
     >
       {citations.map((annotation, index) => {
         const label = getCitationLabel(annotation);
+        const safeUrl = safeExternalUrl(annotation.url);
+
+        if (!safeUrl) {
+          return (
+            <span
+              key={`${annotation.url}-${index}`}
+              className="inline-flex max-w-full items-center gap-1 rounded-full border border-border bg-background px-2 py-1 text-xs text-muted-foreground"
+              title={label}
+            >
+              <span className="max-w-[220px] truncate">{label}</span>
+            </span>
+          );
+        }
 
         return (
           <a
             key={`${annotation.url}-${index}`}
-            href={annotation.url}
+            href={safeUrl}
             target="_blank"
             rel="noopener noreferrer"
             className="inline-flex max-w-full items-center gap-1 rounded-full border border-border bg-background px-2 py-1 text-xs text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground"
-            title={annotation.url || label}
+            title={safeUrl || label}
           >
             <span className="max-w-[220px] truncate">{label}</span>
             <ExternalLink className="size-3" />

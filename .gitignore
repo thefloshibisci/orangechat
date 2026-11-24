@@ -27,6 +27,8 @@ dist/
 # 构建产物、日志与临时调试文件
 build_*.txt
 build_*.log
+compile_errors.txt
+tmp_*.py
 _chk/
 _chk.zip
 *.apk

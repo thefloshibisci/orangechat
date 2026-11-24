@@ -43,14 +43,30 @@ class ShortcutHandlerActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        requestPermissionLauncher.launch(Manifest.permission.CAMERA)
+        photoURI = savedInstanceState?.getString(KEY_PHOTO_URI)?.let(Uri::parse)
+        if (savedInstanceState == null) {
+            requestPermissionLauncher.launch(Manifest.permission.CAMERA)
+        }
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        photoURI?.let { outState.putString(KEY_PHOTO_URI, it.toString()) }
     }
 
     private fun launchCamera() {
         val imageFile = File(cacheDir, "shortcut_camera_image.jpg")
         photoURI = FileProvider.getUriForFile(this, "${BuildConfig.APPLICATION_ID}.fileprovider", imageFile)
         photoURI?.let {
-            takePictureLauncher.launch(it)
+            try {
+                takePictureLauncher.launch(it)
+            } catch (_: Exception) {
+                finish()
+            }
         } ?: finish()
+    }
+
+    private companion object {
+        const val KEY_PHOTO_URI = "photo_uri"
     }
 }

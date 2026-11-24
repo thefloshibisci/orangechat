@@ -14,8 +14,14 @@ import io.ktor.server.routing.Route
 import io.ktor.server.routing.route
 import io.ktor.server.sse.heartbeat
 import io.ktor.server.sse.sse
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import me.rerere.ai.provider.BuiltInTools
 import me.rerere.ai.provider.ModelType
+import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.datastore.findModelById
 import me.rerere.rikkahub.utils.JsonInstant
@@ -205,11 +211,91 @@ fun Route.settingsRoutes(
             }
             settingsStore.settingsFlow
                 .collect { settings ->
-                    val json = JsonInstant.encodeToString(settings)
+                    val redacted = redactSettingsForWeb(
+                        JsonInstant.encodeToJsonElement(Settings.serializer(), settings)
+                    )
+                    val json = JsonInstant.encodeToString(JsonElement.serializer(), redacted)
                     send(data = json, event = "update")
                 }
         }
     }
+}
+
+private val WEB_REMOVED_SETTINGS_KEYS = setOf(
+    "webDavConfig",
+    "s3Config",
+    "webServerAccessPassword",
+    "wechatBotSetting",
+    "qqBotSetting",
+    "gongdu",
+    "sereinHook",
+    "ttsProviders",
+    "asrProviders",
+    "proactiveMessageSetting",
+    "systemToolsSetting",
+    "externalMemories",
+    "miniApps",
+    "backupReminderConfig",
+    "autoBackupConfig",
+)
+
+private val REDACTED_FIELD_KEYS = setOf(
+    "apikey",
+    "api_key",
+    "secret",
+    "secretkey",
+    "accesskey",
+    "accesskeyid",
+    "secretaccesskey",
+    "password",
+    "token",
+    "accesstoken",
+    "refreshtoken",
+    "bottoken",
+    "authtoken",
+    "authorization",
+    "privatekey",
+    "serviceaccountjson",
+    "clientsecret",
+    "appsecret",
+    "passphrase",
+    "cookie",
+    "cookies",
+    "headers",
+    "customheaders",
+    "env",
+    "bearer",
+    "credentials",
+)
+
+internal fun redactSettingsForWeb(element: JsonElement): JsonElement {
+    val root = element as? JsonObject ?: return redactSecretsRecursive(element)
+    val filtered = root.entries
+        .filter { (key, _) -> key !in WEB_REMOVED_SETTINGS_KEYS }
+        .associate { (key, value) ->
+            key to redactEntry(key, value)
+        }
+    return JsonObject(filtered)
+}
+
+private fun redactSecretsRecursive(element: JsonElement): JsonElement = when (element) {
+    is JsonObject -> JsonObject(
+        element.entries.associate { (key, value) -> key to redactEntry(key, value) }
+    )
+    is JsonArray -> JsonArray(element.map { redactSecretsRecursive(it) })
+    else -> element
+}
+
+private fun redactEntry(key: String, value: JsonElement): JsonElement {
+    if (key.lowercase(Locale.ROOT) in REDACTED_FIELD_KEYS) {
+        return when (value) {
+            is JsonNull -> value
+            is JsonPrimitive -> JsonPrimitive("")
+            is JsonObject -> JsonObject(emptyMap())
+            is JsonArray -> JsonArray(emptyList())
+        }
+    }
+    return redactSecretsRecursive(value)
 }
 
 private fun parseBuiltInTool(tool: String): BuiltInTools {

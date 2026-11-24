@@ -102,16 +102,17 @@ class ChatCompletionsAPI(
             .build()
 
 
-        val response = client.newCall(request).await()
-        if (!response.isSuccessful) {
-            val errorBody = response.body?.string()
-            val errorMsg = "generateText: HTTP ${response.code} error response body: $errorBody"
-            Log.e(TAG, errorMsg)
-            Logging.log(TAG, errorMsg)
-            throw Exception("Failed to get response: ${response.code} $errorBody")
-        }
+        val bodyStr = client.newCall(request).await().use { response ->
+            if (!response.isSuccessful) {
+                val errorBody = response.body?.string()
+                val errorMsg = "generateText: HTTP ${response.code} error response body: $errorBody"
+                Log.e(TAG, errorMsg)
+                Logging.log(TAG, errorMsg)
+                throw Exception("Failed to get response: ${response.code} $errorBody")
+            }
 
-        val bodyStr = response.body?.string() ?: ""
+            response.body?.string() ?: ""
+        }
 
         // 检测响应是否为 SSE 格式（某些 API 即使 stream=false 也返回 SSE）
         val isSSE = bodyStr.trimStart().startsWith("data:")

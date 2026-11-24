@@ -6,6 +6,7 @@
   "author": "Silas",
   "icon": "🌤️",
   "entry": "main.js",
+  "allowedHosts": ["wttr.in"],
   "tools": [
     {
       "name": "get_weather",

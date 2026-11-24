@@ -46,7 +46,12 @@ const val MAX_OUTPUT_CHARS = 128 * 1024
 fun Process.readResult(timeoutMillis: Long, stdin: ByteArray? = null): WorkspaceCommandResult {
     val stdout = StreamCollector(inputStream)
     val stderr = StreamCollector(errorStream)
-    val stdinWriter = stdin?.let { bytes -> StreamWriter(outputStream, bytes) }
+    val stdinWriter = if (stdin != null) {
+        StreamWriter(outputStream, stdin)
+    } else {
+        runCatching { outputStream.close() }
+        null
+    }
     try {
         val finished = waitFor(timeoutMillis, TimeUnit.MILLISECONDS)
         if (!finished) {

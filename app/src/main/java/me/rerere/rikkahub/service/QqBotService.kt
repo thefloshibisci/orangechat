@@ -15,6 +15,7 @@ import android.content.pm.ServiceInfo
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -53,7 +54,6 @@ import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import org.koin.core.component.inject
-import kotlin.coroutines.cancellation.CancellationException
 import kotlin.uuid.Uuid
 
 /**
@@ -92,17 +92,19 @@ class QqBotService : Service(), org.koin.core.component.KoinComponent {
     @Volatile private var seq: Int? = null
     @Volatile private var reconnectAttempt = 0
     private var heartbeatJob: Job? = null
+    private var reconnectJob: Job? = null
     private val sendLock = Mutex()
+    private val connectLock = Mutex()
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        startForegroundCompat()
         if (isChatRecoveryBlocking()) {
             stopSelf(startId)
             return START_NOT_STICKY
         }
 
-        startForegroundCompat()
         if (!alive) {
             scope.launch { connect() }
         }
@@ -112,6 +114,7 @@ class QqBotService : Service(), org.koin.core.component.KoinComponent {
     override fun onDestroy() {
         super.onDestroy()
         alive = false
+        reconnectJob?.cancel()
         heartbeatJob?.cancel()
         webSocket?.close(1000, "service destroyed")
         scope.cancel()
@@ -119,11 +122,12 @@ class QqBotService : Service(), org.koin.core.component.KoinComponent {
 
     // ==================== 连接主流程 ====================
 
-    private suspend fun connect() {
+    private suspend fun connect() = connectLock.withLock {
+        if (alive && webSocket != null) return@withLock
         val setting = settingsStore.settingsFlow.first().qqBotSetting
         if (!setting.enabled || setting.appId.isBlank() || setting.appSecret.isBlank()) {
             Log.w(TAG, "disabled or missing appId/secret, stopping")
-            stopSelf(); return
+            stopSelf(); return@withLock
         }
         try {
             // 1. 拿 (或刷新) access_token
@@ -135,6 +139,8 @@ class QqBotService : Service(), org.koin.core.component.KoinComponent {
             alive = true
             val request = Request.Builder().url(wssUrl).build()
             webSocket = okHttpClient.newWebSocket(request, QqWsListener())
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "connect failed: ${e.message}", e)
             alive = false
@@ -356,7 +362,8 @@ class QqBotService : Service(), org.koin.core.component.KoinComponent {
         // 指数退避, 上限 30s
         val delayMs = (RECONNECT_BASE * (1L shl (reconnectAttempt - 1).coerceAtMost(5))).coerceAtMost(30_000)
         Log.i(TAG, "reconnect in ${delayMs}ms (attempt=$reconnectAttempt)")
-        scope.launch {
+        reconnectJob?.cancel()
+        reconnectJob = scope.launch {
             delay(delayMs)
             if (alive) connect()
         }

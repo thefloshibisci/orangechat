@@ -63,12 +63,12 @@ class WeixinBotService : Service(), org.koin.core.component.KoinComponent {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        startForegroundCompat()
         if (isChatRecoveryBlocking()) {
             stopSelf(startId)
             return START_NOT_STICKY
         }
 
-        startForegroundCompat()
         if (pollJob == null || pollJob?.isActive != true) {
             pollJob = scope.launch { runPollLoop() }
         }
@@ -86,6 +86,8 @@ class WeixinBotService : Service(), org.koin.core.component.KoinComponent {
      */
     private suspend fun runPollLoop() {
         var getUpdatesBuf = ""
+        val repliedQueue = ArrayDeque<String>()
+        val repliedKeys = HashSet<String>()
         Log.i(TAG, "poll loop started")
         while (true) {
             try {
@@ -101,8 +103,6 @@ class WeixinBotService : Service(), org.koin.core.component.KoinComponent {
                     baseUrl = botSetting.baseUrl,
                     getUpdatesBuf = getUpdatesBuf,
                 )
-                // 更新游标 (服务器下发的, 下次请求带上, 防止重复收消息)
-                getUpdatesBuf = result.getUpdatesBuf
 
                 for (msg in result.msgs) {
                     // 只处理用户发给 bot 的消息 (message_type=1)
@@ -113,6 +113,11 @@ class WeixinBotService : Service(), org.koin.core.component.KoinComponent {
                     val contextToken = msg["context_token"]?.jsonPrimitive?.content
                     if (fromUserId.isNullOrBlank() || contextToken.isNullOrBlank()) {
                         Log.w(TAG, "inbound msg missing from_user_id/context_token, skip")
+                        continue
+                    }
+                    val msgKey = "$fromUserId:$contextToken"
+                    if (msgKey in repliedKeys) {
+                        Log.d(TAG, "skip duplicate inbound msg $msgKey")
                         continue
                     }
 
@@ -129,8 +134,15 @@ class WeixinBotService : Service(), org.koin.core.component.KoinComponent {
                         text = reply,
                         contextToken = contextToken,
                     )
+                    if (repliedQueue.size >= 256) {
+                        repliedKeys.remove(repliedQueue.removeFirst())
+                    }
+                    repliedKeys.add(msgKey)
+                    repliedQueue.addLast(msgKey)
                     Log.i(TAG, "replied to=$fromUserId len=${reply.length}")
                 }
+                // 更新游标 (处理完所有消息后再推进, 避免中途失败漏处理)
+                getUpdatesBuf = result.getUpdatesBuf
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {

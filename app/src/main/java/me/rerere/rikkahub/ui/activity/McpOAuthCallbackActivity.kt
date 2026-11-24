@@ -6,6 +6,7 @@
 
 package me.rerere.rikkahub.ui.activity
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import kotlinx.coroutines.launch
@@ -24,19 +25,28 @@ class McpOAuthCallbackActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val uri = intent?.data
-        if (uri != null) {
-            // 使用 AppScope 发送，避免 finish() 取消协程导致事件丢失
-            appScope.launch {
-                eventBus.emit(
-                    AppEvent.McpOAuthCallback(
-                        state = uri.getQueryParameter("state"),
-                        code = uri.getQueryParameter("code"),
-                        error = uri.getQueryParameter("error"),
-                    )
-                )
-            }
-        }
+        handleCallbackIntent(intent)
         finish()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        handleCallbackIntent(intent)
+        finish()
+    }
+
+    private fun handleCallbackIntent(intent: Intent?) {
+        val uri = intent?.data ?: return
+        if (uri.scheme != "rikkahub" || uri.host != "mcp-oauth-callback") return
+        // 使用 AppScope 发送，避免 finish() 取消协程导致事件丢失
+        appScope.launch {
+            eventBus.emit(
+                AppEvent.McpOAuthCallback(
+                    state = uri.getQueryParameter("state"),
+                    code = uri.getQueryParameter("code"),
+                    error = uri.getQueryParameter("error"),
+                )
+            )
+        }
     }
 }

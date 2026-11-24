@@ -213,12 +213,11 @@
       </intent-filter>
     </service>
 
-    <!-- Proactive Message Receiver (handles both proactive alarm and boot completed) -->
+    <!-- Proactive Message Receiver (handles boot completed only; alarms target TriggerService directly) -->
     <receiver
       android:name=".data.service.ProactiveMessageReceiver"
       android:exported="true">
       <intent-filter>
-        <action android:name="me.rerere.orangechat.PROACTIVE_MESSAGE" />
         <action android:name="android.intent.action.BOOT_COMPLETED" />
       </intent-filter>
     </receiver>
@@ -249,12 +248,16 @@
         android:value="device event ai trigger for proactive messaging" />
     </service>
 
-    <!-- Daily Cron Receiver (handles daily_cron alarm and boot completed) -->
+    <!-- Daily Cron Receiver (internal alarm receiver only) -->
     <receiver
       android:name=".data.service.DailySummaryReceiver"
+      android:exported="false" />
+
+    <!-- Daily Cron Boot Receiver (reschedules daily cron after boot) -->
+    <receiver
+      android:name=".data.service.DailySummaryBootReceiver"
       android:exported="true">
       <intent-filter>
-        <action android:name="me.rerere.orangechat.DAILY_CRON" />
         <action android:name="android.intent.action.BOOT_COMPLETED" />
       </intent-filter>
     </receiver>

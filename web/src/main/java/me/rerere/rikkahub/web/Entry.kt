@@ -32,7 +32,8 @@ fun startWebServer(
             allowHeader(HttpHeaders.ContentType)
             allowHeader(HttpHeaders.Authorization)
             allowNonSimpleContentTypes = true
-            anyHost()
+            allowHost("localhost:5173")
+            allowHost("127.0.0.1:5173")
             anyMethod()
         }
         install(SSE)

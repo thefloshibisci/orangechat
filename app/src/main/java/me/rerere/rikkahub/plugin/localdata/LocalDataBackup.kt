@@ -177,7 +177,7 @@ class LocalDataBackup(
         usableMedia.forEach { media ->
             val file = mediaStore.originalFile(media.resourceId)
                 ?: throw LocalDataException(LocalDataErrorCode.UNAVAILABLE, "Media is missing")
-            if (file.length() != media.byteSize || sha256Hex(file.readBytes()) != media.sha256) {
+            if (file.length() != media.byteSize || fileSha256Hex(file) != media.sha256) {
                 throw LocalDataException(LocalDataErrorCode.UNAVAILABLE, "Media integrity check failed")
             }
         }
@@ -239,7 +239,6 @@ class LocalDataBackup(
         if (!empty && !options.replaceExisting) {
             throw LocalDataException(LocalDataErrorCode.CONFLICT, "Local data is not empty")
         }
-        val restoredFiles = mutableListOf<File>()
         val restoreTemp = File(database.paths.restoreTempDir, UUID.randomUUID().toString())
         restoreTemp.mkdirs()
         try {
@@ -274,22 +273,53 @@ class LocalDataBackup(
                 }
                 database.paths.ensureDirectories()
                 val mediaById = payload.media.associateBy { it.resourceId }
+                val displacedDir = File(restoreTemp, "displaced").apply { mkdirs() }
+                val newlyCreated = mutableListOf<File>()
+                val displaced = mutableListOf<Pair<File, File>>()
                 try {
                     mediaFiles.forEach { (oldResourceId, tempFile) ->
                         val media = mediaById.getValue(oldResourceId)
                         val newResourceId = maps.media.getValue(oldResourceId)
                         val extension = media.fileName.substringAfterLast('.', "jpg")
                         val target = File(database.paths.originalsDir, "$newResourceId.$extension")
+                        if (target.exists()) {
+                            val backup = File(displacedDir, "${UUID.randomUUID()}_${target.name}")
+                            if (!target.renameTo(backup)) {
+                                target.copyTo(backup, overwrite = true)
+                                target.delete()
+                            }
+                            displaced += target to backup
+                        } else {
+                            newlyCreated += target
+                        }
                         if (!tempFile.renameTo(target)) {
                             tempFile.copyTo(target, overwrite = true)
                             tempFile.delete()
                         }
-                        restoredFiles += target
                     }
                     store.replaceAll(remapped)
                 } catch (error: Exception) {
-                    restoredFiles.forEach { it.delete() }
+                    newlyCreated.forEach { it.delete() }
+                    displaced.forEach { (target, backup) ->
+                        target.delete()
+                        if (!backup.renameTo(target) && backup.exists()) {
+                            runCatching { backup.copyTo(target, overwrite = true) }
+                        }
+                    }
                     throw error
+                }
+                if (options.replaceExisting) {
+                    val keepNames = remapped.media.map { it.fileName }.toSet()
+                    database.paths.originalsDir.listFiles()?.forEach { file ->
+                        if (file.isFile && file.name !in keepNames) {
+                            file.delete()
+                        }
+                    }
+                    database.paths.thumbnailsDir.listFiles()?.forEach { file ->
+                        if (file.isFile) {
+                            file.delete()
+                        }
+                    }
                 }
                 return LocalRestoreReport(
                     authors = remapped.authors.size,
@@ -643,6 +673,19 @@ class LocalDataBackup(
         zip.putNextEntry(entry)
         zip.write(bytes)
         zip.closeEntry()
+    }
+
+    private fun fileSha256Hex(file: File): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        val buffer = ByteArray(8192)
+        file.inputStream().use { input ->
+            while (true) {
+                val read = input.read(buffer)
+                if (read < 0) break
+                if (read > 0) digest.update(buffer, 0, read)
+            }
+        }
+        return digest.digest().joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
     }
 
     private fun counts(payload: LocalDataBackupPayload): LocalBackupCounts = LocalBackupCounts(

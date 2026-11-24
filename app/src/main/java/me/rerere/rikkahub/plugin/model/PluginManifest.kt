@@ -101,6 +101,9 @@ data class PluginManifest(
      * 支持的权限:
      * - "ai_chat": 允许插件调用 AI 生成文本（Bridge.callAI）
      * - "provider_credentials": 允许 QuickJS 插件读取所选模型的 API key 配置（谨慎授予）
+     * - "conversation_sync": 允许读取当前助手会话列表或向会话发送消息
+     * - "memory_bank": 允许 QuickJS 插件查询、保存或删除记忆库内容（默认关闭）
+     * - "overlay": 允许自定义 WebView 页面弹出系统悬浮窗与番茄钟（默认关闭）
      * - "disable_native_selection": 禁用 WebView 原生长按选择菜单，由 JS 自行处理选区
      */
     val permissions: List<String> = emptyList(),

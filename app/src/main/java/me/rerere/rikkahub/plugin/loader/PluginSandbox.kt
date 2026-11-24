@@ -56,6 +56,12 @@ class PluginSandbox(
      * 未声明或空列表默认允许联网；非空列表限制可访问的域名。
      */
     var allowedHosts: List<String> = emptyList()
+
+    /**
+     * 插件在 manifest.permissions 中声明的已授予权限集合。
+     * 敏感桥接能力（如记忆库）默认拒绝，需显式声明才放行。
+     */
+    var grantedPermissions: Set<String> = emptySet()
  
     // QuickJS上下文
     private var quickJSContext: QuickJSContext? = null
@@ -411,16 +417,21 @@ var imageAssets = {
             val response = fetchClient.newCall(requestBuilder.build()).execute()
             response.use {
                 val binary = (options["responseEncoding"] as? JsonPrimitive)?.contentOrNull == "base64"
-                val responseBody = if (binary) {
-                    val source = it.body.source()
-                    val buffer = okio.Buffer()
-                    while (!source.exhausted()) {
-                        val read = source.read(buffer, 8192)
-                        if (read < 0) break
-                        require(buffer.size <= 12000000) { "Binary response exceeds 12 MB" }
+                val source = it.body.source()
+                val buffer = okio.Buffer()
+                while (!source.exhausted()) {
+                    val read = source.read(buffer, 8192)
+                    if (read < 0) break
+                    require(buffer.size <= 12_000_000L) {
+                        if (binary) "Binary response exceeds 12 MB" else "Response exceeds 12 MB"
                     }
+                }
+                val responseBody = if (binary) {
                     android.util.Base64.encodeToString(buffer.readByteArray(), android.util.Base64.NO_WRAP)
-                } else it.body.string()
+                } else {
+                    val charset = it.body.contentType()?.charset() ?: Charsets.UTF_8
+                    buffer.readString(charset)
+                }
                 val statusCode = it.code
                 val responseHeaders = it.headers
 
@@ -719,7 +730,14 @@ var imageAssets = {
     /**
      * 记忆库桥接
      */
-    private fun nativeMemoryBankBridge(action: String, paramsJson: String): String {
+    private fun nativeMemoryBankBridge(action: String, paramsJson: String): String =
+        invokeMemoryBankBridge(action, paramsJson)
+
+    internal fun invokeMemoryBankBridge(action: String, paramsJson: String): String {
+        if (grantedPermissions.none { it.trim() == "memory_bank" }) {
+            Log.w(TAG, "memoryBankBridge blocked: permission 'memory_bank' not declared")
+            return """{"success":false,"error":"Permission 'memory_bank' is required"}"""
+        }
         val service = memoryBankService
         if (service == null) {
             return """{"success":false,"error":"记忆库服务未初始化"}"""

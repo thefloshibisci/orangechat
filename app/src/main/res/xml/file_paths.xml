@@ -8,7 +8,22 @@
     path="." />
   <files-path
     name="upload"
-    path="." />
+    path="upload/" />
+  <files-path
+    name="images"
+    path="images/" />
+  <files-path
+    name="camera_captures"
+    path="camera_captures/" />
+  <files-path
+    name="voice_messages"
+    path="voice_messages/" />
+  <files-path
+    name="video_call_clips"
+    path="video_call_clips/" />
+  <files-path
+    name="video_call_snapshots"
+    path="video_call_snapshots/" />
   <cache-path
     name="tts_audio"
     path="tts/" />

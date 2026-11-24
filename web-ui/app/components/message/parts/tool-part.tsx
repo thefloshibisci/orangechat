@@ -31,6 +31,7 @@ import {
 } from "~/components/ui/drawer";
 import { useIsMobile } from "~/hooks/use-mobile";
 import { resolveFileUrl } from "~/lib/files";
+import { safeExternalUrl } from "~/lib/safe-url";
 import type {
   TextPart as UITextPart,
   ToolPart as UIToolPart,
@@ -185,12 +186,28 @@ function SearchWebPreview({ args, content }: { args: unknown; content: unknown }
 
             if (!url) return null;
 
+            const safeUrl = safeExternalUrl(url);
+            if (!safeUrl) {
+              return (
+                <div
+                  key={`${url}-${index}`}
+                  className="block rounded-lg border border-muted bg-card p-3"
+                >
+                  <div className="line-clamp-1 font-medium text-sm">{title || url}</div>
+                  {text && (
+                    <div className="mt-1 line-clamp-3 text-muted-foreground text-xs">{text}</div>
+                  )}
+                  <div className="mt-2 line-clamp-1 text-primary text-xs">{url}</div>
+                </div>
+              );
+            }
+
             return (
               <a
                 key={`${url}-${index}`}
                 className="block rounded-lg border border-muted bg-card p-3 hover:bg-muted/40"
-                href={url}
-                rel="noreferrer"
+                href={safeUrl}
+                rel="noopener noreferrer"
                 target="_blank"
               >
                 <div className="line-clamp-1 font-medium text-sm">{title || url}</div>

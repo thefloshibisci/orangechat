@@ -5,7 +5,7 @@ import { cjk } from "@streamdown/cjk";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
-import rehypeRaw from "rehype-raw";
+import { safeMarkdownHref } from "~/lib/safe-url";
 import { cn } from "~/lib/utils";
 import { getCodePreviewLanguage } from "~/components/workbench/code-preview-language";
 import { useOptionalWorkbench } from "~/components/workbench/workbench-context";
@@ -111,7 +111,7 @@ export default function Markdown({
     <div className={cn("markdown", className)}>
       <Streamdown
         remarkPlugins={[remarkGfm, remarkMath]}
-        rehypePlugins={[rehypeKatex, rehypeRaw]}
+        rehypePlugins={[rehypeKatex]}
         plugins={{ cjk: cjk }}
         animated={{ animation: "fadeIn", sep: 'word', duration: 150 }}
         isAnimating={isAnimating}
@@ -150,6 +150,7 @@ export default function Markdown({
           },
           a: ({ href, children, ...props }) => {
             const childText = getNodeText(children).trim();
+            const safeHref = safeMarkdownHref(href);
 
             // Citation format: [citation,domain](id)
             if (childText.startsWith("citation,")) {
@@ -169,23 +170,34 @@ export default function Markdown({
               }
 
               if (href) {
+                if (safeHref) {
+                  return (
+                    <a
+                      className="citation-badge"
+                      href={safeHref}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      title={domain}
+                      {...props}
+                    >
+                      {domain}
+                    </a>
+                  );
+                }
                 return (
-                  <a
-                    className="citation-badge"
-                    href={href}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    title={domain}
-                    {...props}
-                  >
+                  <span className="citation-badge" title={domain}>
                     {domain}
-                  </a>
+                  </span>
                 );
               }
             }
 
+            if (!safeHref) {
+              return <span>{children}</span>;
+            }
+
             return (
-              <a href={href} target="_blank" rel="noopener noreferrer" {...props}>
+              <a href={safeHref} target="_blank" rel="noopener noreferrer" {...props}>
                 {children}
               </a>
             );

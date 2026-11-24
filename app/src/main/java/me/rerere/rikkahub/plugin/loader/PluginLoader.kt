@@ -69,6 +69,10 @@ class PluginLoader(
             val pluginSandbox = PluginSandbox(context, okHttpClient, memoryBankService, dataStore)
             sandbox = pluginSandbox
             pluginSandbox.allowedHosts = pluginInfo.manifest.allowedHosts
+            pluginSandbox.grantedPermissions = pluginInfo.manifest.permissions
+                .map { it.trim() }
+                .filter { it.isNotEmpty() }
+                .toSet()
             pluginSandbox.initialize()
  
             val resolvedConfig = resolveModelConfig(pluginInfo)

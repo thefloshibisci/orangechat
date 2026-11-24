@@ -8,7 +8,15 @@ on:
       - 'ai/**'
       - 'search/**'
       - 'speech/**'
+      - 'terminal/**'
       - 'workspace/**'
+      - 'web/**'
+      - 'web-ui/**'
+      - 'plugins/**'
+      - 'deploy/**'
+      - 'functions/**'
+      - 'gradle/**'
+      - 'tools/**'
       - '.github/workflows/android-regression.yml'
   workflow_dispatch:
 
@@ -43,8 +51,17 @@ jobs:
       - name: Install web dependencies
         working-directory: web-ui
         run: pnpm install --frozen-lockfile
+      - name: Check web-ui types, functions syntax, and host suites
+        run: |
+          set -euo pipefail
+          pnpm --dir web-ui run typecheck
+          node --check functions/index.js
+          node --test plugins/image-atelier/tests/references.test.cjs
+          node --test plugins/local-moments/tests/*.test.cjs
+          node --test deploy/listen/test/listen.test.js deploy/listen/test/netease.test.js
+          python3 -m unittest discover -s tools -p 'test_*.py'
       - name: Test regressions and compile device tests
-        run: bash gradlew :app:testDebugUnitTest :ai:testDebugUnitTest :speech:testDebugUnitTest :search:testDebugUnitTest :workspace:testDebugUnitTest :app:compileDebugAndroidTestKotlin
+        run: bash gradlew -I .github/gradle/robolectric-ci.gradle :app:testDebugUnitTest :ai:testDebugUnitTest :speech:testDebugUnitTest :search:testDebugUnitTest :workspace:testDebugUnitTest :terminal:testDebugUnitTest :app:compileDebugAndroidTestKotlin
       - name: Build debug APK
         run: bash gradlew :app:assembleDebug -PorangechatAbis=arm64-v8a -PorangechatUniversalApk=false
       - uses: actions/upload-artifact@v4

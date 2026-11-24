@@ -417,25 +417,24 @@ private fun UIMessage.visibleTextForProactiveContext(): String = parts
 class ProactiveMessageReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         Log.d(ProactiveMessageService.TAG, "=== onReceive triggered at ${System.currentTimeMillis()}, action=${intent.action} ===")
-        when (intent.action) {
-            ProactiveMessageService.ACTION_PROACTIVE_MESSAGE -> {
-                Log.d(ProactiveMessageService.TAG, "Starting ProactiveMessageTriggerService...")
-                val serviceIntent = Intent(context, ProactiveMessageTriggerService::class.java)
-                context.startForegroundService(serviceIntent)
-            }
-            Intent.ACTION_BOOT_COMPLETED -> {
-                Log.d(ProactiveMessageService.TAG, "Boot completed, rescheduling proactive message")
-                CoroutineScope(Dispatchers.IO).launch {
-                    try {
-                        val settingsStore = org.koin.core.context.GlobalContext.get().get<SettingsStore>()
-                        val settings = settingsStore.settingsFlow.first()
-                        val proactiveSetting = settings.proactiveMessageSetting
-                        if (proactiveSetting.enabled) {
-                            ProactiveMessageService.scheduleNext(context, proactiveSetting)
-                        }
-                    } catch (e: Exception) {
-                        Log.e(ProactiveMessageService.TAG, "Failed to reschedule after boot", e)
+        if (intent.action == Intent.ACTION_BOOT_COMPLETED) {
+            Log.d(ProactiveMessageService.TAG, "Boot completed, rescheduling proactive message")
+            val pendingResult = goAsync()
+            val appContext = context.applicationContext
+            CoroutineScope(Dispatchers.IO).launch {
+                try {
+                    val settingsStore = org.koin.core.context.GlobalContext.get().get<SettingsStore>()
+                    val settings = settingsStore.settingsFlow.first()
+                    val proactiveSetting = settings.proactiveMessageSetting
+                    if (proactiveSetting.enabled) {
+                        ProactiveMessageService.scheduleNext(appContext, proactiveSetting)
                     }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.e(ProactiveMessageService.TAG, "Failed to reschedule after boot", e)
+                } finally {
+                    pendingResult.finish()
                 }
             }
         }
@@ -456,6 +455,7 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
     private val proactiveMessageService = ProactiveMessageService()
     private val executor by lazy { ProactiveTaskExecutor(this, settingsStore, conversationRepository, chatService) }
     private val activeRunCount = AtomicInteger(0)
+    @Volatile private var latestStartId: Int = -1
     private val serviceJob = SupervisorJob()
     private val serviceScope = CoroutineScope(Dispatchers.IO + serviceJob)
     private val generationWakeLocks = ConcurrentHashMap<Int, PowerManager.WakeLock>()
@@ -486,8 +486,10 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        latestStartId = startId
+        enterForeground()
         if (isChatRecoveryBlocking()) {
-            stopSelf(startId)
+            if (activeRunCount.get() == 0) stopSelf(startId)
             return START_NOT_STICKY
         }
 
@@ -509,14 +511,6 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
         if (isForceTrigger) {
             Log.d(TAG, "Force trigger${if (isFromDeviceEvent) " from device event" else " from gateway poll"}, will skip min interval check")
         }
-        val notification = androidx.core.app.NotificationCompat.Builder(this, CHAT_LIVE_UPDATE_NOTIFICATION_CHANNEL_ID)
-            .setContentTitle("主动消息处理中")
-            .setSmallIcon(me.rerere.rikkahub.R.drawable.small_icon)
-            .setPriority(androidx.core.app.NotificationCompat.PRIORITY_MIN)
-            .setSilent(true)
-            .setOngoing(true)
-            .build()
-        startForeground(20001, notification)
         trace.event("foreground", "startId=$startId")
 
         // WorkManager 只负责把服务唤醒；真正耗时的是下面完整的流式生成、落库和通知流程。
@@ -1232,11 +1226,33 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                     )
                 }
                 releaseGenerationWakeLock(startId)
-                if (activeRunCount.decrementAndGet() == 0) stopSelf()
+                val stopId = latestStartId
+                if (activeRunCount.decrementAndGet() == 0) stopSelf(stopId)
             }
         }
 
         return START_NOT_STICKY
+    }
+
+    private fun enterForeground() {
+        val notification = NotificationCompat.Builder(this, CHAT_LIVE_UPDATE_NOTIFICATION_CHANNEL_ID)
+            .setContentTitle("主动消息处理中")
+            .setSmallIcon(me.rerere.rikkahub.R.drawable.small_icon)
+            .setPriority(NotificationCompat.PRIORITY_MIN)
+            .setSilent(true)
+            .setOngoing(true)
+            .build()
+        try {
+            androidx.core.app.ServiceCompat.startForeground(
+                this,
+                20001,
+                notification,
+                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
+            )
+        } catch (_: Exception) {
+            @Suppress("DEPRECATION")
+            startForeground(20001, notification)
+        }
     }
 
     private fun acquireGenerationWakeLock(startId: Int) {

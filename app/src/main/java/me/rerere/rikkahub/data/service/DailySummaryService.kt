@@ -12,11 +12,16 @@ import android.app.Service
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.app.ServiceCompat
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -174,7 +179,8 @@ class DailySummaryService {
          * 检查是否有插件声明了 daily_cron 钩子，如果有则调度
          * 在 App 启动和 BOOT_COMPLETED 时调用
          */
-        fun rescheduleIfEnabled(context: Context) {
+        fun rescheduleIfEnabled(context: Context, onComplete: (() -> Unit)? = null) {
+            val appContext = context.applicationContext
             CoroutineScope(Dispatchers.IO).launch {
                 try {
                     val pluginLoader = GlobalContext.get().getOrNull<PluginLoader>()
@@ -186,17 +192,21 @@ class DailySummaryService {
                     val pluginsWithCron = pluginLoader.getPluginsWithDailyCron()
                     if (pluginsWithCron.isNotEmpty()) {
                         // 读取保存的调度时间，或使用默认值
-                        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                        val prefs = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                         val hour = prefs.getInt(KEY_HOUR, DEFAULT_HOUR)
                         val minute = prefs.getInt(KEY_MINUTE, DEFAULT_MINUTE)
-                        scheduleNext(context, hour, minute)
+                        scheduleNext(appContext, hour, minute)
                         Log.i(TAG, "Rescheduled daily_cron alarm (${pluginsWithCron.size} plugin(s) with daily_cron hook)")
                     } else {
-                        cancel(context)
+                        cancel(appContext)
                         Log.i(TAG, "No plugins with daily_cron hook, skipping scheduling")
                     }
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to reschedule daily_cron", e)
+                } finally {
+                    onComplete?.invoke()
                 }
             }
         }
@@ -218,14 +228,23 @@ class DailySummaryService {
 class DailySummaryReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         Log.d(DailySummaryService.TAG, "DailySummaryReceiver triggered, action=${intent.action}")
-        when (intent.action) {
-            DailySummaryService.ACTION_DAILY_CRON -> {
-                val serviceIntent = Intent(context, DailySummaryTriggerService::class.java)
-                context.startForegroundService(serviceIntent)
-            }
-            Intent.ACTION_BOOT_COMPLETED -> {
-                Log.d(DailySummaryService.TAG, "Boot completed, rescheduling daily_cron")
-                DailySummaryService.rescheduleIfEnabled(context)
+        if (intent.action == DailySummaryService.ACTION_DAILY_CRON) {
+            val serviceIntent = Intent(context, DailySummaryTriggerService::class.java)
+            context.startForegroundService(serviceIntent)
+        }
+    }
+}
+
+/**
+ * 开机广播接收器：仅负责开机后重新调度 daily_cron 闹钟
+ */
+class DailySummaryBootReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        if (intent.action == Intent.ACTION_BOOT_COMPLETED) {
+            Log.d(DailySummaryService.TAG, "Boot completed, rescheduling daily_cron")
+            val pendingResult = goAsync()
+            DailySummaryService.rescheduleIfEnabled(context.applicationContext) {
+                pendingResult.finish()
             }
         }
     }
@@ -237,6 +256,8 @@ class DailySummaryReceiver : BroadcastReceiver() {
  * 执行完成后自动调度下一次闹钟
  */
 class DailySummaryTriggerService : Service() {
+
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     companion object {
         private const val TAG = "DailySummaryTrigger"
@@ -251,9 +272,19 @@ class DailySummaryTriggerService : Service() {
             .setSmallIcon(R.drawable.small_icon)
             .setPriority(NotificationCompat.PRIORITY_MIN)
             .build()
-        startForeground(NOTIFICATION_ID, notification)
+        try {
+            ServiceCompat.startForeground(
+                this,
+                NOTIFICATION_ID,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
+            )
+        } catch (_: Exception) {
+            @Suppress("DEPRECATION")
+            startForeground(NOTIFICATION_ID, notification)
+        }
 
-        CoroutineScope(Dispatchers.IO).launch {
+        serviceScope.launch {
             try {
                 val pluginLoader = GlobalContext.get().getOrNull<PluginLoader>()
                 if (pluginLoader == null) {
@@ -286,16 +317,23 @@ class DailySummaryTriggerService : Service() {
 
                 // 执行完成后调度下一次
                 DailySummaryService.scheduleNext(this@DailySummaryTriggerService)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to dispatch daily_cron", e)
                 // 即使失败也调度下一次，避免中断
                 DailySummaryService.scheduleNext(this@DailySummaryTriggerService)
             } finally {
-                stopSelf()
+                stopSelf(startId)
             }
         }
 
         return START_NOT_STICKY
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        serviceScope.cancel()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null

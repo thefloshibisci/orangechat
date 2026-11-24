@@ -38,8 +38,16 @@ import me.rerere.rikkahub.utils.writeClipboardText
 import me.rerere.rikkahub.data.datastore.getSelectedTTSProvider
 import me.rerere.rikkahub.data.datastore.findModelById
 import me.rerere.rikkahub.data.datastore.findProvider
+import me.rerere.rikkahub.data.files.FileFolders
 import me.rerere.rikkahub.data.files.FilesManager
+import me.rerere.rikkahub.data.files.SafeFileResolver
+import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.IOException
+import java.io.InputStream
+import java.net.HttpURLConnection
+import java.net.InetAddress
+import java.net.URL
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.uuid.Uuid
 import java.time.ZoneId
@@ -542,35 +550,26 @@ class LocalTools(
             },
             execute = {
                 val url = it.jsonObject["url"]?.jsonPrimitive?.contentOrNull ?: error("url is required")
-                val maxLen = it.jsonObject["max_length"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 10000
+                val maxLen = (it.jsonObject["max_length"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 10000)
+                    .coerceIn(1, 200_000)
                 val raw = it.jsonObject["raw"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() ?: false
                 try {
-                    val connection = java.net.URL(url).openConnection() as java.net.HttpURLConnection
-                    connection.requestMethod = "GET"
-                    connection.connectTimeout = 15000
-                    connection.readTimeout = 15000
-                    connection.setRequestProperty("User-Agent", "Mozilla/5.0 (Android; AI Assistant)")
-                    connection.setRequestProperty("Accept", "text/html,application/xhtml+xml,application/xml,text/plain,application/json,*/*")
-                    connection.instanceFollowRedirects = true
-                    val code = connection.responseCode
-                    val body = if (code in 200..299) {
-                        connection.inputStream.bufferedReader().use { it.readText() }
-                    } else {
-                        connection.errorStream?.bufferedReader()?.use { it.readText() } ?: "HTTP $code"
-                    }
+                    val (code, body, finalUrl) = fetchPublicUrlBounded(url, MAX_WEB_FETCH_BYTES)
                     val content = if (raw || !body.contains("<")) body else HtmlToText.convert(body)
                     val truncated = if (content.length > maxLen) content.take(maxLen) + "...[truncated]" else content
                     listOf(UIMessagePart.Text(buildJsonObject {
-                        put("success", code in 200..299); put("status_code", code); put("url", url)
+                        put("success", code in 200..299); put("status_code", code); put("url", finalUrl)
                         put("content", truncated); put("content_length", content.length)
                     }.toString()))
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (e: Exception) {
                     listOf(UIMessagePart.Text(buildJsonObject { put("success", false); put("error", e.message ?: "") }.toString()))
                 }
             }
         )
     }
- 
+
     val listZipContentsTool by lazy {
         Tool(
             name = "list_zip_contents",
@@ -589,19 +588,36 @@ class LocalTools(
                     val inputStream = if (path.startsWith("content://")) {
                         context.contentResolver.openInputStream(android.net.Uri.parse(path))
                     } else {
-                        java.io.FileInputStream(path)
+                        val allowedRoots = listOfNotNull(
+                            File(context.filesDir, FileFolders.UPLOAD),
+                            File(context.filesDir, FileFolders.SKILLS),
+                            context.cacheDir,
+                            context.getExternalFilesDir(null),
+                        )
+                        val resolved = allowedRoots.firstNotNullOfOrNull { root ->
+                            SafeFileResolver.resolveInside(root, path)
+                        } ?: error("Access denied: path is outside allowed directories")
+                        require(resolved.isFile) { "File does not exist" }
+                        resolved.inputStream()
                     }
                     inputStream?.use { stream ->
                         java.util.zip.ZipInputStream(stream).use { zis ->
                             val entries = mutableListOf<Map<String, Any>>()
+                            var truncated = false
                             var entry = zis.nextEntry
                             while (entry != null) {
+                                if (entries.size >= MAX_ZIP_LIST_ENTRIES) {
+                                    truncated = true
+                                    zis.closeEntry()
+                                    break
+                                }
                                 entries.add(mapOf("name" to entry.name, "size" to entry.size, "compressed_size" to entry.compressedSize))
                                 zis.closeEntry()
                                 entry = zis.nextEntry
                             }
                             listOf(UIMessagePart.Text(buildJsonObject {
                                 put("success", true); put("count", entries.size)
+                                put("truncated", truncated)
                                 put("entries", kotlinx.serialization.json.buildJsonArray {
                                     entries.forEach { e ->
                                         add(buildJsonObject {
@@ -614,11 +630,111 @@ class LocalTools(
                             }.toString()))
                         }
                     } ?: listOf(UIMessagePart.Text(buildJsonObject { put("success", false); put("error", "Cannot open file") }.toString()))
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (e: Exception) {
                     listOf(UIMessagePart.Text(buildJsonObject { put("success", false); put("error", e.message ?: "") }.toString()))
                 }
             }
         )
+    }
+
+    private fun fetchPublicUrlBounded(rawUrl: String, maxBytes: Int): Triple<Int, String, String> {
+        var current = validatePublicFetchUrl(rawUrl)
+        var redirects = 0
+        while (true) {
+            val connection = (current.openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = 15000
+                readTimeout = 15000
+                setRequestProperty("User-Agent", "Mozilla/5.0 (Android; AI Assistant)")
+                setRequestProperty("Accept", "text/html,application/xhtml+xml,application/xml,text/plain,application/json,*/*")
+                instanceFollowRedirects = false
+            }
+            try {
+                val code = connection.responseCode
+                if (code in setOf(301, 302, 303, 307, 308)) {
+                    val location = connection.getHeaderField("Location")
+                        ?: throw IOException("Redirect missing Location header")
+                    redirects++
+                    if (redirects > 3) throw IOException("Too many redirects")
+                    current = validatePublicFetchUrl(URL(current, location).toString())
+                    continue
+                }
+                val stream = if (code in 200..299) connection.inputStream else connection.errorStream
+                val body = if (stream != null) {
+                    readBoundedText(stream, maxBytes)
+                } else {
+                    if (code in 200..299) "" else "HTTP $code"
+                }
+                return Triple(code, body, current.toString())
+            } finally {
+                connection.disconnect()
+            }
+        }
+    }
+
+    private fun validatePublicFetchUrl(rawUrl: String): URL {
+        val url = URL(rawUrl)
+        val protocol = url.protocol.lowercase(Locale.ROOT)
+        require(protocol == "http" || protocol == "https") { "Unsupported URL scheme: $protocol" }
+        val host = url.host
+        require(!host.isNullOrBlank()) { "URL host is missing" }
+        val addresses = InetAddress.getAllByName(host)
+        require(addresses.isNotEmpty() && addresses.none(::isBlockedFetchAddress)) {
+            "Access to private or local addresses is blocked"
+        }
+        return url
+    }
+
+    private fun isBlockedFetchAddress(address: InetAddress): Boolean {
+        if (
+            address.isAnyLocalAddress ||
+            address.isLoopbackAddress ||
+            address.isLinkLocalAddress ||
+            address.isSiteLocalAddress ||
+            address.isMulticastAddress
+        ) {
+            return true
+        }
+        val bytes = address.address
+        if (bytes.size == 4) {
+            val b0 = bytes[0].toInt() and 0xFF
+            val b1 = bytes[1].toInt() and 0xFF
+            if (b0 == 0 || (b0 == 100 && b1 in 64..127)) {
+                return true
+            }
+        } else if (bytes.size == 16) {
+            val first = bytes[0].toInt() and 0xFF
+            if ((first and 0xFE) == 0xFC) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private fun readBoundedText(stream: InputStream, maxBytes: Int): String {
+        val output = ByteArrayOutputStream()
+        val buffer = ByteArray(8192)
+        var total = 0
+        stream.use { input ->
+            while (true) {
+                val read = input.read(buffer)
+                if (read < 0) break
+                val remaining = maxBytes - total
+                if (remaining <= 0) break
+                val toWrite = minOf(read, remaining)
+                output.write(buffer, 0, toWrite)
+                total += toWrite
+                if (toWrite < read) break
+            }
+        }
+        return output.toByteArray().toString(Charsets.UTF_8)
+    }
+
+    private companion object {
+        const val MAX_WEB_FETCH_BYTES = 2 * 1024 * 1024
+        const val MAX_ZIP_LIST_ENTRIES = 2_000
     }
  
     fun getTools(

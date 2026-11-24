@@ -13,8 +13,10 @@ import java.io.File
 import java.io.IOException
 import java.io.InputStream
 import java.net.HttpURLConnection
+import java.net.InetAddress
 import java.net.URL
 import java.util.Base64
+import java.util.Locale
 import kotlin.uuid.Uuid
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -33,6 +35,8 @@ import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.SettingsStore
+import me.rerere.rikkahub.data.files.FileFolders
+import me.rerere.rikkahub.data.files.SafeFileResolver
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.Avatar
 import me.rerere.rikkahub.plugin.localdata.LocalAssistantDirectory
@@ -854,7 +858,7 @@ class LocalMomentsChatDraftTool(
             pluginId = LocalMomentsChatDraftContract.PLUGIN_ID,
             grant = LocalDataGrant.of(*capabilities.toTypedArray()),
         ).use { session ->
-            val importer = LocalMomentsChatDraftMediaImporter()
+            val importer = LocalMomentsChatDraftMediaImporter(context.applicationContext)
             val resourceIds = plan.images.mapIndexed { index, image ->
                 try {
                     importer.import(session, image)
@@ -988,7 +992,9 @@ fun buildLocalMomentsChatDraftTool(
  * Bounded importer for the same image sources the native share sheet accepts. It never exposes a
  * source path/URL to the plugin: only the opaque `ldm_...` id enters the snapshot.
  */
-private class LocalMomentsChatDraftMediaImporter {
+private class LocalMomentsChatDraftMediaImporter(
+    private val context: Context,
+) {
     fun import(session: LocalDataSession, image: MomentsChatImage): String {
         val url = image.url
         return when {
@@ -999,9 +1005,7 @@ private class LocalMomentsChatDraftMediaImporter {
             ).media.resourceId
 
             url.startsWith("file:") -> {
-                val path = Uri.parse(url).path ?: error("图片文件路径无效")
-                val file = File(path)
-                require(file.isFile) { "图片文件不存在" }
+                val file = resolveAllowedLocalImageFile(url)
                 require(file.length() <= LocalMomentsChatDraftLimits.MAX_IMAGE_BYTES) {
                     "图片超过 12 MB 上限"
                 }
@@ -1014,6 +1018,24 @@ private class LocalMomentsChatDraftMediaImporter {
 
             else -> error("不支持的图片来源")
         }
+    }
+
+    private fun resolveAllowedLocalImageFile(url: String): File {
+        val path = Uri.parse(url).path ?: error("图片文件路径无效")
+        val filesDir = context.filesDir
+        val allowedRoots = listOf(
+            context.cacheDir,
+            File(filesDir, FileFolders.UPLOAD),
+            File(filesDir, "images"),
+            File(filesDir, "camera_captures"),
+            File(filesDir, "video_call_clips"),
+            File(filesDir, "video_call_snapshots"),
+            File(filesDir, "plugin_localdata"),
+        )
+        val file = allowedRoots.firstNotNullOfOrNull { SafeFileResolver.resolveInside(it, path) }
+            ?: error("图片文件路径不被允许")
+        require(file.isFile) { "图片文件不存在" }
+        return file
     }
 
     fun importAvatar(session: LocalDataSession, avatar: MomentsChatAvatar): String? = try {
@@ -1042,25 +1064,76 @@ private class LocalMomentsChatDraftMediaImporter {
     }
 
     private fun downloadBounded(url: String): ByteArray {
-        val connection = (URL(url).openConnection() as HttpURLConnection).apply {
-            connectTimeout = LocalMomentsChatDraftLimits.IMAGE_DOWNLOAD_TIMEOUT_MS
-            readTimeout = LocalMomentsChatDraftLimits.IMAGE_DOWNLOAD_TIMEOUT_MS
-            instanceFollowRedirects = true
-            requestMethod = "GET"
-            setRequestProperty("User-Agent", "OrangeChat-MomentsDraft/1.0")
-        }
-        try {
-            val code = connection.responseCode
-            if (code !in 200..299) throw IOException("HTTP $code")
-            if (connection.contentLengthLong > LocalMomentsChatDraftLimits.MAX_IMAGE_BYTES) {
-                throw IOException("图片超过 12 MB 上限")
+        var current = validatePublicHttpUrl(url)
+        var redirects = 0
+        while (true) {
+            val connection = (current.openConnection() as HttpURLConnection).apply {
+                connectTimeout = LocalMomentsChatDraftLimits.IMAGE_DOWNLOAD_TIMEOUT_MS
+                readTimeout = LocalMomentsChatDraftLimits.IMAGE_DOWNLOAD_TIMEOUT_MS
+                instanceFollowRedirects = false
+                requestMethod = "GET"
+                setRequestProperty("User-Agent", "OrangeChat-MomentsDraft/1.0")
             }
-            return connection.inputStream.use {
-                readBounded(it, LocalMomentsChatDraftLimits.MAX_IMAGE_BYTES)
+            try {
+                val code = connection.responseCode
+                if (code in setOf(301, 302, 303, 307, 308)) {
+                    val location = connection.getHeaderField("Location")
+                        ?: throw IOException("重定向缺少目标地址")
+                    redirects++
+                    if (redirects > 3) throw IOException("重定向次数过多")
+                    current = validatePublicHttpUrl(URL(current, location).toString())
+                    continue
+                }
+                if (code !in 200..299) throw IOException("HTTP $code")
+                if (connection.contentLengthLong > LocalMomentsChatDraftLimits.MAX_IMAGE_BYTES) {
+                    throw IOException("图片超过 12 MB 上限")
+                }
+                return connection.inputStream.use {
+                    readBounded(it, LocalMomentsChatDraftLimits.MAX_IMAGE_BYTES)
+                }
+            } finally {
+                connection.disconnect()
             }
-        } finally {
-            connection.disconnect()
         }
+    }
+
+    private fun validatePublicHttpUrl(rawUrl: String): URL {
+        val url = URL(rawUrl)
+        val protocol = url.protocol.lowercase(Locale.ROOT)
+        require(protocol == "http" || protocol == "https") { "不支持的图片协议" }
+        val host = url.host
+        require(!host.isNullOrBlank()) { "图片地址缺少主机名" }
+        val addresses = InetAddress.getAllByName(host)
+        require(addresses.isNotEmpty() && addresses.none(::isBlockedAddress)) {
+            "禁止访问内网或保留地址"
+        }
+        return url
+    }
+
+    private fun isBlockedAddress(address: InetAddress): Boolean {
+        if (
+            address.isAnyLocalAddress ||
+            address.isLoopbackAddress ||
+            address.isLinkLocalAddress ||
+            address.isSiteLocalAddress ||
+            address.isMulticastAddress
+        ) {
+            return true
+        }
+        val bytes = address.address
+        if (bytes.size == 4) {
+            val b0 = bytes[0].toInt() and 0xFF
+            val b1 = bytes[1].toInt() and 0xFF
+            if (b0 == 0 || (b0 == 100 && b1 in 64..127)) {
+                return true
+            }
+        } else if (bytes.size == 16) {
+            val first = bytes[0].toInt() and 0xFF
+            if ((first and 0xFE) == 0xFC) {
+                return true
+            }
+        }
+        return false
     }
 
     private fun readBounded(input: InputStream, maxBytes: Int): ByteArray {

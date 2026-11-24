@@ -7,6 +7,7 @@ import okhttp3.Request
 import java.io.File
 import java.io.IOException
 import java.security.MessageDigest
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
 /** These signed CDN URLs must be read by the client, not fetched again by a model provider. */
@@ -25,47 +26,53 @@ internal class XiaohongshuImageCache(
         .retryOnConnectionFailure(false).connectTimeout(5, TimeUnit.SECONDS)
         .readTimeout(8, TimeUnit.SECONDS).build()
     private val failures = linkedMapOf<String, Long>()
+    private val stateLock = Any()
+    private val keyLocks = ConcurrentHashMap<String, Any>()
 
-    /** Keep the original until encoding has finished; concurrent history requests share one download. */
-    @Synchronized
+    /** Keep the original until encoding has finished; concurrent requests for the same URL share one download. */
     fun <T> useImage(value: String, consume: (File) -> T): T {
         val url = checkedUrl(value.toHttpUrlOrNull())
         val key = MessageDigest.getInstance("SHA-256").digest(url.toString().toByteArray(Charsets.UTF_8))
             .joinToString("") { "%02x".format(it.toInt() and 255) }
-        if (directory != null) check(directory.isDirectory || directory.mkdirs()) { "Image cache unavailable" }
-        directory?.listFiles { file -> file.name.startsWith("xhs-") && file.name.endsWith(".tmp") }
-            ?.forEach { it.delete() }
-        val target = directory?.let { File(it, "$key.image") }
-        try {
-            if (target != null && target.isFile && target.length() in 1..maxImageBytes) {
-                try {
-                    val result = consume(target)
-                    target.setLastModified(System.currentTimeMillis())
-                    return result
-                } catch (_: Exception) {
-                    target.delete() // A corrupt disposable cache entry may be fetched again.
-                }
-            }
-            val now = System.nanoTime()
-            if (failures[key]?.let { now - it < TimeUnit.SECONDS.toNanos(30) } == true) {
-                throw IOException("Xiaohongshu image unavailable; refresh the note to obtain a new image link")
-            }
-            val temporary = File.createTempFile("xhs-", ".tmp", directory)
+        val lock = keyLocks.computeIfAbsent(key) { Any() }
+        synchronized(lock) {
+            if (directory != null) check(directory.isDirectory || directory.mkdirs()) { "Image cache unavailable" }
+            val target = directory?.let { File(it, "$key.image") }
             try {
-                download(url, temporary)
-                val result = consume(temporary) // Validate/decode before committing downloaded bytes.
-                if (target != null) check(temporary.renameTo(target)) { "Image cache commit failed" }
-                failures.remove(key)
-                return result
-            } catch (error: Exception) {
-                failures[key] = System.nanoTime()
-                while (failures.size > maxEntries) failures.remove(failures.keys.first())
-                throw error
+                if (target != null && target.isFile && target.length() in 1..maxImageBytes) {
+                    try {
+                        val result = consume(target)
+                        target.setLastModified(System.currentTimeMillis())
+                        return result
+                    } catch (_: Exception) {
+                        target.delete() // A corrupt disposable cache entry may be fetched again.
+                    }
+                }
+                val now = System.nanoTime()
+                synchronized(stateLock) {
+                    if (failures[key]?.let { now - it < TimeUnit.SECONDS.toNanos(30) } == true) {
+                        throw IOException("Xiaohongshu image unavailable; refresh the note to obtain a new image link")
+                    }
+                }
+                val temporary = File.createTempFile("xhs-", ".tmp", directory)
+                try {
+                    download(url, temporary)
+                    val result = consume(temporary) // Validate/decode before committing downloaded bytes.
+                    if (target != null) check(temporary.renameTo(target)) { "Image cache commit failed" }
+                    synchronized(stateLock) { failures.remove(key) }
+                    return result
+                } catch (error: Exception) {
+                    synchronized(stateLock) {
+                        failures[key] = System.nanoTime()
+                        while (failures.size > maxEntries) failures.remove(failures.keys.first())
+                    }
+                    throw error
+                } finally {
+                    temporary.delete()
+                }
             } finally {
-                temporary.delete()
+                synchronized(stateLock) { trim() }
             }
-        } finally {
-            trim()
         }
     }
 
@@ -116,6 +123,10 @@ internal class XiaohongshuImageCache(
     }
 
     private fun trim() {
+        val staleCutoff = System.currentTimeMillis() - TimeUnit.MINUTES.toMillis(5)
+        directory?.listFiles { file ->
+            file.name.startsWith("xhs-") && file.name.endsWith(".tmp") && file.lastModified() < staleCutoff
+        }?.forEach { it.delete() }
         val files = directory?.listFiles { file -> file.name.endsWith(".image") }
             ?.sortedBy { it.lastModified() }.orEmpty()
         var bytes = files.sumOf { it.length() }

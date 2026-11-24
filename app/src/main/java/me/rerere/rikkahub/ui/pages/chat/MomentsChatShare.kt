@@ -6,6 +6,7 @@
 
 package me.rerere.rikkahub.ui.pages.chat
 
+import android.content.Context
 import android.net.Uri
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -68,6 +69,8 @@ import me.rerere.ai.core.MessageRole
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.data.datastore.Settings
+import me.rerere.rikkahub.data.files.FileFolders
+import me.rerere.rikkahub.data.files.SafeFileResolver
 import me.rerere.rikkahub.data.model.Avatar
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.plugin.localdata.LocalAssistantDirectory
@@ -93,7 +96,9 @@ import java.io.File
 import java.io.IOException
 import java.io.InputStream
 import java.net.HttpURLConnection
+import java.net.InetAddress
 import java.net.URL
+import java.util.Locale
 
 internal const val LOCAL_MOMENTS_PLUGIN_ID = "com.orangechat.localmoments"
 
@@ -494,7 +499,7 @@ internal fun MomentsChatShareSheet(
                     ).use { session ->
                         val resourceIds = targetImages.mapIndexed { index, image ->
                             try {
-                                importMomentsImage(session, image)
+                                importMomentsImage(context.applicationContext, session, image)
                             } catch (error: Exception) {
                                 throw IllegalStateException(
                                     "第 ${index + 1} 张图片导入失败：${error.message ?: "格式不支持或文件不可读"}",
@@ -505,7 +510,7 @@ internal fun MomentsChatShareSheet(
                         // Avatars are decoration, not body content: a broken avatar must not block
                         // the post, and its source URL/base64 is never written to the snapshot.
                         val avatarMediaIds = targetAvatarImages.associate { avatar ->
-                            avatar.role to importMomentsAvatar(session, avatar)
+                            avatar.role to importMomentsAvatar(context.applicationContext, session, avatar)
                         }
                         val snapshot = attachMomentsAvatars(
                             snapshot = attachMomentsMedia(targetSnapshot, targetImages, resourceIds),
@@ -970,6 +975,7 @@ private fun assistantDirectory(settings: Settings): LocalAssistantDirectory =
     )
 
 private fun importMomentsImage(
+    context: Context,
     session: LocalDataSession,
     image: MomentsChatImage,
     displayName: String = "聊天图片",
@@ -992,9 +998,7 @@ private fun importMomentsImage(
         }
 
         image.url.startsWith("file:") -> {
-            val path = Uri.parse(image.url).path ?: error("图片文件路径无效")
-            val file = File(path)
-            require(file.isFile) { "图片文件不存在" }
+            val file = resolveAllowedMomentsImageFile(context, image.url)
             require(file.length() <= LocalDataApi.MAX_MEDIA_BYTES) { "图片超过 12 MB 上限" }
             session.importImageBytes(file.readBytes(), null, displayName).media.resourceId
         }
@@ -1007,13 +1011,36 @@ private fun importMomentsImage(
     }
 }
 
+private fun resolveAllowedMomentsImageFile(context: Context, url: String): File {
+    val path = Uri.parse(url).path ?: error("图片文件路径无效")
+    val filesDir = context.filesDir
+    val allowedRoots = listOf(
+        context.cacheDir,
+        File(filesDir, FileFolders.UPLOAD),
+        File(filesDir, "images"),
+        File(filesDir, "camera_captures"),
+        File(filesDir, "video_call_clips"),
+        File(filesDir, "video_call_snapshots"),
+        File(filesDir, "plugin_localdata"),
+    )
+    val file = allowedRoots.firstNotNullOfOrNull { SafeFileResolver.resolveInside(it, path) }
+        ?: error("图片文件路径不被允许")
+    require(file.isFile) { "图片文件不存在" }
+    return file
+}
+
 /**
  * Importing a participant avatar is best effort: it must never fail the whole share, and a failed
  * import simply means the card is written without that avatar.
  */
-private fun importMomentsAvatar(session: LocalDataSession, avatar: MomentsChatAvatar): String? =
+private fun importMomentsAvatar(
+    context: Context,
+    session: LocalDataSession,
+    avatar: MomentsChatAvatar,
+): String? =
     try {
         importMomentsImage(
+            context = context,
             session = session,
             image = MomentsChatImage(messageIndex = 0, url = avatar.url),
             displayName = "参与者头像",
@@ -1027,23 +1054,74 @@ private fun importMomentsAvatar(session: LocalDataSession, avatar: MomentsChatAv
 private fun maxBase64Chars(): Int = ((LocalDataApi.MAX_MEDIA_BYTES.toLong() + 2) / 3 * 4).toInt()
 
 private fun downloadBounded(url: String): ByteArray {
-    val connection = (URL(url).openConnection() as HttpURLConnection).apply {
-        connectTimeout = 10_000
-        readTimeout = 15_000
-        instanceFollowRedirects = true
-        requestMethod = "GET"
-        setRequestProperty("User-Agent", "OrangeChat-MomentsShare/1.0")
-    }
-    try {
-        val code = connection.responseCode
-        if (code !in 200..299) throw IOException("HTTP $code")
-        if (connection.contentLengthLong > LocalDataApi.MAX_MEDIA_BYTES) {
-            throw IOException("图片超过 12 MB 上限")
+    var current = validatePublicMomentsHttpUrl(url)
+    var redirects = 0
+    while (true) {
+        val connection = (current.openConnection() as HttpURLConnection).apply {
+            connectTimeout = 10_000
+            readTimeout = 15_000
+            instanceFollowRedirects = false
+            requestMethod = "GET"
+            setRequestProperty("User-Agent", "OrangeChat-MomentsShare/1.0")
         }
-        return connection.inputStream.use { readBounded(it, LocalDataApi.MAX_MEDIA_BYTES) }
-    } finally {
-        connection.disconnect()
+        try {
+            val code = connection.responseCode
+            if (code in setOf(301, 302, 303, 307, 308)) {
+                val location = connection.getHeaderField("Location")
+                    ?: throw IOException("重定向缺少目标地址")
+                redirects++
+                if (redirects > 3) throw IOException("重定向次数过多")
+                current = validatePublicMomentsHttpUrl(URL(current, location).toString())
+                continue
+            }
+            if (code !in 200..299) throw IOException("HTTP $code")
+            if (connection.contentLengthLong > LocalDataApi.MAX_MEDIA_BYTES) {
+                throw IOException("图片超过 12 MB 上限")
+            }
+            return connection.inputStream.use { readBounded(it, LocalDataApi.MAX_MEDIA_BYTES) }
+        } finally {
+            connection.disconnect()
+        }
     }
+}
+
+private fun validatePublicMomentsHttpUrl(rawUrl: String): URL {
+    val url = URL(rawUrl)
+    val protocol = url.protocol.lowercase(Locale.ROOT)
+    require(protocol == "http" || protocol == "https") { "不支持的图片协议" }
+    val host = url.host
+    require(!host.isNullOrBlank()) { "图片地址缺少主机名" }
+    val addresses = InetAddress.getAllByName(host)
+    require(addresses.isNotEmpty() && addresses.none(::isBlockedMomentsAddress)) {
+        "禁止访问内网或保留地址"
+    }
+    return url
+}
+
+private fun isBlockedMomentsAddress(address: InetAddress): Boolean {
+    if (
+        address.isAnyLocalAddress ||
+        address.isLoopbackAddress ||
+        address.isLinkLocalAddress ||
+        address.isSiteLocalAddress ||
+        address.isMulticastAddress
+    ) {
+        return true
+    }
+    val bytes = address.address
+    if (bytes.size == 4) {
+        val b0 = bytes[0].toInt() and 0xFF
+        val b1 = bytes[1].toInt() and 0xFF
+        if (b0 == 0 || (b0 == 100 && b1 in 64..127)) {
+            return true
+        }
+    } else if (bytes.size == 16) {
+        val first = bytes[0].toInt() and 0xFF
+        if ((first and 0xFE) == 0xFC) {
+            return true
+        }
+    }
+    return false
 }
 
 private fun readBounded(input: InputStream, maxBytes: Int): ByteArray {

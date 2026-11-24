@@ -3,10 +3,15 @@ package me.rerere.rikkahub.data.sync
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import me.rerere.rikkahub.plugin.localdata.LocalDataValidation
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.io.InputStream
 import java.util.zip.ZipInputStream
+
+private const val MAX_BACKUP_ZIP_ENTRIES = 25_000
+private const val MAX_BACKUP_JSON_BYTES = 20 * 1024 * 1024
+private const val MAX_BACKUP_TOTAL_BYTES = 2L * 1024 * 1024 * 1024
 
 /** Per-plugin logical snapshot embedded in a full local backup. */
 internal data class StagedPluginBackup(
@@ -42,20 +47,31 @@ internal suspend fun stageBackupArchive(
     val pluginBackups = mutableListOf<StagedPluginBackup>()
     var settings: String? = null
     var pluginSettings: String? = null
+    var entryCount = 0
+    var totalBytes = 0L
     ZipInputStream(archive.inputStream().buffered()).use { input ->
         while (true) {
             currentCoroutineContext().ensureActive()
             val entry = input.nextEntry ?: break
+            entryCount++
+            require(entryCount <= MAX_BACKUP_ZIP_ENTRIES) { "Backup archive has too many entries" }
             val name = entry.name.replace('\\', '/')
             require(!name.startsWith('/') && name.split('/').none { it == ".." || it == "." }) {
                 "Invalid backup entry: ${entry.name}"
             }
             if (!entry.isDirectory) {
                 require(seen.add(name)) { "Duplicate backup entry: $name" }
+                val remaining = MAX_BACKUP_TOTAL_BYTES - totalBytes
                 when (name) {
-                    "settings.json" -> settings = input.readBytes().toString(Charsets.UTF_8)
+                    "settings.json" -> {
+                        val content = readBoundedUtf8(input, minOf(MAX_BACKUP_JSON_BYTES.toLong(), remaining).toInt())
+                        totalBytes += content.size
+                        settings = content.toString(Charsets.UTF_8)
+                    }
                     "plugin_settings.json" -> if (includePlugins) {
-                        pluginSettings = input.readBytes().toString(Charsets.UTF_8)
+                        val content = readBoundedUtf8(input, minOf(MAX_BACKUP_JSON_BYTES.toLong(), remaining).toInt())
+                        totalBytes += content.size
+                        pluginSettings = content.toString(Charsets.UTF_8)
                     }
                     else -> {
                         if (includePlugins && restoreFiles && name.startsWith(PLUGIN_BACKUP_ENTRY_PREFIX)) {
@@ -70,7 +86,7 @@ internal suspend fun stageBackupArchive(
                             val destination = "$PLUGIN_BACKUP_STAGING/$pluginId.zip"
                             val target = transaction.stagePath(destination)
                             require(!target.exists()) { "Conflicting backup target: $name" }
-                            copyEntry(input, target)
+                            totalBytes += copyEntry(input, target, remaining)
                             // These bytes are input for the logical restore and must not become
                             // live files, so they are not listed in `files`.
                             pluginBackups += StagedPluginBackup(pluginId, target)
@@ -86,7 +102,7 @@ internal suspend fun stageBackupArchive(
                                 else -> null
                             }
                             if (destination != null) {
-                                copyEntry(input, transaction.stagePath(destination))
+                                totalBytes += copyEntry(input, transaction.stagePath(destination), remaining)
                                 if (!destination.startsWith("$databaseDirectory/")) files += destination
                             }
                         }
@@ -110,19 +126,44 @@ internal suspend fun stageBackupArchive(
     return StagedBackup(settings, pluginSettings, files, databases, pluginBackups)
 }
 
-private suspend fun copyEntry(input: InputStream, target: File) {
+private suspend fun copyEntry(input: InputStream, target: File, remainingBytes: Long): Long {
     require(!target.exists()) { "Conflicting backup target: ${target.name}" }
     check(target.parentFile!!.isDirectory || target.parentFile!!.mkdirs())
-    FileOutputStream(target).use { output ->
-        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-        while (true) {
-            currentCoroutineContext().ensureActive()
-            val count = input.read(buffer)
-            if (count < 0) break
-            output.write(buffer, 0, count)
+    var total = 0L
+    try {
+        FileOutputStream(target).use { output ->
+            val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+            while (true) {
+                currentCoroutineContext().ensureActive()
+                val count = input.read(buffer)
+                if (count < 0) break
+                total += count
+                require(total <= remainingBytes) { "Backup archive exceeds maximum unpacked size" }
+                output.write(buffer, 0, count)
+            }
+            output.fd.sync()
         }
-        output.fd.sync()
+        return total
+    } catch (error: Throwable) {
+        target.delete()
+        throw error
     }
+}
+
+private suspend fun readBoundedUtf8(input: InputStream, maxBytes: Int): ByteArray {
+    require(maxBytes >= 0) { "Backup archive exceeds maximum unpacked size" }
+    val output = ByteArrayOutputStream()
+    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+    var total = 0
+    while (true) {
+        currentCoroutineContext().ensureActive()
+        val count = input.read(buffer)
+        if (count < 0) break
+        total += count
+        require(total <= maxBytes) { "Backup archive metadata exceeds maximum size" }
+        output.write(buffer, 0, count)
+    }
+    return output.toByteArray()
 }
 
 /**

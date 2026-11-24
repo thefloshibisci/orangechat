@@ -30,6 +30,7 @@ import type {
 
 import { copyTextToClipboard } from "~/lib/clipboard";
 import { convertMessageToMarkdown, downloadMarkdown } from "~/lib/export-markdown";
+import { safeExternalUrl } from "~/lib/safe-url";
 import { cn } from "~/lib/utils";
 import { Button } from "~/components/ui/button";
 import {
@@ -531,7 +532,7 @@ export const ChatMessage = React.memo(({
   const citationUrlMap = React.useMemo(() => buildCitationUrlMap(message.parts), [message.parts]);
   const handleClickCitation = React.useCallback(
     (citationId: string) => {
-      const url = citationUrlMap.get(citationId.trim());
+      const url = safeExternalUrl(citationUrlMap.get(citationId.trim()));
       if (!url || typeof window === "undefined") return;
       window.open(url, "_blank", "noopener,noreferrer");
     },

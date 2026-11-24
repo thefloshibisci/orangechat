@@ -1,6 +1,7 @@
 'use strict';
 // one-earbud 听歌 · YOU的网易云登录态。按 secret 处理：文件 0600、原子写；cookie 只出不进任何读接口和日志。
 
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
@@ -19,10 +20,16 @@ function createMusicAuthStore(options) {
   }
   function write(value) {
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    const tmp = file + '.tmp-' + process.pid + '-' + Date.now();
-    fs.writeFileSync(tmp, JSON.stringify(value, null, 2), { mode: 0o600 });
-    fs.renameSync(tmp, file);
-    try { fs.chmodSync(file, 0o600); } catch (_) {}
+    const tmp = file + '.tmp-' + process.pid + '-' + crypto.randomUUID();
+    try {
+      fs.writeFileSync(tmp, JSON.stringify(value, null, 2), { mode: 0o600 });
+      fs.renameSync(tmp, file);
+      try { fs.chmodSync(file, 0o600); } catch (_) {}
+    } finally {
+      if (fs.existsSync(tmp)) {
+        try { fs.unlinkSync(tmp); } catch (_) {}
+      }
+    }
   }
   return {
     cookie() { const v = read(); return v ? v.cookie : ''; },

@@ -7,6 +7,7 @@
 package me.rerere.rikkahub.plugin.localdata
 
 import android.content.ContentValues
+import android.database.sqlite.SQLiteConstraintException
 import android.database.sqlite.SQLiteDatabase
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -120,6 +121,22 @@ class LocalDataMediaStore(
                     },
                 )
             }
+        } catch (error: SQLiteConstraintException) {
+            target.delete()
+            database.readable().rawQuery(
+                "SELECT resource_id, mime, byte_size, width, height FROM media_assets WHERE sha256 = ? LIMIT 1",
+                arrayOf(hash),
+            ).use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val existingId = cursor.text("resource_id")
+                    val existingFile = originalFile(existingId)
+                    if (existingFile != null && !existingFile.exists()) {
+                        writeAtomically(existingFile, bytes)
+                    }
+                    return LocalImportedMedia(mediaDto(cursor), created = false)
+                }
+            }
+            throw error
         } catch (error: Exception) {
             target.delete()
             throw error
@@ -196,23 +213,26 @@ class LocalDataMediaStore(
 
     /** Deleting an original is allowed only through the explicit reference-aware sweep. */
     fun sweepUnreferenced(isReferenced: (String) -> Boolean): Int {
-        val resources = mutableListOf<String>()
-        database.readable().rawQuery("SELECT resource_id FROM media_assets", emptyArray()).use { cursor ->
-            while (cursor.moveToNext()) resources += cursor.text("resource_id")
-        }
-        var deleted = 0
-        resources.forEach { resourceId ->
-            if (!isReferenced(resourceId)) {
-                val row = mediaRow(resourceId)
-                val original = row?.let { safeMediaFile(database.paths.originalsDir, it.fileName) }
-                database.transaction { db ->
-                    db.delete("media_assets", "resource_id = ?", arrayOf(resourceId))
+        val toDeleteFiles = mutableListOf<File>()
+        val deleted = database.transaction { db ->
+            val unreferenced = mutableListOf<Pair<String, String>>()
+            db.rawQuery("SELECT resource_id, file_name FROM media_assets", emptyArray()).use { cursor ->
+                while (cursor.moveToNext()) {
+                    val resourceId = cursor.text("resource_id")
+                    val fileName = cursor.text("file_name")
+                    if (!isReferenced(resourceId)) {
+                        unreferenced += resourceId to fileName
+                    }
                 }
-                original?.delete()
-                thumbnailFile(resourceId).delete()
-                deleted++
             }
+            unreferenced.forEach { (resourceId, fileName) ->
+                db.delete("media_assets", "resource_id = ?", arrayOf(resourceId))
+                safeMediaFile(database.paths.originalsDir, fileName)?.let { toDeleteFiles += it }
+                toDeleteFiles += thumbnailFile(resourceId)
+            }
+            unreferenced.size
         }
+        toDeleteFiles.forEach { it.delete() }
         return deleted
     }
 

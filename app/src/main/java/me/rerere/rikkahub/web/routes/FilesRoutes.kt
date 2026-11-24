@@ -11,6 +11,7 @@ import androidx.core.net.toUri
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.content.PartData
+import io.ktor.server.application.ApplicationCall
 import io.ktor.server.request.receiveMultipart
 import io.ktor.server.response.header
 import io.ktor.server.response.respond
@@ -23,7 +24,9 @@ import io.ktor.server.routing.post
 import io.ktor.server.routing.route
 import io.ktor.utils.io.readAvailable
 import me.rerere.rikkahub.data.db.entity.ManagedFileEntity
+import me.rerere.rikkahub.data.files.FileFolders
 import me.rerere.rikkahub.data.files.FilesManager
+import me.rerere.rikkahub.data.files.SafeFileResolver
 import me.rerere.rikkahub.data.files.saveUploadFromBytes
 import me.rerere.rikkahub.web.BadRequestException
 import me.rerere.rikkahub.web.NotFoundException
@@ -31,8 +34,29 @@ import me.rerere.rikkahub.web.dto.UploadFilesResponseDto
 import me.rerere.rikkahub.web.dto.UploadedFileDto
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.util.Locale
 
 private const val MAX_UPLOAD_FILE_SIZE_BYTES = 20 * 1024 * 1024 // 20 MB
+
+private val ALLOWED_WEB_FILE_FOLDERS = setOf(
+    FileFolders.UPLOAD,
+    "images",
+    "camera_captures",
+    "voice_messages",
+    "video_call_clips",
+    "video_call_snapshots",
+)
+
+private val ACTIVE_WEB_MIME_TYPES = setOf(
+    "text/html",
+    "application/xhtml+xml",
+    "image/svg+xml",
+    "text/javascript",
+    "application/javascript",
+    "application/x-javascript",
+    "text/xml",
+    "application/xml",
+)
 
 fun Route.filesRoutes(
     filesManager: FilesManager,
@@ -116,7 +140,7 @@ fun Route.filesRoutes(
                 throw NotFoundException("File not found on disk")
             }
 
-            call.response.header("Content-Type", entity.mimeType)
+            applySafeFileResponseHeaders(call, entity.mimeType, entity.displayName)
             call.respondFile(file)
         }
 
@@ -125,18 +149,25 @@ fun Route.filesRoutes(
             val relativePath = call.pathParameters.getAll("path")?.joinToString("/")
                 ?: throw BadRequestException("Missing file path")
 
-            // Validate path to prevent directory traversal attacks
-            if (relativePath.contains("..") || relativePath.startsWith("/")) {
+            // Validate path to prevent directory traversal and restrict to allowed media folders.
+            if (
+                relativePath.contains('\u0000') ||
+                relativePath.contains('\\') ||
+                relativePath.contains("..") ||
+                relativePath.startsWith("/")
+            ) {
                 throw BadRequestException("Invalid file path")
             }
 
-            val filesDir = context.filesDir
-            val file = File(filesDir, relativePath)
-
-            // Ensure the file is within the app's files directory
-            if (!file.canonicalPath.startsWith(filesDir.canonicalPath)) {
+            val folder = relativePath.substringBefore('/')
+            val subPath = relativePath.substringAfter('/', "")
+            if (folder !in ALLOWED_WEB_FILE_FOLDERS || subPath.isBlank()) {
                 throw BadRequestException("Invalid file path")
             }
+
+            val folderRoot = File(context.filesDir, folder)
+            val file = SafeFileResolver.resolveInside(folderRoot, subPath)
+                ?: throw BadRequestException("Invalid file path")
 
             if (!file.exists() || !file.isFile) {
                 throw NotFoundException("File not found")
@@ -175,7 +206,7 @@ fun Route.filesRoutes(
                 }
             }
 
-            call.response.header("Content-Type", contentType)
+            applySafeFileResponseHeaders(call, contentType, file.name)
             call.respondFile(file)
         }
     }
@@ -188,7 +219,12 @@ fun Route.assetsRoutes(context: Context) {
             val relativePath = call.pathParameters.getAll("path")?.joinToString("/")
                 ?: throw BadRequestException("Missing asset path")
 
-            if (relativePath.contains("..") || relativePath.startsWith("/")) {
+            if (
+                relativePath.contains('\u0000') ||
+                relativePath.contains('\\') ||
+                relativePath.contains("..") ||
+                relativePath.startsWith("/")
+            ) {
                 throw BadRequestException("Invalid asset path")
             }
 
@@ -206,6 +242,7 @@ fun Route.assetsRoutes(context: Context) {
 
             try {
                 val inputStream = context.assets.open(relativePath)
+                call.response.header("X-Content-Type-Options", "nosniff")
                 call.response.header("Content-Type", contentType.toString())
                 call.respondOutputStream {
                     inputStream.use { it.copyTo(this) }
@@ -214,6 +251,31 @@ fun Route.assetsRoutes(context: Context) {
                 throw NotFoundException("Asset not found: $relativePath")
             }
         }
+    }
+}
+
+private fun applySafeFileResponseHeaders(
+    call: ApplicationCall,
+    rawMimeType: String,
+    fileName: String,
+) {
+    call.response.header("X-Content-Type-Options", "nosniff")
+    val cleanMime = rawMimeType.replace("\r", "").replace("\n", "").trim()
+    val mimeBase = cleanMime.substringBefore(';').trim().lowercase(Locale.ROOT)
+    if (mimeBase in ACTIVE_WEB_MIME_TYPES) {
+        val safeContentType = if (mimeBase == "application/xhtml+xml") {
+            ContentType.Application.OctetStream.toString()
+        } else {
+            "${ContentType.Text.Plain}; charset=utf-8"
+        }
+        val safeName = sanitizeDisplayName(fileName).replace("\"", "_")
+        call.response.header("Content-Type", safeContentType)
+        call.response.header("Content-Disposition", "attachment; filename=\"$safeName\"")
+    } else {
+        call.response.header(
+            "Content-Type",
+            cleanMime.ifBlank { ContentType.Application.OctetStream.toString() }
+        )
     }
 }
 
