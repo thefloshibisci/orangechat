@@ -8,6 +8,8 @@ import me.rerere.ai.ui.UIMessagePart
 import me.rerere.ai.util.audioMimeType
 import me.rerere.ai.util.openAiAudioFormat
 import me.rerere.rikkahub.data.datastore.findProvider
+import me.rerere.rikkahub.data.ai.tools.isGeneratedSpeech
+import me.rerere.rikkahub.data.ai.tools.speechTranscript
 import java.io.File
 
 /** Request-only adaptation: stored audio remains available when switching back to a capable model. */
@@ -37,8 +39,11 @@ object VoiceMessageTransformer : InputMessageTransformer {
         fun adaptPart(part: UIMessagePart): UIMessagePart = when (part) {
             is UIMessagePart.VoiceMessage -> adapt(part.url, part.transcript)
             is UIMessagePart.Audio -> {
-                val adapted = adapt(part.url)
-                if (adapted is UIMessagePart.Audio) part.copy(url = adapted.url) else adapted
+                if (part.isGeneratedSpeech()) UIMessagePart.Text("[已发送语音] ${part.speechTranscript()}")
+                else {
+                    val adapted = adapt(part.url)
+                    if (adapted is UIMessagePart.Audio) part.copy(url = adapted.url) else adapted
+                }
             }
             is UIMessagePart.Tool -> part.copy(output = part.output.map(::adaptPart))
             else -> part

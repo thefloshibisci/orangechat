@@ -65,28 +65,40 @@ class ProactiveWakeupTest {
         } finally { pool.shutdownNow() }
     }
 
-    @Test fun `appointments override interval and wait until exact time`() {
+    @Test fun `earliest appointment or ordinary check determines alarm`() {
         val late = appointment()
         val early = appointment("chat-b", "2026-10-28T19:01:00+08:00")
-        assertEquals(early, nextProactiveWakeup(listOf(late, early), setting, now, zone))
+        assertEquals(early, nextProactiveWakeup(listOf(late, early), setting))
         assertEquals(early.timeMillis, proactiveTriggerTime(early, now + 30_000, setting, now, zone))
         assertEquals(late.timeMillis, proactiveTriggerTime(late, now + 30_000, setting, now, zone))
     }
 
-    @Test fun `quiet hours postpone appointment to active start and fallback remains unchanged`() {
+    @Test fun `night appointment is scheduled when agreed but ordinary fallback waits for morning`() {
         val pending = appointment(at = "2026-10-29T01:30:00+08:00")
+        assertEquals(pending.timeMillis, proactiveTriggerTime(pending, now + 60_000, setting, now, zone))
         assertEquals(time("2026-10-29T08:00:00+08:00"),
-            proactiveTriggerTime(pending, now + 60_000, setting, now, zone))
+            proactiveTriggerTime(null, pending.timeMillis, setting, now, zone))
         assertEquals(now + 90 * 60_000L, proactiveTriggerTime(null, now + 90 * 60_000L, setting, now, zone))
-        assertEquals(now + 60_000, proactiveTriggerTime(appointment(at = "2026-10-28T18:00:00+08:00"),
-            now + 90 * 60_000L, setting, now, zone))
+        assertFalse(canRunProactiveWakeup(pending, setting, pending.timeMillis - 1, zone))
+        assertTrue(canRunProactiveWakeup(pending, setting, pending.timeMillis, zone))
+        assertFalse(canRunProactiveWakeup(null, setting, pending.timeMillis, zone))
+        val overdue = pending.timeMillis + 1_000
+        assertEquals(overdue + 60_000, proactiveTriggerTime(pending, pending.timeMillis, setting, overdue, zone))
+    }
+
+    @Test fun `overnight active window still gates ordinary messages but not daytime agreements`() {
+        val overnight = setting.copy(activeStartHour = 22, activeEndHour = 6)
+        val daytime = appointment(at = "2026-10-29T12:00:00+08:00")
+        assertTrue(canRunProactiveWakeup(daytime, overnight, daytime.timeMillis, zone))
+        assertFalse(canRunProactiveWakeup(null, overnight, daytime.timeMillis, zone))
+        assertTrue(canRunProactiveWakeup(null, overnight, time("2026-10-29T01:30:00+08:00"), zone))
     }
 
     @Test fun `master switch and separate opt in both gate appointment routing`() {
         val pending = listOf(appointment())
-        assertNull(nextProactiveWakeup(pending, setting.copy(enabled = false), now, zone))
-        assertNull(nextProactiveWakeup(pending, setting.copy(allowAiScheduledWakeup = false), now, zone))
-        assertNotNull(nextProactiveWakeup(pending, setting, now, zone))
+        assertNull(nextProactiveWakeup(pending, setting.copy(enabled = false)))
+        assertNull(nextProactiveWakeup(pending, setting.copy(allowAiScheduledWakeup = false)))
+        assertNotNull(nextProactiveWakeup(pending, setting))
     }
 
     @Test fun `execution waits until due and final recheck respects changed consent and quiet hours`() {
@@ -96,7 +108,9 @@ class ProactiveWakeupTest {
         assertFalse(canRunProactiveWakeup(pending, setting.copy(enabled = false), pending.timeMillis, zone))
         assertFalse(canRunProactiveWakeup(pending, setting.copy(allowAiScheduledWakeup = false), pending.timeMillis, zone))
         val night = time("2026-10-28T23:01:00+08:00")
-        assertFalse(canRunProactiveWakeup(pending, setting, night, zone))
+        assertTrue(canRunProactiveWakeup(pending, setting, night, zone))
+        assertFalse(canRunProactiveWakeup(null, setting, night, zone))
+        assertFalse(canRunProactiveWakeup(pending, setting.copy(allowAiScheduledWakeup = false), night, zone))
         assertTrue(canRunProactiveWakeup(pending, setting, time("2026-10-29T08:00:00+08:00"), zone))
         assertTrue(canRunProactiveWakeup(null, setting.copy(allowAiScheduledWakeup = false), night, zone, manual = true))
         assertFalse(canRunProactiveWakeup(null, setting.copy(enabled = false), night, zone, manual = true))
@@ -107,19 +121,22 @@ class ProactiveWakeupTest {
         val first = appointment("chat-a", "2026-10-28T20:00:00+08:00")
         val second = appointment("chat-b", "2026-10-28T20:01:00+08:00").copy(assistantId = "role-b")
         store.put(second); store.put(first)
-        assertEquals(first, nextProactiveWakeup(store.all(), setting, now, zone))
+        assertEquals(first, nextProactiveWakeup(store.all(), setting))
         assertTrue(store.consume(first))
-        assertEquals(second, nextProactiveWakeup(store.all(), setting, first.timeMillis, zone))
+        assertEquals(second, nextProactiveWakeup(store.all(), setting))
         assertEquals(second.timeMillis, proactiveTriggerTime(second, now, setting, first.timeMillis, zone))
         store.clear()
-        assertNull(nextProactiveWakeup(ProactiveWakeupStore(context).all(), setting, now, zone))
+        assertNull(nextProactiveWakeup(ProactiveWakeupStore(context).all(), setting))
     }
 
-    @Test fun `DST gap appointment respects local active start`() {
+    @Test fun `DST gap preserves agreed instant and ordinary fallback respects local active start`() {
         val pending = appointment().copy(timeMillis = time("2026-03-08T01:30:00-05:00"))
         val localSetting = setting.copy(activeStartHour = 3, activeEndHour = 23)
-        assertEquals(time("2026-03-08T03:00:00-04:00"), proactiveTriggerTime(pending, now, localSetting,
-            time("2026-03-07T20:00:00-05:00"), ZoneId.of("America/New_York")))
+        val previousEvening = time("2026-03-07T20:00:00-05:00")
+        val newYork = ZoneId.of("America/New_York")
+        assertEquals(pending.timeMillis, proactiveTriggerTime(pending, pending.timeMillis, localSetting, previousEvening, newYork))
+        assertEquals(time("2026-03-08T03:00:00-04:00"),
+            proactiveTriggerTime(null, pending.timeMillis, localSetting, previousEvening, newYork))
     }
 
     @Test fun `actual model tool schedules replaces and cancels durable appointment`() = runBlocking {
@@ -166,6 +183,59 @@ class ProactiveWakeupTest {
         clock += 60_000
         val next = build().description
         assertEquals(first, next)
+    }
+
+    @Test fun `scoped participants all awaiting an appointment never schedule an early fallback`() {
+        val appt = appointment("chat-a", "2026-10-28T20:30:00+08:00")
+        // Scoped mode, no scopedDue, and a future appointment -> unbounded (no random wake).
+        assertEquals(Long.MAX_VALUE, proactiveFallbackTime(
+            scopedMode = true, scopedDue = null, legacyDurableDue = null,
+            delayOverrideMinutes = null, hasAppointment = true, now = now,
+        ) { error("fallback must not run while appointment clamps the trigger") })
+        // The appointment still clamps the unbounded fallback to its own active-hours time.
+        assertEquals(appt.timeMillis, proactiveTriggerTime(appt, Long.MAX_VALUE, setting, now, zone))
+    }
+
+    @Test fun `peer due slot wakes before another assistant future appointment`() {
+        val appointment = appointment(at = "2026-10-29T01:30:00+08:00")
+        val peerDue = now + 60_000
+        val appointmentAlarm = proactiveTriggerTime(appointment, peerDue, setting, now, zone)
+        assertEquals(peerDue, minOf(appointmentAlarm, nextProactiveActiveTime(setting, peerDue, zone)))
+        assertEquals(time("2026-10-29T01:30:00+08:00"), appointmentAlarm)
+    }
+
+    @Test fun `fallback chain is unchanged outside the all-appointed scoped case`() {
+        val defaultDue = now + 90 * 60_000L
+        // Scoped mode without an appointment still produces a concrete default.
+        assertEquals(defaultDue, proactiveFallbackTime(
+            scopedMode = true, scopedDue = null, legacyDurableDue = null,
+            delayOverrideMinutes = null, hasAppointment = false, now = now,
+        ) { defaultDue })
+        // A scopedDue always wins.
+        assertEquals(now + 5_000, proactiveFallbackTime(
+            scopedMode = true, scopedDue = now + 5_000, legacyDurableDue = now + 999,
+            delayOverrideMinutes = 7, hasAppointment = true, now = now,
+        ) { defaultDue })
+        // Legacy (non-scoped) mode uses a future durable slot before the override.
+        assertEquals(now + 60_000, proactiveFallbackTime(
+            scopedMode = false, scopedDue = null, legacyDurableDue = now + 60_000,
+            delayOverrideMinutes = 7, hasAppointment = false, now = now,
+        ) { defaultDue })
+        // Legacy durable slot is ignored once scoped, and an expired durable slot is skipped.
+        assertEquals(now + 7 * 60_000L, proactiveFallbackTime(
+            scopedMode = true, scopedDue = null, legacyDurableDue = now + 60_000,
+            delayOverrideMinutes = 7, hasAppointment = false, now = now,
+        ) { defaultDue })
+        assertEquals(now + 7 * 60_000L, proactiveFallbackTime(
+            scopedMode = false, scopedDue = null, legacyDurableDue = now - 60_000,
+            delayOverrideMinutes = 7, hasAppointment = false, now = now,
+        ) { defaultDue })
+    }
+
+    @Test fun `unbounded fallback without an appointment is rejected`() {
+        assertTrue(runCatching {
+            proactiveTriggerTime(null, Long.MAX_VALUE, setting, now, zone)
+        }.isFailure)
     }
 
     @Test fun `past appointment feedback includes current time`() = runBlocking {

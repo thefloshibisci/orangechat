@@ -35,6 +35,7 @@ import me.rerere.rikkahub.data.event.AppEventBus
 import me.rerere.rikkahub.service.VoiceCallService
 import me.rerere.rikkahub.utils.readClipboardText
 import me.rerere.rikkahub.utils.writeClipboardText
+import me.rerere.rikkahub.data.datastore.getSelectedTTSProvider
 import me.rerere.rikkahub.data.datastore.findModelById
 import me.rerere.rikkahub.data.datastore.findProvider
 import me.rerere.rikkahub.data.files.FilesManager
@@ -184,7 +185,16 @@ class LocalTools(
     private val settingsStore: me.rerere.rikkahub.data.datastore.SettingsStore,
     private val providerManager: ProviderManager,
     private val filesManager: FilesManager,
+    private val pluginManager: me.rerere.rikkahub.plugin.manager.PluginManager,
 ) {
+    /**
+     * Host-side plugin manager for native tool factories assembled by ChatService itself
+     * (for example `moments_chat_draft`). Reusing this instance keeps one plugin registry and
+     * avoids passing a second PluginManager into ChatService's constructor.
+     */
+    val hostPluginManager: me.rerere.rikkahub.plugin.manager.PluginManager
+        get() = pluginManager
+
     suspend fun showIncomingChatCall(conversationId: String) {
         eventBus.emit(AppEvent.RequestVoiceCall(conversationId))
         // Notification opens the chat invitation; it never starts recording itself.
@@ -398,49 +408,14 @@ class LocalTools(
         )
     }
  
-    val ttsTool by lazy {
-        Tool(
-            name = "text_to_speech",
-            description = """
-                Speak text aloud to the user using the device's text-to-speech engine.
-                Use this when the user asks you to read something aloud, or when audio output is appropriate.
-                The tool returns immediately; audio plays in the background on the device.
-                Provide natural, readable text without markdown formatting.
-                You may set delivery per sentence inside text, for example:
-                [[voice emotion=happy speed=0.9 pitch=-2 volume=1]]Hello(laughs), how are you?[[/voice]]
-                Wrap each styled sentence separately and always close the block. All attributes are optional.
-                emotion: auto, happy, sad, angry, fearful, disgusted, surprised, calm (fluent/whisper only on MiniMax 2.6).
-                speed: 0.5-2, pitch: integer -12 to 12, volume: >0 to 10.
-                MiniMax pauses: put <#0.3#> between spoken words (0.01-99.99 seconds, at most two decimals).
-                Only MiniMax 2.8 supports interjections: (laughs), (chuckle), (sighs), (breath), (pant),
-                (inhale), (exhale), (gasps), (sniffs), (coughs), (clear-throat), (groans), (snorts),
-                (burps), (lip-smacking), (humming), (hissing), (emm), (sneezes).
-                Unsupported settings and tags are automatically omitted when another model/provider is selected.
-                Ordinary spoken fillers such as 嗯, 啊, 呀 may be written directly in the text.
-            """.trimIndent().replace("\n", " "),
-            parameters = {
-                InputSchema.Obj(
-                    properties = buildJsonObject {
-                        put("text", buildJsonObject {
-                            put("type", "string")
-                            put("description", "Text to speak; optional per-sentence [[voice emotion=happy speed=0.9 pitch=-2]]words[[/voice]] blocks. Plain text also works.")
-                        })
-                    },
-                    required = listOf("text")
-                )
-            },
-            execute = {
-                val text = it.jsonObject["text"]?.jsonPrimitive?.contentOrNull
-                    ?: error("text is required")
-                eventBus.emit(AppEvent.Speak(text))
-                val payload = buildJsonObject {
-                    put("success", true)
-                }
-                listOf(UIMessagePart.Text(payload.toString()))
-            }
+    private val savedSpeechGenerator by lazy { SavedSpeechGenerator(context, filesManager) }
+
+    val ttsTool: Tool
+        get() = speechMessageTool(
+            selectedProvider = { settingsStore.settingsFlow.value.getSelectedTTSProvider() },
+            generate = savedSpeechGenerator::generate,
         )
-    }
- 
+
     val askUserTool by lazy {
         Tool(
             name = "ask_user",
@@ -654,12 +629,24 @@ class LocalTools(
     /**
      * 工具调用上下文重载 - 供工作流引擎等无头调用方使用. 在基础工具之上额外注册
      * workflow_* 工具 (当助手开启了 Workflows 选项时), 以便 AI 能创建/管理工作流.
+     *
+     * [momentsBudgetRegistry] is the registry for user-turn scoped LocalMoments reads. ChatService
+     * passes its process-owned registry plus the current user-message anchor, so approval rebuilds
+     * resolve the same budget in buildLocalMomentsTools. Headless/legacy callers may omit them.
      */
     fun getTools(
         options: List<LocalToolOption>,
         invocationContext: ToolInvocationContext,
+        momentsBudgetRegistry: LocalMomentsBudgetRegistry? = null,
+        momentsBudgetAnchorUserId: String? = null,
     ): List<Tool> {
-        val tools = buildTools(options, invocationContext.callerConversationId, invocationContext)
+        val tools = buildTools(
+            options,
+            invocationContext.callerConversationId,
+            invocationContext,
+            momentsBudgetRegistry,
+            momentsBudgetAnchorUserId,
+        )
         if (options.contains(LocalToolOption.Workflows)) {
             // knownToolNamesProvider 返回空集 = 跳过创建时的工具名校验, 改在触发时由
             // ToolSurfaceBuilder 构建的完整工具面 (含 system/MCP/plugin) 校验. 这样 AI
@@ -687,6 +674,8 @@ class LocalTools(
         options: List<LocalToolOption>,
         conversationId: String? = null,
         invocationContext: ToolInvocationContext = ToolInvocationContext.EMPTY,
+        momentsBudgetRegistry: LocalMomentsBudgetRegistry? = null,
+        momentsBudgetAnchorUserId: String? = null,
     ): MutableList<Tool> {
         val tools = mutableListOf<Tool>()
         if (options.contains(LocalToolOption.ChartDisplay)) {
@@ -745,6 +734,21 @@ class LocalTools(
             tools.add(me.rerere.rikkahub.data.ai.tools.local.sshUploadTool(context, sshHostRepository))
             tools.add(me.rerere.rikkahub.data.ai.tools.local.sshDownloadTool(context, sshHostRepository))
             tools.add(me.rerere.rikkahub.data.ai.tools.local.forgetSshHostKeyTool(context))
+        }
+        // 朋友圈助手读取工具。是否真正注册由宿主原生门槛决定（插件安装并启用、localdata read
+        // 授权、LocalTaskSettings 参与助手、非 headless 的正常聊天），模型无法自证身份。
+        if (!invocationContext.isHeadless && invocationContext.callerAssistantId != null) {
+            tools.addAll(
+                buildLocalMomentsTools(
+                    context = context,
+                    settingsStore = settingsStore,
+                    pluginManager = pluginManager,
+                    filesManager = filesManager,
+                    invocationContext = invocationContext,
+                    budgetRegistry = momentsBudgetRegistry,
+                    budgetAnchorUserId = momentsBudgetAnchorUserId,
+                ),
+            )
         }
         return tools
     }

@@ -30,6 +30,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import dev.chrisbanes.haze.HazeState
+import dev.chrisbanes.haze.HazeStyle
+import dev.chrisbanes.haze.HazeTint
+import dev.chrisbanes.haze.hazeEffect
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.CallIncoming01
 import me.rerere.hugeicons.stroke.Cancel01
@@ -49,7 +53,10 @@ internal fun GlassCallPanel(
     theme: String, name: String, status: String, duration: String, subtitle: String,
     incoming: Boolean = false, muted: Boolean = false, canControl: Boolean = true,
     speakerOn: Boolean = false, speaking: Boolean = false,
-    error: String? = null, waveform: List<Float> = emptyList(), onCollapse: (() -> Unit)? = null,
+    error: String? = null,
+    /** 一次性提示（会淡出）。识别出错等"已自动恢复"的消息；与持久 [error] 分开。 */
+    notice: String? = null, noticeSeq: Long = 0,
+    waveform: List<Float> = emptyList(), onCollapse: (() -> Unit)? = null,
     onPrimary: () -> Unit, onSpeaker: () -> Unit = {}, onEnd: () -> Unit,
 ) {
     val colors = interactionColors(theme)
@@ -94,6 +101,7 @@ internal fun GlassCallPanel(
                 if (subtitle.isNotBlank()) Text(subtitle, Modifier.padding(top = 12.dp).heightIn(max = 120.dp).verticalScroll(rememberScrollState()),
                     fontSize = 14.sp, lineHeight = 21.sp, textAlign = TextAlign.Center)
                 error?.let { Text(it, Modifier.padding(top = 8.dp), fontSize = 12.sp, color = MaterialTheme.colorScheme.error, textAlign = TextAlign.Center) }
+                TransientCallNotice(notice, noticeSeq)
                 Row(Modifier.padding(top = if (incoming) 56.dp else 30.dp).fillMaxWidth()
                     .background(Color.White.copy(alpha = .45f), RoundedCornerShape(28.dp))
                     .border(1.dp, Color.White.copy(alpha = .8f), RoundedCornerShape(28.dp)).padding(vertical = 14.dp),
@@ -110,6 +118,48 @@ internal fun GlassCallPanel(
                 }
             }
         }
+    }
+}
+
+/**
+ * 一条会淡入/驻留/淡出的一次性提示。
+ *
+ * 计时器以 (text, seq) 为键：同一句提示再发一次也要重新淡入。淡出期间保持最后一次文本，
+ * 不闪成空。供视频通话面板与语音通话面板复用，时间参数两处一致。
+ */
+@Composable
+internal fun TransientCallNotice(text: String?, seq: Long) {
+    var visible by remember { mutableStateOf(false) }
+    var shown by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(text, seq) {
+        if (text == null) {
+            visible = false
+        } else {
+            shown = text
+            visible = true
+            kotlinx.coroutines.delay(2500)
+            visible = false
+            // 等 fadeOut 走完再清掉文本，避免退出动画期间文字先消失。
+            kotlinx.coroutines.delay(650)
+            if (!visible) shown = null
+        }
+    }
+    androidx.compose.animation.AnimatedVisibility(
+        visible = visible,
+        enter = androidx.compose.animation.fadeIn(androidx.compose.animation.core.tween(200)),
+        exit = androidx.compose.animation.fadeOut(androidx.compose.animation.core.tween(600)),
+    ) {
+        Text(
+            shown.orEmpty(),
+            Modifier
+                .padding(top = 8.dp)
+                .background(Color.White.copy(alpha = .7f), RoundedCornerShape(12.dp))
+                .padding(horizontal = 12.dp, vertical = 5.dp),
+            fontSize = 12.sp,
+            lineHeight = 16.sp,
+            color = LocalContentColor.current.copy(alpha = .85f),
+            textAlign = TextAlign.Center,
+        )
     }
 }
 
@@ -130,9 +180,12 @@ private fun GlassCallButton(theme: String, icon: ImageVector, label: String, tin
 
 @Composable
 internal fun FloatingCallPill(theme: String, name: String = "对方", incoming: Boolean = false,
-    busy: Boolean = false, onAccept: () -> Unit = {}, onOpen: () -> Unit, onEnd: () -> Unit) {
+    busy: Boolean = false, onAccept: () -> Unit = {}, onOpen: () -> Unit, onEnd: () -> Unit,
+    glass: HazeState? = null,
+) {
     val start by me.rerere.rikkahub.service.VoiceCallService.startedAtMillis.collectAsState()
     val callState by me.rerere.rikkahub.service.VoiceCallService.activeUiState.collectAsState()
+    val videoCall by me.rerere.rikkahub.service.VoiceCallService.videoCallActive.collectAsState()
     var seconds by remember { mutableStateOf(0L) }
     LaunchedEffect(start) {
         while (true) {
@@ -141,9 +194,15 @@ internal fun FloatingCallPill(theme: String, name: String = "对方", incoming: 
         }
     }
     val colors = interactionColors(theme)
+    val backdropBlur = if (glass == null) Modifier else Modifier.hazeEffect(
+        state = glass,
+        style = HazeStyle(backgroundColor = Color.Transparent, tint = HazeTint(Color.Transparent),
+            fallbackTint = HazeTint(Color.Transparent), blurRadius = 5.dp, noiseFactor = 0f),
+    )
     val context = androidx.compose.ui.platform.LocalContext.current
     Box(Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 6.dp), contentAlignment = Alignment.Center) {
-        ReferenceGlass(theme, Modifier.widthIn(max = 380.dp).fillMaxWidth().testTag("floating-call-pill"), radius = 32.dp, onClick = onOpen) {
+        ReferenceGlass(theme, Modifier.widthIn(max = 380.dp).fillMaxWidth().testTag("floating-call-pill"),
+            radius = 32.dp, onClick = onOpen, backdropBlur = backdropBlur) {
             Row(Modifier.fillMaxWidth().padding(horizontal = 13.dp, vertical = 7.dp), verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(9.dp)) {
                 Box(Modifier.size(34.dp).testTag("floating-call-avatar"), contentAlignment = Alignment.Center) {
@@ -156,14 +215,15 @@ internal fun FloatingCallPill(theme: String, name: String = "对方", incoming: 
                 }
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     Text(if (incoming) name.ifBlank { "对方" } + " · 等待接通" else "${name.ifBlank { "对方" }} · ${when (callState.status) {
-                        VoiceCallStatus.Listening -> "正在聆听"
+                        VoiceCallStatus.Listening -> if (videoCall) "视频通话中" else "正在聆听"
                         VoiceCallStatus.Processing -> "正在思考"
                         VoiceCallStatus.Speaking -> "正在说话"
                         VoiceCallStatus.Error -> "通话异常"
                         else -> "通话中"
                     }}  %02d:%02d".format(seconds / 60, seconds % 60),
                         fontSize = 11.sp, lineHeight = 14.sp, fontWeight = FontWeight.Bold, color = colors.ink, maxLines = 1)
-                    Text(if (incoming) "点击查看来电" else if (callState.isMuted) "麦克风已静音" else "点击返回通话", fontSize = 9.sp,
+                    Text(if (incoming) "点击查看来电" else if (videoCall) "点击返回视频通话"
+                        else if (callState.isMuted) "麦克风已静音" else "点击返回通话", fontSize = 9.sp,
                         lineHeight = 12.sp, color = colors.ink.copy(alpha = .72f), maxLines = 1)
                 }
                 if (!incoming) Row(Modifier.width(30.dp).height(22.dp), horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -172,7 +232,8 @@ internal fun FloatingCallPill(theme: String, name: String = "对方", incoming: 
                         Box(Modifier.width(3.dp).height((4 + amplitude * 14).dp).background(colors.ink.copy(alpha = .7f), CircleShape))
                     }
                 }
-                if (!incoming) IconButton(onClick = { me.rerere.rikkahub.service.VoiceCallService.toggleMute(context) },
+                // 视频通话里麦克风是"录一段"的开关，由视频页自己持有，这里不再渲染静音钮。
+                if (!incoming && !videoCall) IconButton(onClick = { me.rerere.rikkahub.service.VoiceCallService.toggleMute(context) },
                     modifier = Modifier.size(30.dp)) {
                     Icon(if (callState.isMuted) HugeIcons.MicOff01 else HugeIcons.Mic01, if (callState.isMuted) "取消静音" else "静音",
                         tint = colors.ink, modifier = Modifier.size(17.dp))

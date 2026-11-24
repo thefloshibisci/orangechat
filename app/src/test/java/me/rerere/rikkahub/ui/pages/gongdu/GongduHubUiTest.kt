@@ -54,9 +54,9 @@ class GongduHubUiTest {
         val screenWidth = compose.activity.resources.displayMetrics.widthPixels.toFloat()
         assertTrue("Tall phone card must occupy at least 69% of the width", bounds.width / screenWidth >= .69f)
         assertDividerAtTwoThirds("look")
-        compose.onNodeWithText("轻点进入 →").assertIsDisplayed()
+        roomText("look", "轻点进入 →").assertIsDisplayed()
         val layouts = mutableListOf<androidx.compose.ui.text.TextLayoutResult>()
-        compose.onNodeWithText("一起逛", useUnmergedTree = true).performSemanticsAction(
+        roomText("look", "一起逛").performSemanticsAction(
             androidx.compose.ui.semantics.SemanticsActions.GetTextLayoutResult) { it(layouts) }
         assertTrue(layouts.single().layoutInput.style.fontSize.value >= 23f)
         snapshot("hub-tall-phone")
@@ -69,10 +69,10 @@ class GongduHubUiTest {
         compose.setContent { Themed(false) { GongduHub({}, { entered = true }, {}) } }
         compose.onNodeWithContentDescription("返回").assertIsDisplayed()
         compose.onNodeWithText("共度").assertIsDisplayed()
-        compose.onNodeWithText("轻点进入 →").assertIsDisplayed()
+        roomText("look", "轻点进入 →").assertIsDisplayed()
         assertDividerAtTwoThirds("look")
         val entryLayouts = mutableListOf<androidx.compose.ui.text.TextLayoutResult>()
-        compose.onNodeWithText("轻点进入 →", useUnmergedTree = true)
+        roomText("look", "轻点进入 →")
             .performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.GetTextLayoutResult) { it(entryLayouts) }
         assertTrue(entryLayouts.isNotEmpty())
         snapshot("hub-compact")
@@ -117,6 +117,11 @@ class GongduHubUiTest {
             2f / 3f, (divider.center.y - card.top) / card.height, .01f)
     }
 
+    private fun roomText(roomId: String, text: String) = compose.onNode(
+        hasText(text) and hasAnyAncestor(hasTestTag("gongdu-card-$roomId")),
+        useUnmergedTree = true,
+    )
+
     @Test fun coverflowCentreIsFlatAndNeighboursShrinkTiltAndFade() {
         assertEquals(CoverflowTransform(1f, 0f, 1f), coverflowTransform(0f))
         val right = coverflowTransform(1f)
@@ -149,6 +154,10 @@ class GongduHubUiTest {
         compose.onNodeWithText("01 / 04").assertIsDisplayed()
         assertDividerAtTwoThirds("look")
         snapshot("hub-light")
+        val hint = roomText("look", "轻点进入 →")
+        val hintLayouts = mutableListOf<androidx.compose.ui.text.TextLayoutResult>()
+        hint.performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.GetTextLayoutResult) { it(hintLayouts) }
+        val dotX = hint.fetchSemanticsNode().boundsInRoot.left + hintLayouts.single().getBoundingBox(1).left
         compose.onNodeWithContentDescription("一起逛，轻点进入").performClick()
         assertEquals("look", entered)
         compose.runOnIdle { runBlocking { pager.scrollToPage(1) } }
@@ -156,15 +165,26 @@ class GongduHubUiTest {
         compose.onNodeWithText("02 / 04").assertIsDisplayed()
         assertDividerAtTwoThirds("read")
         snapshot("hub-fish")
+        roomText("read", "轻点进入 →").assertIsDisplayed()
         // Tapping a side card does not enter it; only the centred card responds.
         compose.onNodeWithContentDescription("一起逛，轻点进入").performClick()
         assertEquals("look", entered)
-        compose.onNodeWithContentDescription("一起读，筹备中").performClick()
-        assertEquals("read", unavailable)
+        compose.onNodeWithContentDescription("一起读，轻点进入").performClick()
+        assertEquals("read", entered)
         compose.runOnIdle { runBlocking { pager.scrollToPage(2) } }
         compose.waitForIdle()
         assertDividerAtTwoThirds("listen")
+        roomText("listen", "轻点进入 →").assertIsDisplayed()
+        compose.onNodeWithContentDescription("一起听，轻点进入").performClick()
+        assertEquals("listen", entered)
+        assertNull(unavailable)
         snapshot("hub-jellyfish")
+        compose.runOnIdle { runBlocking { pager.scrollToPage(3) } }
+        compose.waitForIdle()
+        val planned = roomText("next", "筹备中").fetchSemanticsNode()
+        assertEquals("筹 aligns to 点 after centering either card", dotX, planned.boundsInRoot.left, 2f)
+        compose.onNodeWithContentDescription("下一间，筹备中").performClick()
+        assertEquals("next", unavailable)
     }
 
     @Test fun hubReopensOnTheLastRoom() {
@@ -208,19 +228,92 @@ class GongduHubUiTest {
     private fun roomScreen(name: String, tab: Int, dark: Boolean = false, body: @Composable () -> Unit) {
         compose.setContent {
             AppThemed(dark) {
-                Column(Modifier.width(360.dp).height(780.dp).background(MaterialTheme.colorScheme.surfaceContainerLow)) {
+                GongduWaterBackdrop { Column(Modifier.fillMaxSize()) {
                     RoomHeader("一起逛", "小红书 · 一起看，也一起聊", true) {}
                     RoomTabs(listOf("推荐", "搜索", "消息", "设置"), tab, {}, Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
                     body()
-                }
+                } }
             }
         }
         compose.waitForIdle()
         snapshot(name)
     }
 
+    @Test fun roomOwnsItsPaperBackgroundAndSearchUsesBundledRegularFont() {
+        val wallpaper = androidx.compose.runtime.mutableStateOf(androidx.compose.ui.graphics.Color(0xFF819DA6))
+        compose.setContent {
+            MaterialTheme(colorScheme = PresetThemes.first().getColorScheme(false).copy(
+                surface = androidx.compose.ui.graphics.Color.White.copy(alpha = .2f))) {
+                CompositionLocalProvider(me.rerere.rikkahub.ui.context.LocalSettingsBackgroundActive provides true) {
+                    Box(Modifier.fillMaxSize().background(wallpaper.value)) {
+                        GongduWaterBackdrop { Column(Modifier.fillMaxSize()) {
+                            RoomHeader("一起逛", "小红书 · 一起看，也一起聊", true) {}
+                            RoomTabs(listOf("推荐", "搜索", "消息", "设置"), 1, {}, Modifier.padding(16.dp))
+                            FeedGrid(emptyList(), false, { SearchHeader("", {}, false, {}) },
+                                "", {})
+                        } }
+                    }
+                }
+            }
+        }
+        compose.waitForIdle()
+        fun sampleBackground(): Int {
+            var pixel = 0
+            compose.runOnIdle {
+                val view = compose.activity.window.decorView
+                val bitmap = Bitmap.createBitmap(view.width, view.height, Bitmap.Config.ARGB_8888)
+                view.draw(Canvas(bitmap))
+                pixel = bitmap.getPixel(view.width / 2, view.height * 3 / 4)
+            }
+            return pixel
+        }
+        val paperPixel = sampleBackground()
+        assertNotEquals("The room must cover the app wallpaper", 0xFF819DA6.toInt(), paperPixel)
+        compose.runOnIdle { wallpaper.value = androidx.compose.ui.graphics.Color.Magenta }
+        compose.waitForIdle()
+        assertEquals("Changing the app wallpaper cannot change this room's paper", paperPixel, sampleBackground())
+        val layouts = mutableListOf<androidx.compose.ui.text.TextLayoutResult>()
+        compose.onNodeWithText("想和机一起看什么？", useUnmergedTree = true).performSemanticsAction(
+            androidx.compose.ui.semantics.SemanticsActions.GetTextLayoutResult) { it(layouts) }
+        assertEquals(GongduSans, layouts.single().layoutInput.style.fontFamily)
+        assertEquals(androidx.compose.ui.text.font.FontWeight.Normal, layouts.single().layoutInput.style.fontWeight)
+        snapshot("screen-search-independent-paper")
+    }
+
     @Test fun roomRecommendScreen() = roomScreen("screen-recommend", 0) {
-        FeedGrid(sampleFeeds, false, header = { SectionTitle("一起逛逛", "挑一篇，带回聊天") }, empty = "", onOpen = {})
+        FeedGrid(sampleFeeds, false, header = { RecommendationHeader(false) {} }, empty = "", onOpen = {})
+    }
+
+
+    @Test @Config(qualifiers = "w320dp-h700dp-xxhdpi")
+    fun compactDarkSearchSupportsLargeTextAndTabSelection() {
+        val selected = androidx.compose.runtime.mutableIntStateOf(0)
+        var searched: String? = null
+        compose.setContent {
+            val density = androidx.compose.ui.platform.LocalDensity.current
+            CompositionLocalProvider(androidx.compose.ui.platform.LocalDensity provides
+                androidx.compose.ui.unit.Density(density.density, 1.5f)) {
+                AppThemed(true) { GongduWaterBackdrop { Column {
+                    RoomHeader("一起逛", "小红书 · 一起看，也一起聊", true) {}
+                    RoomTabs(listOf("推荐", "搜索", "消息", "设置"), selected.intValue, { selected.intValue = it })
+                    FeedGrid(emptyList(), false, { SearchHeader("", {}, false, { searched = it }) }, "", {})
+                } } }
+            }
+        }
+        compose.onNodeWithText("推荐").assertIsSelected()
+        compose.onNodeWithText("搜索").performClick().assertIsSelected()
+        compose.onNodeWithText("推荐").assertIsNotSelected()
+        compose.onNodeWithText("好书").assertIsDisplayed().performClick()
+        assertEquals("好书", searched)
+        val titleBounds = compose.onNodeWithText("一起逛").fetchSemanticsNode().boundsInRoot
+        val subtitleBounds = compose.onNodeWithText("小红书 · 一起看，也一起聊").fetchSemanticsNode().boundsInRoot
+        assertTrue("Large title must fit below the top edge", titleBounds.top >= 0f)
+        assertTrue("Header text must not overlap", subtitleBounds.top >= titleBounds.bottom)
+        snapshot("screen-search-dark-large-text")
+    }
+
+    @Test fun roomRecommendScreenDark() = roomScreen("screen-recommend-dark", 0, dark = true) {
+        FeedGrid(sampleFeeds, false, header = { RecommendationHeader(false) {} }, empty = "", onOpen = {})
     }
 
     private val sampleInbox = GongduSetting(inbox = GongduInbox(initialized = true, supported = true, events = listOf(
@@ -262,6 +355,24 @@ class GongduHubUiTest {
     @Test fun roomSettingsScreen() = roomScreen("screen-settings", 3) {
         GongduSetup(GongduConfiguration("https://example.test/mcp"), "已连接", true, "已登录：南枳", false,
             true, { _, _ -> }, {}, {}, {}, {})
+    }
+
+    @Test fun assistantAuthorizationStaysVisibleAndKeepsLayoutWhileSaving() {
+        val saving = androidx.compose.runtime.mutableStateOf(false)
+        var requested: Boolean? = null
+        compose.setContent { AppThemed(false) { GongduWaterBackdrop {
+            GongduSetup(GongduConfiguration("https://example.test/mcp"), "已连接", true, "", false,
+                false, { _, _ -> }, {}, {}, {}, { requested = it; saving.value = true }, assistantUpdating = saving.value)
+        } } }
+        val switch = compose.onNode(isToggleable())
+        switch.assertIsOff().assertIsEnabled()
+        val before = compose.onNodeWithText("高级设置").fetchSemanticsNode().boundsInRoot
+        switch.performClick()
+        assertEquals(true, requested)
+        switch.assertIsNotEnabled()
+        compose.onNodeWithText("让当前助手使用小红书").assertIsDisplayed()
+        val after = compose.onNodeWithText("高级设置").fetchSemanticsNode().boundsInRoot
+        assertEquals("Saving authorization cannot move the settings below it", before, after)
     }
 
     @Test fun roomPiecesRenderAtPhoneWidthLight() = roomPieces(dark = false)

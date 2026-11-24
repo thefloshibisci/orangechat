@@ -415,7 +415,7 @@ private fun ModelList(
             val discovered = providerManager.getProviderByType(listingProvider).listModels(listingProvider)
                 .sortedBy { it.modelId }
             value = discovered
-            if (listingProvider is ProviderSetting.Codex) capabilitySync.applyCodexMetadata(discovered)
+            if (listingProvider is ProviderSetting.Codex) capabilitySync.applyCodexMetadata(discovered, listingProvider)
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (_: Exception) {
@@ -452,7 +452,7 @@ private fun ModelList(
                         if (providerSetting is ProviderSetting.Codex) {
                             Text("Codex 官方模型能力", style = MaterialTheme.typography.titleSmall)
                             Text(
-                                "在登录、刷新模型或打开模型列表时更新自动识别的图片、工具和推理能力。原有或手动设置保留，可在模型编辑中开启自动识别；离线使用上次资料。",
+                                "打开此页会自动添加官方目录中的新模型，并更新自动识别的图片、工具和推理能力。原有或手动设置保留，可在模型编辑中开启自动识别；离线使用上次资料。",
                                 style = MaterialTheme.typography.bodySmall,
                             )
                             modelListError?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
@@ -791,7 +791,7 @@ private fun ModelAudioInputSetting(model: Model, parentProvider: ProviderSetting
                 model.audioInputMode == AudioInputMode.ASR -> "使用已配置的语音识别服务，将录音转为文字后发送。"
                 direct -> "当前模型会接收原始录音。如果服务不支持音频，可改为先转为文字。"
                 model.audioInputMode == AudioInputMode.AUDIO -> "当前通道不支持直接发送音频，录音将先转为文字。"
-                else -> "当前模型默认先将录音转为文字；支持的 Gemini 聊天模型会接收原始录音。"
+                else -> "当前模型默认先将录音转为文字；支持的 Gemini 或 GPT 音频模型会通过兼容通道接收原始录音。"
             },
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,

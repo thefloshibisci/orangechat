@@ -59,7 +59,7 @@ import org.koin.compose.koinInject
 import java.io.File
 
 private const val DEFAULT_VISIBLE_COUNT = 3
-private val WORKSPACE_FILE_TOOL_NAMES = setOf("workspace_write_file", "workspace_edit_file")
+private val WORKSPACE_FILE_TOOL_NAMES = setOf("workspace_write_file", "workspace_edit_file", "workspace_transfer_file")
 
 /**
  * 在 assistant 消息内容下方展示被工作区工具写入/编辑的文件 chip 列表。
@@ -80,12 +80,17 @@ internal fun EditedFilesList(
     parts: List<UIMessagePart>,
     assistant: Assistant?,
 ) {
-    val workspaceId = assistant?.workspaceId?.toString() ?: return
     val editedFiles = remember(parts) {
         parts.filterIsInstance<UIMessagePart.Tool>()
-            .filter { it.toolName in WORKSPACE_FILE_TOOL_NAMES && it.isExecuted }
+            .filter { it.toolName in WORKSPACE_FILE_TOOL_NAMES && it.isExecuted && !workspaceToolFailed(it.output) }
             .mapNotNull { tool ->
-                tool.inputAsJson().jsonObjectOrNull?.get("path")?.jsonPrimitiveOrNull?.contentOrNull
+                val result = tool.output.filterIsInstance<UIMessagePart.Text>().firstOrNull { it.metadata?.get("workspace_id") != null }
+                    ?: return@mapNotNull null // Old unlabelled results cannot be safely attributed after rebinding.
+                val id = result.metadata?.get("workspace_id")?.jsonPrimitiveOrNull?.contentOrNull ?: return@mapNotNull null
+                val root = result.metadata?.get("workspace_root")?.jsonPrimitiveOrNull?.contentOrNull ?: return@mapNotNull null
+                val args = tool.inputAsJson().jsonObjectOrNull ?: return@mapNotNull null
+                val path = args[if (tool.toolName == "workspace_transfer_file") "destination_path" else "path"]?.jsonPrimitiveOrNull?.contentOrNull ?: return@mapNotNull null
+                EditedWorkspaceFile(id, root, path)
             }
             .distinct()
     }
@@ -95,21 +100,22 @@ internal fun EditedFilesList(
     val scope = rememberCoroutineScope()
     val workspaceRepository: WorkspaceRepository = koinInject()
 
-    var selectedPath by remember { mutableStateOf<String?>(null) }
+    var selectedPath by remember { mutableStateOf<EditedWorkspaceFile?>(null) }
     var expanded by remember { mutableStateOf(false) }
     val visibleFiles = if (expanded) editedFiles else editedFiles.take(DEFAULT_VISIBLE_COUNT)
     val hasMore = editedFiles.size > DEFAULT_VISIBLE_COUNT
 
-    val exportFile = rememberWorkspaceFileExporter(workspaceId)
+    val exportFile = rememberWorkspaceFileExporter(selectedPath?.workspaceId)
 
     FlowRow(
         horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalArrangement = Arrangement.spacedBy(2.dp),
     ) {
-        visibleFiles.forEach { path ->
+        visibleFiles.forEach { file ->
+            val path = file.path
             val fileName = remember(path) { path.substringAfterLast('/') }
             Surface(
-                onClick = { selectedPath = path },
+                onClick = { selectedPath = file },
                 shape = RoundedCornerShape(50),
                 color = MaterialTheme.colorScheme.tertiaryContainer,
             ) {
@@ -149,7 +155,9 @@ internal fun EditedFilesList(
     }
 
     if (selectedPath != null) {
-        val path = selectedPath!!
+        val selected = selectedPath!!
+        val workspaceId = selected.workspaceId
+        val path = selected.path
         val fileName = remember(path) { path.substringAfterLast('/') }
         ModalBottomSheet(
             onDismissRequest = { selectedPath = null },
@@ -171,7 +179,7 @@ internal fun EditedFilesList(
                 Card(
                     onClick = {
                         val p = selectedPath ?: return@Card
-                        val (area, relativePath) = resolveWorkspacePath(p)
+                        val (area, relativePath) = resolveWorkspacePath(p.path, p.root)
                         selectedPath = null
                         exportFile(area, relativePath)
                     },
@@ -201,9 +209,9 @@ internal fun EditedFilesList(
                         selectedPath = null
                         scope.launch {
                             runCatching {
-                                val (area, relativePath) = resolveWorkspacePath(p)
+                                val (area, relativePath) = resolveWorkspacePath(p.path, p.root)
                                 val dir = File(context.cacheDir, "workspace_share").apply { mkdirs() }
-                                val file = File(dir, p.substringAfterLast('/'))
+                                val file = File(dir, p.path.substringAfterLast('/'))
                                 file.outputStream().use { output ->
                                     workspaceRepository.exportFile(workspaceId, area, relativePath, output)
                                 }
@@ -252,10 +260,12 @@ internal fun EditedFilesList(
  * - `/workspace` 或 `/workspace/...` → FILES 区, 去掉 /workspace 前缀
  * - 其它路径 (绝对或相对) → LINUX 区 (rootfs)
  */
-private fun resolveWorkspacePath(path: String): Pair<WorkspaceStorageArea, String> {
+private data class EditedWorkspaceFile(val workspaceId: String, val root: String, val path: String)
+
+private fun resolveWorkspacePath(path: String, root: String): Pair<WorkspaceStorageArea, String> {
     val trimmed = path.trimEnd('/')
-    return if (trimmed == "/workspace" || trimmed.startsWith("/workspace/")) {
-        WorkspaceStorageArea.FILES to trimmed.removePrefix("/workspace").trimStart('/')
+    return if (trimmed == root || trimmed.startsWith("${root.trimEnd('/')}/")) {
+        WorkspaceStorageArea.FILES to trimmed.removePrefix(root.trimEnd('/')).trimStart('/')
     } else {
         WorkspaceStorageArea.LINUX to trimmed.trimStart('/')
     }

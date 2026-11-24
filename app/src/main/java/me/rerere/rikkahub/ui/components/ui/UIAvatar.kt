@@ -119,7 +119,7 @@ internal fun AvatarDisplay(
                         text = value.content,
                         autoSize = TextAutoSize.StepBased(
                             minFontSize = 15.sp,
-                            maxFontSize = 30.sp,
+                            maxFontSize = 64.sp,
                         ),
                         lineHeight = 0.8.em,
                         textAlign = TextAlign.Center,
@@ -133,8 +133,12 @@ internal fun AvatarDisplay(
                             .ifBlank { stringResource(R.string.user_default_name) }
                             .takeIf { it.isNotEmpty() }
                             ?.firstOrNull()?.toString()?.uppercase() ?: "A",
-                        fontSize = 20.sp,
-                        lineHeight = 1.em
+                        autoSize = TextAutoSize.StepBased(
+                            minFontSize = 8.sp,
+                            maxFontSize = 64.sp,
+                            stepSize = 1.sp,
+                        ),
+                        lineHeight = 0.8.em
                     )
                 }
             }

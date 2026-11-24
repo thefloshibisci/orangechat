@@ -17,7 +17,7 @@ data class SereinHookConfig(
 ) {
     val waitMs: Long get() = timeoutMs.coerceIn(2000, 5000)
     fun rootUrl(): String? = baseUrl.trim().toHttpUrlOrNull()?.takeIf {
-        it.isHttps && it.username.isEmpty() && it.password.isEmpty() && it.query == null && it.fragment == null &&
+        it.username.isEmpty() && it.password.isEmpty() && it.query == null && it.fragment == null &&
             it.encodedPath == "/"
     }?.toString()?.trimEnd('/')
     fun usableBy(owner: String) = enabled && assistantId == owner && rootUrl() != null && gatewayKey.isNotBlank()

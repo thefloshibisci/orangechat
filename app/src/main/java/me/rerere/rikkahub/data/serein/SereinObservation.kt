@@ -3,8 +3,17 @@ package me.rerere.rikkahub.data.serein
 import androidx.room.*
 import kotlinx.coroutines.flow.Flow
 import kotlinx.serialization.json.*
+import me.rerere.ai.core.MessageRole
+import me.rerere.ai.ui.UIMessage
 import me.rerere.rikkahub.data.db.entity.ConversationEntity
 import java.time.Instant
+import kotlin.uuid.Uuid
+
+/** Successful control flow alone is not completion; a final model turn must identify this reply. */
+internal fun sereinSuccessfulRequestStatus(completedReplyId: Uuid?, reply: UIMessage?): String =
+    if (completedReplyId != null && completedReplyId == reply?.id && reply?.role == MessageRole.ASSISTANT) {
+        "completed"
+    } else "incomplete"
 
 @Entity(tableName = "serein_observation_outbox", foreignKeys = [ForeignKey(
     entity = ConversationEntity::class, parentColumns = ["id"], childColumns = ["conversationId"],

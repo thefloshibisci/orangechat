@@ -83,4 +83,45 @@ class PluginBinaryResponseTest {
         }
         assertEquals(0, requests)
     }
+
+    @Test fun nativeFetchPreservesPatchAndHeadAndRejectsUnsupportedMethods() {
+        val requests = mutableListOf<okhttp3.Request>()
+        val client = OkHttpClient.Builder().addInterceptor { chain ->
+            val request = chain.request()
+            requests.add(request)
+            Response.Builder().request(request).protocol(Protocol.HTTP_1_1).code(200).message("OK")
+                .header("ETag", "v2").body("".toResponseBody()).build()
+        }.build()
+        val sandbox = PluginSandbox(RuntimeEnvironment.getApplication(), client)
+        val method = PluginSandbox::class.java.getDeclaredMethod("nativeFetch", String::class.java, String::class.java)
+        method.isAccessible = true
+        fun fetch(options: JSONObject): JSONObject =
+            JSONObject(method.invoke(sandbox, "https://gallery.example/photos/1", options.toString()) as String)
+
+        val body = """{"title":"B"}"""
+        val patch = JSONObject().put("method", "PATCH").put("body", body)
+            .put("headers", JSONObject().put("Content-Type", "application/json"))
+        assertTrue(fetch(patch).getBoolean("success"))
+        val sent = requests.single()
+        assertEquals("PATCH", sent.method)
+        assertEquals("application/json", sent.header("Content-Type"))
+        val buffer = okio.Buffer()
+        requireNotNull(sent.body).writeTo(buffer)
+        assertEquals(body, buffer.readUtf8())
+
+        val head = fetch(JSONObject().put("method", "HEAD"))
+        assertTrue(head.getBoolean("success"))
+        assertEquals("HEAD", requests.last().method)
+        assertNull(requests.last().body)
+        assertEquals("", head.getString("body"))
+        assertEquals("v2", head.getJSONObject("headers").getString("ETag"))
+
+        val unsupported = fetch(JSONObject().put("method", "OPTIONS"))
+        assertFalse(unsupported.getBoolean("success"))
+        assertTrue(unsupported.getString("error").contains("OPTIONS"))
+        val invalid = fetch(JSONObject().put("method", JSONObject.NULL))
+        assertFalse(invalid.getBoolean("success"))
+        assertTrue(invalid.getString("error").contains("method"))
+        assertEquals(2, requests.size)
+    }
 }

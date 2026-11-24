@@ -7,6 +7,8 @@
 package me.rerere.rikkahub.ui.hooks
 
 import me.rerere.rikkahub.data.files.attachmentReferenceGuard
+import me.rerere.rikkahub.data.gongdu.gongduShareSummary
+import me.rerere.rikkahub.data.gongdu.splitGongduShareText
 
 import android.net.Uri
 import androidx.compose.foundation.text.input.TextFieldState
@@ -21,6 +23,7 @@ import kotlin.uuid.Uuid
 class ChatInputState {
     val textContent = TextFieldState()
     private var content by mutableStateOf(listOf<UIMessagePart>())
+    private var contentSlots: List<Int?> = emptyList()
     var messageContent: List<UIMessagePart>
         get() = content
         set(value) {
@@ -29,6 +32,11 @@ class ChatInputState {
                     listOf(me.rerere.ai.ui.UIMessage.user("").copy(parts = value))
                 ).mapNotNull { me.rerere.rikkahub.data.files.localAttachmentFile(it)?.name }.toSet()
                 attachmentReferenceGuard.updateDraft(this, names)
+                val unmatched = content.indices.toMutableList()
+                contentSlots = value.map { part ->
+                    val match = unmatched.indexOfFirst { content[it] == part }
+                    if (match < 0) null else contentSlots.getOrNull(unmatched.removeAt(match))
+                }
                 content = value
             }
         }
@@ -66,65 +74,79 @@ class ChatInputState {
         textContent.setTextAndPlaceCursorAtEnd(textContent.text.toString() + content)
     }
 
+    fun trySetSharedMessageText(content: String): Boolean {
+        if (isEditing() || gongduShareSummary(content) == null) return false
+        messageContent = messageContent + UIMessagePart.Text(content)
+        return true
+    }
+
+    fun removeMessagePart(index: Int) {
+        if (index !in messageContent.indices) return
+        val slots = contentSlots.filterIndexed { i, _ -> i != index }
+        messageContent = messageContent.filterIndexed { i, _ -> i != index }
+        contentSlots = slots
+    }
+
     fun setContents(contents: List<UIMessagePart>) {
-        val lastTextIndex = contents.indexOfLast { it is UIMessagePart.Text }
+        val normalized = contents.flatMap { part ->
+            if (part is UIMessagePart.Text) splitGongduShareText(part.text).map { part.copy(text = it) }
+            else listOf(part)
+        }
+        val lastTextIndex = normalized.indexOfLast { it is UIMessagePart.Text && gongduShareSummary(it.text) == null }
         val text = if (lastTextIndex >= 0) {
-            (contents[lastTextIndex] as UIMessagePart.Text).text
+            (normalized[lastTextIndex] as UIMessagePart.Text).text
         } else {
             ""
         }
         textContent.setTextAndPlaceCursorAtEnd(text)
-        messageContent = contents.filter { it !is UIMessagePart.Text }
-        editingParts = contents
-        editingAttachmentUrls = contents.mapNotNull { it.attachmentUrlOrNull() }.toSet()
+        messageContent = normalized.filter { it !is UIMessagePart.Text || gongduShareSummary(it.text) != null }
+        contentSlots = normalized.indices.filter { normalized[it] !is UIMessagePart.Text ||
+            gongduShareSummary((normalized[it] as UIMessagePart.Text).text) != null }
+        editingParts = normalized
+        editingAttachmentUrls = normalized.mapNotNull { it.attachmentUrlOrNull() }.toSet()
     }
 
     fun getContents(): List<UIMessagePart> {
         val text = textContent.text.toString()
-        if (isEditing()) {
-            val originalParts = editingParts
-            if (originalParts != null) {
-                val editedTextIndex = originalParts.indexOfLast { it is UIMessagePart.Text }
-                val remainingAttachments = messageContent.toMutableList()
-                val merged = mutableListOf<UIMessagePart>()
+        val originalParts = editingParts
+        if (originalParts != null) {
+            val editedTextIndex = originalParts.indexOfLast { it is UIMessagePart.Text && gongduShareSummary(it.text) == null }
+            val merged = mutableListOf<UIMessagePart>()
 
-                originalParts.forEachIndexed { index, part ->
-                    when {
-                        index == editedTextIndex -> {
-                            if (text.isNotBlank()) {
-                                merged.add(UIMessagePart.Text(text))
-                            }
+            originalParts.forEachIndexed { index, part ->
+                when {
+                    index == editedTextIndex -> {
+                        if (text.isNotEmpty()) {
+                            merged.add((part as UIMessagePart.Text).copy(text = text))
                         }
+                    }
 
-                        part is UIMessagePart.Text -> {
-                            if (part.text.isNotBlank()) {
-                                merged.add(part)
-                            }
+                    part is UIMessagePart.Text && gongduShareSummary(part.text) == null -> {
+                        if (part.text.isNotEmpty()) {
+                            merged.add(part)
                         }
+                    }
 
-                        else -> {
-                            val currentIndex = remainingAttachments.indexOf(part)
-                            if (currentIndex >= 0) {
-                                merged.add(remainingAttachments.removeAt(currentIndex))
-                            }
+                    else -> {
+                        val currentIndex = contentSlots.indexOf(index)
+                        if (currentIndex >= 0) {
+                            merged.add(messageContent[currentIndex])
                         }
                     }
                 }
-                if (editedTextIndex < 0 && text.isNotBlank()) {
-                    merged.add(0, UIMessagePart.Text(text))
-                }
-                // Newly added attachments are appended in insertion order.
-                merged.addAll(remainingAttachments)
-                return merged
             }
-            return if (text.isBlank()) messageContent else listOf(UIMessagePart.Text(text)) + messageContent
+            if (editedTextIndex < 0 && text.isNotBlank()) {
+                merged.add(0, UIMessagePart.Text(text))
+            }
+            // Newly added attachments and cards are appended in insertion order.
+            messageContent.forEachIndexed { index, part -> if (contentSlots.getOrNull(index) == null) merged.add(part) }
+            return merged
         }
         return if (text.isBlank()) messageContent else listOf(UIMessagePart.Text(text)) + messageContent
     }
 
     fun isEmpty(): Boolean {
-        if (isEditing()) return getContents().isEmptyInputMessage()
-        return textContent.text.isBlank() && messageContent.isEmpty()
+        return getContents().isEmptyInputMessage()
     }
 
     fun addImages(uris: List<Uri>) {

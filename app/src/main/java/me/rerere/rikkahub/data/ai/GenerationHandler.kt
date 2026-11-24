@@ -6,24 +6,25 @@
 
 package me.rerere.rikkahub.data.ai
 
+import me.rerere.rikkahub.data.video.withoutHistoricalCameraImages
+import me.rerere.rikkahub.data.video.videoFrameAuthorization
+import me.rerere.rikkahub.data.video.isVideoCameraResource
+import me.rerere.rikkahub.data.video.markVideoTurnSystemContext
+import me.rerere.rikkahub.data.video.withVideoRequestAuthorization
+
 import me.rerere.rikkahub.data.interaction.withInteractionRequestScope
  
 import android.content.Context
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
-import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.withContext
-import kotlin.time.Duration.Companion.seconds
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
 import kotlinx.serialization.Serializable
@@ -38,9 +39,10 @@ import me.rerere.ai.core.merge
 import me.rerere.ai.provider.CustomBody
 import me.rerere.ai.provider.Model
 import me.rerere.ai.provider.Provider
-import me.rerere.ai.provider.EmbeddingGenerationParams
 import me.rerere.ai.provider.ProviderManager
 import me.rerere.ai.provider.ProviderSetting
+import me.rerere.ai.provider.supportsDirectAudio
+import me.rerere.rikkahub.data.video.VideoCallPrompts
 import me.rerere.ai.provider.TextGenerationParams
 import me.rerere.ai.registry.ModelRegistry
 import me.rerere.ai.ui.UIMessage
@@ -49,9 +51,11 @@ import me.rerere.ai.ui.handleMessageChunk
 import me.rerere.rikkahub.data.ai.transformers.InputMessageTransformer
 import me.rerere.rikkahub.data.ai.transformers.MessageTransformer
 import me.rerere.rikkahub.data.ai.transformers.OutputMessageTransformer
+import me.rerere.rikkahub.data.ai.transformers.VideoCallDirectiveSession
 import me.rerere.rikkahub.data.ai.transformers.onGenerationFinish
 import me.rerere.rikkahub.data.ai.transformers.transforms
 import me.rerere.rikkahub.data.ai.transformers.visualTransforms
+import me.rerere.rikkahub.data.video.withTransientRequestAudio
 import me.rerere.rikkahub.data.ai.tools.buildMemoryTools
 import me.rerere.rikkahub.data.ai.tools.buildWriteFilesTool
 import me.rerere.rikkahub.data.datastore.Settings
@@ -98,6 +102,35 @@ class GenerationHandler(
     private val localSceneSettings: me.rerere.rikkahub.data.datastore.SettingsStore,
     private val usageRecorder: UsageRecorder,
 ) {
+    /** Both foreground generation and full proactive requests use this final schema assembly. */
+    internal fun assembleChatTurnTools(assistant: Assistant, conversationId: String?, tools: List<Tool>): List<Tool> =
+        buildList {
+            if (!localSceneSettings.settingsFlow.value.sereinHook.usableBy(assistant.id.toString()) &&
+                tools.none { it.name == "local_scene_search" }) {
+                addAll(me.rerere.rikkahub.data.serein.buildLocalSceneTools(assistant, localScenes) {
+                    localSceneSettings.settingsFlow.value.let { live ->
+                        !live.sereinHook.usableBy(assistant.id.toString()) &&
+                            live.assistants.any { it.id == assistant.id && it.enableLocalSceneTools }
+                    }
+                })
+            }
+            if (assistant.enableMemory) {
+                val memoryAssistantId = if (assistant.useGlobalMemory) {
+                    MemoryRepository.GLOBAL_MEMORY_ID
+                } else {
+                    assistant.id.toString()
+                }
+                addAll(buildMemoryTools(
+                    json = json,
+                    onCreation = { content -> memoryRepo.addMemory(memoryAssistantId, content) },
+                    onUpdate = { id, content -> memoryRepo.updateContent(id, content) },
+                    onDelete = { id -> memoryRepo.deleteMemory(id) },
+                ))
+            }
+            add(buildWriteFilesTool(conversationId))
+            addAll(tools)
+        }
+
     fun generateText(
         settings: Settings,
         model: Model,
@@ -117,7 +150,48 @@ class GenerationHandler(
         onToolCheckpoint: (suspend (List<UIMessage>) -> Unit)? = null,
         reactionSourceMessages: List<UIMessage> = messages,
         onReactionContextPrepared: (ReactionContextTurn) -> Unit = {},
-        preparedExternalMemory: String? = null,
+        onGenerationCompleted: (kotlin.uuid.Uuid) -> Unit = {},
+        /**
+         * 只在本次请求里附带的图片（视频通话自动抓帧）。
+         *
+         * 约定：不写进聊天历史，只作为这一次（含工具多步）请求的临时图片输入，
+         * 请求结束后由 ChatService 删除对应临时文件；历史里只留文字。
+         */
+        transientImageUrls: List<String> = emptyList(),
+        transientImageScope: me.rerere.rikkahub.data.video.VideoFrameRequestScope? = null,
+        /**
+         * 这一轮的触发用户消息 ID（视频通话临时图的锚点）。
+         *
+         * 临时图必须挂到**触发它的那条用户消息**上，而不是"请求里最后一条 USER"：
+         * 工具多步会插入新的消息，最后一条 USER 可能已经变成别的（甚至工具结果里的用户内容）。
+         */
+        transientImageAnchorMessageId: String? = null,
+        /**
+         * 只在本次请求里附带的一段录音（视频通话手动录音，音频直传路线）。
+         *
+         * 与 [transientImageUrls] 同一套约定：不写进聊天历史，只作为这一次（含工具多步）
+         * 请求的音频输入；请求结束后由 ChatService 释放并删除临时文件，历史里只有占位文字。
+         * 下一条请求不会再带这段音频（它已经被删掉了，历史里也没有 audio part）。
+         */
+        transientAudioUrl: String? = null,
+        /** 录音挂到的那条用户消息（与临时图同一个锚点：队列项 ID，禁止"最后一条 USER"猜测）。 */
+        transientAudioAnchorMessageId: String? = null,
+        /**
+         * 视频通话这一轮的**请求 token**（授权凭证）。
+         *
+         * 由 VoiceCallService 生成、随队列项不可变地传下来；礼物/留影只认
+         * "有效通话 + 这个 token"，不再用消息历史推断身份。
+         */
+        requestToken: String? = null,
+        /**
+         * 只在**这一轮**有效的系统上下文（视频通话的画面/音频说明与礼物能力清单）。
+         *
+         * 与 [conversationSystemPrompt] 分开是刻意的：后者会被 `allowConversationSystemPrompt`
+         * 开关整段丢掉（默认关闭），而通话上下文丢掉之后模型就会说"我没有 ws_gift 这个工具"
+         * （P9 的真实原因）。这里一律**追加**在系统提示词主文后面，不替换主文。
+         */
+        appendedSystemContext: String? = null,
+        listenRequestContext: ((List<UIMessage>) -> List<UIMessage>)? = null,
     ): Flow<GenerationChunk> = flow {
         val provider = model.findProvider(settings.providers) ?: error("Provider not found")
         val providerImpl = usageRecorder.wrap(
@@ -131,9 +205,6 @@ class GenerationHandler(
             reactionSourceMessages, conversationId, assistant, messages,
         )
         onReactionContextPrepared(reactionTurn)
-        val externalMemory = TurnPreparation {
-            preparedExternalMemory ?: recallExternalMemories(settings, assistant, messages)
-        }
         var messages: List<UIMessage> = messages
         val recoveredMessages = messages.recoverToolHistoryForRequest(json)
         if (recoveredMessages != messages) {
@@ -148,46 +219,28 @@ class GenerationHandler(
             resumeApprovedTools = true,
             toolsForStep = { stepIndex ->
                 Log.i(TAG, "streamText: build tools for step #$stepIndex (${model.id})")
-                buildList {
-                    if (!localSceneSettings.settingsFlow.value.sereinHook.usableBy(assistant.id.toString()) &&
-                        tools.none { it.name == "local_scene_search" }) {
-                        addAll(me.rerere.rikkahub.data.serein.buildLocalSceneTools(assistant, localScenes) {
-                            localSceneSettings.settingsFlow.value.let { live ->
-                                !live.sereinHook.usableBy(assistant.id.toString()) &&
-                                    live.assistants.any { it.id == assistant.id && it.enableLocalSceneTools }
-                            }
-                        })
-                    }
-                    if (assistant.enableMemory) {
-                        val memoryAssistantId = if (assistant.useGlobalMemory) {
-                            MemoryRepository.GLOBAL_MEMORY_ID
-                        } else {
-                            assistant.id.toString()
-                        }
-                        addAll(buildMemoryTools(
-                            json = json,
-                            onCreation = { content -> memoryRepo.addMemory(memoryAssistantId, content) },
-                            onUpdate = { id, content -> memoryRepo.updateContent(id, content) },
-                            onDelete = { id -> memoryRepo.deleteMemory(id) },
-                        ))
-                    }
-                    add(buildWriteFilesTool(conversationId))
-                    addAll(tools)
-                }
+                assembleChatTurnTools(assistant, conversationId, tools)
             },
             generateTurn = { turnMessages, toolsInternal, _ ->
+                // 视频通话指令的请求作用域：这一轮生成期间保存协议原文，
+                // 结束阶段用它执行礼物/留影；无论正常结束、取消还是打断都在 finally 清空。
+                val videoDirectives = VideoCallDirectiveSession()
+                try {
                 generateInternal(
                     assistant = assistant,
                     settings = settings,
                     messages = turnMessages,
                     pluginPromptInjections = pluginPromptInjections,
                     onUpdateMessages = {
-                        messages = reactionTurn.markPending(it.transforms(
+                        val pending = it.dropLast(1) + it.last().withoutGenerationCompletion()
+                        messages = reactionTurn.markPending(pending.transforms(
                             transformers = outputTransformers,
                             context = context,
                             model = model,
                             assistant = assistant,
                             settings = settings,
+                            conversationId = conversationId,
+                            videoDirectives = videoDirectives, requestToken = requestToken,
                         ))
                         emit(GenerationChunk.Messages(reactionTurn.markPending(messages.visualTransforms(
                             transformers = outputTransformers,
@@ -195,6 +248,8 @@ class GenerationHandler(
                             model = model,
                             assistant = assistant,
                             settings = settings,
+                            conversationId = conversationId,
+                            videoDirectives = videoDirectives, requestToken = requestToken,
                         ))))
                     },
                     transformers = inputTransformers,
@@ -207,10 +262,17 @@ class GenerationHandler(
                     processingStatus = processingStatus,
                     conversationSystemPrompt = conversationSystemPrompt,
                     conversationContextSummary = conversationContextSummary,
+                    appendedSystemContext = appendedSystemContext,
+                    videoRequestToken = requestToken,
+                    listenRequestContext = listenRequestContext,
                     workspaceCwd = workspaceCwd,
                     conversationId = conversationId,
                     reactionTurn = reactionTurn,
-                    externalMemoryPrompt = externalMemory::get,
+                    transientImageUrls = transientImageUrls,
+                    transientImageScope = transientImageScope,
+                    transientImageAnchorMessageId = transientImageAnchorMessageId,
+                    transientAudioUrl = transientAudioUrl,
+                    transientAudioAnchorMessageId = transientAudioAnchorMessageId,
                 )
                 messages = messages.visualTransforms(
                     transformers = outputTransformers,
@@ -218,6 +280,8 @@ class GenerationHandler(
                     model = model,
                     assistant = assistant,
                     settings = settings,
+                    conversationId = conversationId,
+                    videoDirectives = videoDirectives, requestToken = requestToken,
                 )
                 messages = messages.onGenerationFinish(
                     transformers = outputTransformers,
@@ -225,12 +289,17 @@ class GenerationHandler(
                     model = model,
                     assistant = assistant,
                     settings = settings,
+                    conversationId = conversationId,
+                    videoDirectives = videoDirectives, requestToken = requestToken,
                 )
                 messages = reactionTurn.markPending(messages.dropLast(1) + messages.last().copy(
                     finishedAt = Clock.System.now().toLocalDateTime(TimeZone.currentSystemDefault()),
                 ))
                 emit(GenerationChunk.Messages(messages))
                 messages
+                } finally {
+                    videoDirectives.clear()
+                }
             },
             prepareTools = { calls, definitions ->
                 prepareGenerationToolApproval(
@@ -266,9 +335,16 @@ class GenerationHandler(
                             model = model,
                             assistant = assistant,
                             settings = settings,
+                            conversationId = conversationId,
                         ))
                     ))
                 }
+            },
+            onCompleted = { completed ->
+                val finalMessages = completed.dropLast(1) + completed.last().withGenerationCompletion()
+                emit(GenerationChunk.Messages(finalMessages))
+                onGenerationCompleted(finalMessages.last().id)
+                finalMessages
             },
         )
         reactionTurn.onGenerationSucceeded(messages.lastOrNull())
@@ -276,110 +352,6 @@ class GenerationHandler(
     }.throttleLatest(STREAM_UI_THROTTLE_MS)
         .flowOn(Dispatchers.IO)
  
-    /** Read-only snapshot, shared by every tool continuation of this generation. */
-    suspend fun recallExternalMemories(
-        settings: Settings,
-        assistant: Assistant,
-        messages: List<UIMessage>,
-    ): String = buildString {
-        try {
-            val externalMemoryConfigs = settings.externalMemories.filter {
-                it.enabled && it.id in assistant.externalMemoryIds
-            }
-            externalMemoryConfigs.forEach { config ->
-                Log.i(TAG, "ExternalMemory config: name=${config.name}, url=${config.supabaseUrl}, table=${config.tableName}, summaryTable=${config.summariesTableName}, embeddingModelId=${config.embeddingModelId}, autoSaveDiarySummary=${config.autoSaveDiarySummary}")
-            }
-            if (externalMemoryConfigs.isNotEmpty()) {
-                val lastUserMessage = messages.lastOrNull { it.role == MessageRole.USER }
-                val queryText = lastUserMessage?.toText()?.take(200)?.trim() ?: ""
-                // 并发检索所有外置记忆库配置，每个配置最多 8 秒超时
-                val allRecalled = coroutineScope {
-                    externalMemoryConfigs.map { config ->
-                        async {
-                            withTimeoutOrNull(8.seconds) {
-                                runCatching {
-                                    val service = me.rerere.rikkahub.data.service.ExternalMemoryService(config)
-                                    val recalled = mutableListOf<String>()
-
-                                    // 如果配置了向量模型且开启了日记摘要，使用向量召回日记摘要
-                                    if (config.embeddingModelId != null && queryText.isNotBlank() && config.autoSaveDiarySummary) {
-                                        val embeddingModel = settings.findModelById(config.embeddingModelId)
-                                        if (embeddingModel != null) {
-                                            val embeddingProvider = embeddingModel.findProvider(settings.providers)
-                                            if (embeddingProvider != null) {
-                                                val embeddingProviderImpl = providerManager.getProviderByType(embeddingProvider)
-                                                val embedResult = embeddingProviderImpl.generateEmbedding(
-                                                    providerSetting = embeddingProvider,
-                                                    params = EmbeddingGenerationParams(
-                                                        model = embeddingModel,
-                                                        input = listOf(queryText),
-                                                    )
-                                                )
-                                                val queryEmbedding = embedResult.embeddings.firstOrNull()
-                                                if (queryEmbedding != null) {
-                                                    val recalledSummaries = service.vectorRecallSummaries(
-                                                        queryEmbedding = queryEmbedding,
-                                                        assistantId = assistant.id.toString(),
-                                                        count = config.recallCount,
-                                                    ).getOrDefault(emptyList())
-                                                    recalledSummaries.forEach { summary ->
-                                                        recalled.add(summary.content)
-                                                    }
-                                                    Log.d(TAG, "Vector recall ${recalledSummaries.size} summaries from ${config.name}")
-                                                }
-                                            }
-                                        }
-                                    } else {
-                                        // 回退：文本召回聊天记录
-                                        val recalledMessages = if (queryText.isNotBlank()) {
-                                            service.searchMessages(
-                                                assistantId = assistant.id.toString(),
-                                                keyword = queryText,
-                                                limit = config.recallCount,
-                                            ).getOrDefault(emptyList())
-                                        } else {
-                                            service.queryLatestMessages(
-                                                assistantId = assistant.id.toString(),
-                                                limit = config.recallCount,
-                                            ).getOrDefault(emptyList())
-                                        }
-                                        recalledMessages.forEach { msg ->
-                                            val prefix = when (msg.role) {
-                                                "assistant" -> "AI"
-                                                "user" -> "用户"
-                                                else -> msg.role
-                                            }
-                                            recalled.add("[$prefix] ${msg.content}")
-                                        }
-                                    }
-                                    recalled
-                                }.onFailure {
-                                    Log.w(TAG, "External memory recall failed for ${config.name}", it)
-                                }.getOrNull()
-                            } ?: run {
-                                Log.w(TAG, "External memory recall timed out for ${config.name}")
-                                null
-                            }
-                        }
-                    }.awaitAll()
-                        .filterNotNull()
-                        .flatten()
-                }
-                if (allRecalled.isNotEmpty()) {
-                    appendLine()
-                    appendLine("## 外置记忆库")
-                    allRecalled.reversed().forEachIndexed { index, memory ->
-                        appendLine("${index + 1}. ${memory}")
-                    }
-                }
-            }
-        } catch (e: kotlinx.coroutines.CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Log.w(TAG, "External memory recall failed", e)
-        }
-    }
-
     private suspend fun generateInternal(
         assistant: Assistant,
         settings: Settings,
@@ -399,18 +371,53 @@ class GenerationHandler(
         workspaceCwd: String? = null,
         conversationId: String? = null,
         reactionTurn: ReactionContextTurn? = null,
-        externalMemoryPrompt: suspend () -> String,
+        transientImageUrls: List<String> = emptyList(),
+        transientImageScope: me.rerere.rikkahub.data.video.VideoFrameRequestScope? = null,
+        transientImageAnchorMessageId: String? = null,
+        transientAudioUrl: String? = null,
+        transientAudioAnchorMessageId: String? = null,
+        /** 只在本轮生效、**追加**在系统提示词主文后面的上下文（视频通话）。 */
+        appendedSystemContext: String? = null,
+        videoRequestToken: String? = null,
+        listenRequestContext: ((List<UIMessage>) -> List<UIMessage>)? = null,
     ) {
+        // A recording may finish after the user switches to a model/channel without audio input.
+        val audioRejected = !transientAudioUrl.isNullOrBlank() &&
+            !model.supportsDirectAudio(provider)
+        val requestAudioUrl = transientAudioUrl.takeUnless { audioRejected }
+        val audioUnavailableNote = "[本轮录音未发送：当前模型或通道不支持音频直传。" +
+            "没有提供录音或自动转写，请勿声称听到内容、语气或背景声音；可请用户改发文字。]"
+        fun adjustedAudioContext(context: String?): String? = if (audioRejected) {
+            appendTurnSystemContext(
+                context?.replace(
+                    VideoCallPrompts.AUDIO_ATTACHED_NOTE, VideoCallPrompts.NO_AUDIO_THIS_TURN_NOTE,
+                ).orEmpty(),
+                audioUnavailableNote,
+            )
+        } else context
+        val requestSystemContext = adjustedAudioContext(appendedSystemContext)
+        // The only request-scoped video context: token-scoped video turns inject it **after**
+        // transformers so user templates cannot strip/HTML-escape the gift or picture protocol.
+        // A token-less request (paused queue item resumed later) has no request-scoped context;
+        // its prompt arrives through `conversationSystemPrompt` and is synchronised at the
+        // provider boundary like any other claim.
+        val requestScopedVideoContext = requestSystemContext?.takeIf { videoRequestToken != null }
         val baseMessages = buildList {
             val system = buildString {
-                val effectiveSystemPrompt =
-                    if (assistant.allowConversationSystemPrompt && !conversationSystemPrompt.isNullOrBlank()) {
-                        conversationSystemPrompt
-                    } else {
-                        assistant.systemPrompt
-                    }
-                if (effectiveSystemPrompt.isNotBlank()) {
-                    append(effectiveSystemPrompt)
+                // 主文：助手自带 prompt，或（开关打开时）对话级重写。视频通话的本轮上下文**不走**
+                // 这条主文（下面 `requestScopedVideoContext` 在 transform 之后单独注入），
+                // 否则会被 allowConversationSystemPrompt 开关整段丢掉（P9："我没有 ws_gift 这个工具"）。
+                // 这里只保留"没有请求作用域"的兼容路径：调用方显式传了上下文、但没有 token。
+                val effective = appendTurnSystemContext(
+                    composeSystemPromptText(
+                        assistantSystemPrompt = assistant.systemPrompt,
+                        conversationSystemPrompt = conversationSystemPrompt,
+                        allowConversationSystemPrompt = assistant.allowConversationSystemPrompt,
+                    ),
+                    requestSystemContext.takeIf { videoRequestToken == null },
+                )
+                if (effective.isNotBlank()) {
+                    append(effective)
                 }
  
                 // 记忆
@@ -419,7 +426,6 @@ class GenerationHandler(
                     append(buildMemoryPrompt(memories = memories))
                 }
  
-                append(externalMemoryPrompt())
  
                 if (assistant.enableRecentChatsReference) {
                     appendLine()
@@ -479,22 +485,57 @@ class GenerationHandler(
             }
             addAll(buildConversationRequestMessages(system, messages, assistant.contextMessageSize, conversationContextSummary))
         }
+        val cameraUrlsForThisTurn = if (videoRequestToken != null && transientImageAnchorMessageId != null) {
+            messages.singleOrNull { it.role == MessageRole.USER && it.id.toString() == transientImageAnchorMessageId }
+                ?.parts?.filterIsInstance<UIMessagePart.Image>()?.map { it.url }
+                .orEmpty().filter(::isVideoCameraResource)
+        } else emptyList()
         val internalMessages = chatInteractionRepository.decorate(
-            baseMessages,
+            baseMessages.withoutHistoricalCameraImages(),
             conversationId,
             assistant,
             sourceMessages = messages,
             turn = reactionTurn,
-        ).let { filesManager.validAttachments(it, forSending = true) }.transforms(
-            transformers = transformers,
-            context = context,
-            model = model,
-            assistant = assistant,
-            settings = settings,
-            processingStatus = processingStatus,
-            workspaceCwd = workspaceCwd,
-        ).let { filesManager.validAttachments(it, forSending = true) }.filterNot { it.parts.isEmpty() }
+        ).withoutHistoricalCameraImages().let { filesManager.validAttachments(it, forSending = true) }.let { clean ->
+            transformers.fold(clean) { request, transformer ->
+                request.transforms(
+                    transformers = listOf(transformer),
+                    context = context,
+                    model = model,
+                    assistant = assistant,
+                    settings = settings,
+                    processingStatus = processingStatus,
+                    workspaceCwd = workspaceCwd,
+                ).withoutHistoricalCameraImages()
+            }
+        }.let { filesManager.validAttachments(it, forSending = true) }.filterNot { it.parts.isEmpty() }
+            // Request-scoped video capability must not be removed/HTML-escaped by user templates.
+            .withVideoTurnSystemContext(requestScopedVideoContext)
+            .withoutHistoricalCameraImages()
+            .withTransientRequestAudio(requestAudioUrl, transientAudioAnchorMessageId)
+            .let { request ->
+                if (!audioRejected) request else request.map { message ->
+                    if (message.role == MessageRole.USER && message.id.toString() == transientAudioAnchorMessageId) {
+                        message.copy(parts = message.parts + UIMessagePart.Text(audioUnavailableNote))
+                    } else message
+                }
+            }
+            .let {
+                if (requestAudioUrl.isNullOrBlank()) it else filesManager.validAttachments(it, forSending = true)
+            }
  
+        // Validate files before the final live authorization check: validation may suspend.
+        val frameUrls = (transientImageUrls + cameraUrlsForThisTurn).distinct()
+        val candidateImages = if (frameUrls.isEmpty()) emptyList() else {
+            filesManager.validAttachments(
+                listOf(UIMessage(role = MessageRole.USER, parts = frameUrls.map { UIMessagePart.Image(it) })),
+                forSending = true,
+            ).flatMap { it.parts.filterIsInstance<UIMessagePart.Image>() }.map { it.url }
+        }
+        val videoImages = videoFrameAuthorization(
+            candidateImages, transientImageAnchorMessageId, transientImageScope, conversationId, videoRequestToken,
+            revokedContext = transientImageScope?.systemPromptWithoutCamera?.let(::adjustedAudioContext),
+        )
         var messages: List<UIMessage> = messages
         val params = buildAssistantGenerationParams(
             assistant = assistant,
@@ -507,8 +548,8 @@ class GenerationHandler(
             AILogging.Generation(
                 params = params,
                 // Keep the existing UI message snapshot for the developer page, but also
-                // record a one-way fingerprint of the exact transformed request. This is
-                // enough to compare cache prefixes without retaining prompt contents.
+                // record a one-way fingerprint of the transformed camera-free request.
+                // Camera input is authorized later, immediately at the provider boundary.
                 messages = messages,
                 providerSetting = provider,
                 stream = stream,
@@ -520,10 +561,24 @@ class GenerationHandler(
                 ),
             )
         )
+        // Tag exactly the paragraph injected above. The fingerprint stays byte-identical to the
+        // request without markers (metadata is not part of the provider payload), while the final
+        // authorization point can retract only *our* text if no picture is delivered.
+        val requestMessages = internalMessages.markVideoTurnSystemContext(requestScopedVideoContext)
+        fun prepareRequestMessages() = listenRequestContext?.invoke(requestMessages) ?: requestMessages
+        // Streaming flows may defer work until collect. Check there as well as at the suspend
+        // generateText boundary, after logging and every potentially suspending preparation step.
+        // `applyTo` reads the live grant ONCE per provider call and derives both the images and the
+        // request-scoped picture claim from it: a hang-up / camera-epoch revocation / paused resume
+        // that lands after this preparation but before the request cannot leave a "本轮附带了画面"
+        // system prompt without the picture (or the other way round).
+        // Each tool round rebuilds this wrapper from camera-free history.
+        val guardedProvider = providerImpl.withVideoRequestAuthorization(videoImages)
         messages = generateModelTurn(
-            providerImpl = providerImpl,
+            providerImpl = guardedProvider,
             providerSetting = provider,
-            requestMessages = internalMessages,
+            requestMessages = requestMessages,
+            prepareRequestMessages = ::prepareRequestMessages,
             initialMessages = messages,
             params = params,
             model = model,

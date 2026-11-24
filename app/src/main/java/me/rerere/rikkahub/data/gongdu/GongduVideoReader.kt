@@ -2,10 +2,6 @@ package me.rerere.rikkahub.data.gongdu
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.Canvas
-import android.graphics.Color
-import android.graphics.Paint
-import android.graphics.RectF
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
@@ -18,10 +14,10 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.*
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.ai.provider.supportsDirectAudio
+import me.rerere.ai.provider.Model
+import me.rerere.ai.provider.ProviderSetting
 import me.rerere.asr.transcribeAudioFile
 import me.rerere.rikkahub.data.datastore.SettingsStore
-import me.rerere.rikkahub.data.datastore.findProvider
-import me.rerere.rikkahub.data.datastore.getChatModelForAssistant
 import me.rerere.rikkahub.data.datastore.getSelectedASRProvider
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.files.saveUploadFromBytes
@@ -31,7 +27,6 @@ import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.util.concurrent.TimeUnit
-import kotlin.uuid.Uuid
 
 data class GongduVideoSource(
     val url: String,
@@ -39,6 +34,7 @@ data class GongduVideoSource(
     val subtitleUrl: String = "",
     val subtitleLanguage: String = "",
     val subtitleOriginal: Boolean = false,
+    val audioFallbackUrls: List<String> = emptyList(),
 )
 
 /** Real sampled frames, not a claim that the model received a video URL's pixels or sound. */
@@ -46,38 +42,14 @@ class GongduVideoReader(private val context: Context, private val files: FilesMa
     private val http = OkHttpClient.Builder().connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(20, TimeUnit.SECONDS).callTimeout(60, TimeUnit.SECONDS).followRedirects(false).build()
 
-    suspend fun read(note: GongduNote, assistantId: Uuid, request: GongduVideoRequest = GongduVideoRequest()): List<UIMessagePart> = withContext(Dispatchers.IO) {
+    suspend fun read(note: GongduNote, model: Model, provider: ProviderSetting?,
+        request: GongduVideoRequest = GongduVideoRequest(),
+    ): List<UIMessagePart> = withContext(Dispatchers.IO) {
         val source = source(note.raw)
         val temp = File.createTempFile("gongdu-video-", ".mp4", context.cacheDir)
         val retriever = MediaMetadataRetriever()
         try {
-            var url = checkedUrl(source.url)
-            var downloaded = false
-            repeat(4) {
-                if (!downloaded) http.newCall(Request.Builder().url(url).header("Referer", "https://www.xiaohongshu.com/").build()).execute().use { response ->
-                    if (response.code in 300..399) {
-                        url = checkedUrl(url.resolve(response.header("Location").orEmpty())?.toString().orEmpty())
-                    } else {
-                        check(response.isSuccessful) { "视频获取失败，请刷新笔记后重试（HTTP ${response.code}）" }
-                        val body = checkNotNull(response.body)
-                        require(body.contentLength() <= MAX_BYTES) { "视频超过 40 MB，请选择较短视频" }
-                        body.byteStream().use { input -> temp.outputStream().use { output ->
-                            val buffer = ByteArray(8192)
-                            var count = 0L
-                            while (true) {
-                                currentCoroutineContext().ensureActive()
-                                val size = input.read(buffer)
-                                if (size < 0) break
-                                count += size
-                                require(count <= MAX_BYTES) { "视频超过 40 MB，请选择较短视频" }
-                                output.write(buffer, 0, size)
-                            }
-                        } }
-                        downloaded = true
-                    }
-                }
-            }
-            check(downloaded && temp.length() > 0) { "视频地址跳转异常，请刷新笔记" }
+            downloadVideo(source.url, temp)
             val subtitles = if (source.subtitles.isNotBlank()) source.subtitles else runCatching {
                 if (source.subtitleUrl.isBlank()) "" else http.newCall(Request.Builder().url(checkedUrl(source.subtitleUrl)).build()).execute().use { response ->
                     check(response.isSuccessful)
@@ -115,50 +87,47 @@ class GongduVideoReader(private val context: Context, private val files: FilesMa
             }
             val parts = mutableListOf<UIMessagePart>(UIMessagePart.Text(
                 "[共度·小红书视频抽样] ${note.feed.title}\n视频总长 ${duration / 1000.0} 秒，本次范围 ${plan.startMs / 1000.0}～${plan.endMs / 1000.0} 秒。" +
-                    "画面按时间排列在带秒数的拼图中，最多 24 帧；长视频概览会调大间隔，短暂动作可能未被采样。" +
+                    "画面按时间排列在带秒数的拼图中，每图最多6帧，单帧长边720像素，最多24帧分成4图；长视频概览会调大间隔，短暂动作可能未被采样。" +
                     "授权并提供 gongdu_read_video 工具时，可传 start_seconds/end_seconds（每段最多30秒）和 frame_interval_seconds（0.5～5秒）补看。超过24帧时会放宽间隔，需要更密请缩短窗口。不要声称看过未采样动作。" +
                     subtitleMessage,
                 metadata = gongduVideoReference(note.feed),
             ))
-            val columns = when { plan.times.size > 8 -> 4; plan.times.size > 4 -> 3; plan.times.size > 2 -> 2; else -> 1 }
-            val tileWidth = if (columns == 1) 720 else 360
-            val tileHeight = if (columns == 1) 460 else 250
-            val board = Bitmap.createBitmap(columns * tileWidth, ((plan.times.size + columns - 1) / columns) * tileHeight, Bitmap.Config.ARGB_8888)
-            val canvas = Canvas(board)
-            canvas.drawColor(Color.rgb(22, 22, 22))
-            val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; textSize = 21f }
-            var extracted = 0
-            try {
-            for ((index, time) in plan.times.withIndex()) {
-                currentCoroutineContext().ensureActive()
-                val bitmap = if (Build.VERSION.SDK_INT >= 27) retriever.getScaledFrameAtTime(time * 1000,
-                    MediaMetadataRetriever.OPTION_CLOSEST, 720, 720)
-                else retriever.getFrameAtTime(time * 1000, MediaMetadataRetriever.OPTION_CLOSEST)
-                if (bitmap != null) {
-                    try {
-                        val x = (index % columns) * tileWidth.toFloat()
-                        val y = (index / columns) * tileHeight.toFloat()
-                        val scale = minOf((tileWidth - 8f) / bitmap.width, (tileHeight - 36f) / bitmap.height)
-                        val width = bitmap.width * scale
-                        val height = bitmap.height * scale
-                        canvas.drawBitmap(bitmap, null, RectF(x + (tileWidth - width) / 2, y + 4, x + (tileWidth + width) / 2, y + 4 + height), null)
-                        canvas.drawText("${time / 1000.0} s", x + 8, y + tileHeight - 10, paint)
-                        extracted++
-                    } finally { bitmap.recycle() }
+            val extracted = renderGongduVideoContactSheets(
+                times = plan.times,
+                frameAt = { time ->
+                    if (Build.VERSION.SDK_INT >= 27) retriever.getScaledFrameAtTime(
+                        time * 1000, MediaMetadataRetriever.OPTION_CLOSEST,
+                        GONGDU_FRAME_MAX_EDGE, GONGDU_FRAME_MAX_EDGE,
+                    ) else retriever.getFrameAtTime(time * 1000, MediaMetadataRetriever.OPTION_CLOSEST)
+                },
+            ) { page, board ->
+                parts += UIMessagePart.Text(
+                    "[视频拼图 ${page.number}/${page.total}] 成功抽取 ${page.extracted}/${page.times.size} 帧，" +
+                        "${if (board == null) "本组未提取到画面；" else "空白格表示该时间未提取成功；"}" +
+                        "时间点：${page.times.joinToString { "${it / 1000.0}s" }}",
+                )
+                if (board != null) {
+                    val bytes = ByteArrayOutputStream().use { output ->
+                        board.compress(Bitmap.CompressFormat.JPEG, 85, output)
+                        output.toByteArray()
+                    }
+                    val entity = files.saveUploadFromBytes(
+                        bytes, "gongdu-frames-${page.times.first()}-${page.number}.jpg", "image/jpeg",
+                    )
+                    parts += UIMessagePart.Image(Uri.fromFile(files.getFile(entity)).toString())
                 }
             }
             check(extracted > 0) { "没有成功提取画面，请刷新笔记或换一个视频" }
-            val bytes = ByteArrayOutputStream().use { output -> board.compress(Bitmap.CompressFormat.JPEG, 85, output); output.toByteArray() }
-            val entity = files.saveUploadFromBytes(bytes, "gongdu-frames-${plan.startMs}.jpg", "image/jpeg")
-            parts += UIMessagePart.Text("成功抽取 $extracted/${plan.times.size} 帧，空白格表示该时间未提取成功；时间点：${plan.times.joinToString { "${it / 1000.0}s" }}")
-            parts += UIMessagePart.Image(Uri.fromFile(files.getFile(entity)).toString())
-            } finally { board.recycle() }
             val audio = File.createTempFile("gongdu-sound-", ".wav", context.cacheDir)
             try {
-                if (GongduAudioReader.extract(temp, audio, plan.startMs, plan.endMs)) {
+                val audioResult = recoverGongduVideoAudio(
+                    video = temp, output = audio, alternateUrls = source.audioFallbackUrls,
+                    download = ::downloadVideo,
+                    extract = { input, output -> GongduAudioReader.extract(input, output, plan.startMs, plan.endMs) },
+                )
+                if (audioResult == GongduAudioResult.READY) {
                     val live = settingsStore.settingsFlowRaw.first()
-                    val model = live.getChatModelForAssistant(assistantId)
-                    val direct = model?.supportsDirectAudio(model.findProvider(live.providers)) == true
+                    val direct = model.supportsDirectAudio(provider)
                     if (direct) {
                         val saved = files.saveUploadFromBytes(audio.readBytes(), "gongdu-audio-${plan.startMs}.wav", "audio/wav")
                         parts += UIMessagePart.Text("[原声音轨] 以下 WAV 对应 ${plan.startMs / 1000.0}～${plan.endMs / 1000.0} 秒，可结合画面分析对白、语气、音乐和环境音；无法确定的声音请明确说不确定。")
@@ -167,11 +136,16 @@ class GongduVideoReader(private val context: Context, private val files: FilesMa
                         val provider = live.getSelectedASRProvider()
                         if (provider == null) parts += UIMessagePart.Text("[声音未提供] 当前模型未启用原生音频输入，且未配置语音识别；仅能看画面和已有字幕，不能推测音轨。可在模型设置开启音频输入，或在语音设置配置文件识别。")
                         else {
-                            val transcript = transcribeAudioFile(http, provider, audio).ifBlank { "未识别到可用对白；不代表没有音乐或其他声音。" }
-                            parts += UIMessagePart.Text("[音轨对白转写，范围 ${plan.startMs / 1000.0}～${plan.endMs / 1000.0} 秒]\n$transcript\n这里只提供识别出的文字，没有向你提供原声，不能据此判断音乐、音效、说话语气或声纹。")
+                            try {
+                                val transcript = transcribeAudioFile(http, provider, audio).ifBlank { "未识别到可用对白；不代表没有音乐或其他声音。" }
+                                parts += UIMessagePart.Text("[音轨对白转写，范围 ${plan.startMs / 1000.0}～${plan.endMs / 1000.0} 秒]\n$transcript\n这里只提供识别出的文字，没有向你提供原声，不能据此判断音乐、音效、说话语气或声纹。")
+                            } catch (cancelled: CancellationException) { throw cancelled }
+                            catch (_: Exception) {
+                                parts += UIMessagePart.Text("[语音转写未完成] 已成功提取音轨，但语音识别服务未返回可用结果；可结合画面和平台字幕理解。")
+                            }
                         }
                     }
-                } else parts += UIMessagePart.Text("[无可用音轨] 这条视频没有可解码的声音，仅根据画面和可用字幕分析。")
+                } else parts += UIMessagePart.Text(audioResult.message)
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (_: Exception) { parts += UIMessagePart.Text("[声音处理未完成] 音轨解码或语音服务未成功；画面仍可分析。请检查语音识别设置或改用支持原声输入的模型，不能声称已经听过。") }
             finally { audio.delete() }
@@ -180,6 +154,36 @@ class GongduVideoReader(private val context: Context, private val files: FilesMa
             runCatching { retriever.release() }
             temp.delete()
         }
+    }
+
+    private suspend fun downloadVideo(value: String, temp: File) {
+        var url = checkedUrl(value)
+        var downloaded = false
+        repeat(4) {
+            if (!downloaded) http.newCall(Request.Builder().url(url).header("Referer", "https://www.xiaohongshu.com/").build()).execute().use { response ->
+                if (response.code in 300..399) {
+                    url = checkedUrl(url.resolve(response.header("Location").orEmpty())?.toString().orEmpty())
+                } else {
+                    check(response.isSuccessful) { "视频获取失败，请刷新笔记后重试（HTTP ${response.code}）" }
+                    val body = checkNotNull(response.body)
+                    require(body.contentLength() <= MAX_BYTES) { "视频超过 40 MB，请选择较短视频" }
+                    body.byteStream().use { input -> temp.outputStream().use { output ->
+                        val buffer = ByteArray(8192)
+                        var count = 0L
+                        while (true) {
+                            currentCoroutineContext().ensureActive()
+                            val size = input.read(buffer)
+                            if (size < 0) break
+                            count += size
+                            require(count <= MAX_BYTES) { "视频超过 40 MB，请选择较短视频" }
+                            output.write(buffer, 0, size)
+                        }
+                    } }
+                    downloaded = true
+                }
+            }
+        }
+        check(downloaded && temp.length() > 0) { "视频地址跳转异常，请刷新笔记" }
     }
 
     companion object {
@@ -197,14 +201,31 @@ class GongduVideoReader(private val context: Context, private val files: FilesMa
             val video = (root.obj("note") ?: root).obj("video") ?: error("这篇笔记没有可读取的视频")
             val media = video.obj("media")
             val streams = media?.obj("stream")
-            val h264 = (streams?.get("h264") as? JsonArray).orEmpty()
-            val choices = (if (h264.isNotEmpty()) h264 else streams?.values?.flatMap { (it as? JsonArray).orEmpty() }.orEmpty())
-                .mapNotNull { it as? JsonObject }.filter { it.str("masterUrl").isNotBlank() }
-                .sortedBy { (it["size"] as? JsonPrimitive)?.longOrNull?.takeIf { size -> size > 0 } ?: Long.MAX_VALUE }
-            val stream = choices.firstOrNull() ?: error("服务未返回可下载的视频地址，请刷新笔记")
+            val choices = streams.orEmpty().flatMap { (codec, value) ->
+                (value as? JsonArray).orEmpty().mapNotNull { element ->
+                    (element as? JsonObject)?.takeIf { it.str("masterUrl").isNotBlank() }?.let { codec to it }
+                }
+            }
+            fun hasAudio(stream: JsonObject): Boolean =
+                stream.str("audioCodec").trim().lowercase() !in setOf("", "none", "null", "unknown", "0") ||
+                    listOf("audioChannels", "audioBitrate", "audioDuration").any {
+                        (stream[it] as? JsonPrimitive)?.doubleOrNull?.let { value -> value > 0 } == true
+                    }
+            fun size(stream: JsonObject): Long =
+                (stream["size"] as? JsonPrimitive)?.longOrNull?.takeIf { it > 0 } ?: Long.MAX_VALUE
+            val ranked = choices.filter { size(it.second) == Long.MAX_VALUE || size(it.second) <= MAX_BYTES }.sortedWith(
+                compareByDescending<Pair<String, JsonObject>> { hasAudio(it.second) }
+                    .thenBy { it.first != "h264" }.thenBy { size(it.second) },
+            )
+            val compatible = ranked.filter { it.first == "h264" }.ifEmpty { ranked }
+            val stream = compatible.firstOrNull()?.second
+                ?: error(if (choices.isEmpty()) "服务未返回可下载的视频地址，请刷新笔记" else "视频超过 40 MB，请选择较短视频")
+            val alternateUrls = ranked.map { it.second.str("masterUrl") }
+                .filter { it != stream.str("masterUrl") }.distinct().take(2)
             val subtitles = GongduSubtitles.select(video)
             return GongduVideoSource(
                 stream.str("masterUrl"), subtitles.text, subtitles.url, subtitles.language, subtitles.original,
+                alternateUrls,
             )
         }
     }

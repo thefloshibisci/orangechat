@@ -107,12 +107,13 @@ class PluginChatImagesTest {
         return message(uri.toString())
     }
 
-    @Test fun galleryUploadCopiesNewestImageAndScalesLargeOnes() = runBlocking {
+    @Test fun galleryUploadRequiresSelectionForMultipleImagesAndScalesLargeOnes() = runBlocking {
         val service = PluginChatImages(context)
         val small = registerImage("small.png", 64, 64, Bitmap.CompressFormat.PNG)
         val large = registerImage("large.jpg", 3200, 1600, Bitmap.CompressFormat.JPEG)
         val history = listOf(small, large)
-        val newest = service.prepareGalleryUpload(null, history, "test-chat")
+        assertTrue(runCatching { service.prepareGalleryUpload(null, history, "test-chat") }.isFailure)
+        val newest = service.prepareGalleryUpload(service.gallerySources(history, "test-chat").last().id, history, "test-chat")
         assertEquals("image/jpeg", newest.mime)
         assertEquals(1600, newest.width)
         assertEquals(800, newest.height)

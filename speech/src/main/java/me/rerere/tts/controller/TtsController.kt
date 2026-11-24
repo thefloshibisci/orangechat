@@ -218,6 +218,10 @@ class TtsController(
         _playbackState.update { PlaybackState(status = PlaybackStatus.Idle) }
     }
 
+    suspend fun awaitCompletion() {
+        workerJob?.join()
+    }
+
     /** 释放资源 */
     fun dispose() {
         stop()

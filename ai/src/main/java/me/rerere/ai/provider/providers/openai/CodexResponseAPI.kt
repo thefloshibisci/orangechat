@@ -51,6 +51,13 @@ import kotlin.time.Clock
 
 import java.io.IOException
 
+class CodexHttpFailure(code: Int) : IOException(when (code) {
+    401 -> "Codex 登录授权失败（HTTP 401）"
+    403 -> "Codex 拒绝访问（HTTP 403）"
+    429 -> "Codex 请求受限，请检查额度或稍后重试（HTTP 429）"
+    else -> "Codex 请求失败（HTTP $code）"
+})
+
 /** Independent Codex transport; standard OpenAI ResponseAPI remains unchanged. */
 class CodexResponseAPI(private val client: OkHttpClient) {
     suspend fun generateText(accessToken: String, accountId: String, messages: List<UIMessage>, params: TextGenerationParams): MessageChunk {
@@ -108,7 +115,7 @@ class CodexResponseAPI(private val client: OkHttpClient) {
             }
             override fun onFailure(eventSource: EventSource, t: Throwable?, response: Response?) {
                 response?.close()
-                close(IOException("Codex stream request failed (HTTP ${response?.code ?: 0})"))
+                close(if (response != null && !response.isSuccessful) CodexHttpFailure(response.code) else IOException("Codex stream request failed"))
             }
             override fun onClosed(eventSource: EventSource) {
                 if (completed) close() else close(IOException("Codex stream closed before completion"))
@@ -148,7 +155,7 @@ class CodexResponseAPI(private val client: OkHttpClient) {
     companion object {
         const val ENDPOINT = "https://chatgpt.com/backend-api/codex/responses"
         // Verified against the installed official Codex CLI, 2026-09-18.
-        const val CLIENT_VERSION = "0.155.0"
+        const val CLIENT_VERSION = "0.169.0"
         const val USER_AGENT = "codex_cli_rs/$CLIENT_VERSION (Android)"
     }
 
@@ -266,7 +273,7 @@ class CodexResponseAPI(private val client: OkHttpClient) {
                                                 put("image_url", encodedImage.base64)
                                             }.onFailure {
                                                 put("type", "input_text")
-                                                put("text", "[Image encoding failed]")
+                                                put("text", "[Image unavailable: the attachment could not be read. Do not infer its contents.]")
                                             }
                                         })
                                     }
@@ -316,8 +323,8 @@ class CodexResponseAPI(private val client: OkHttpClient) {
                                         put("type", if (role == MessageRole.USER) "input_image" else "output_image")
                                         put("image_url", encodedImage.base64)
                                     }.onFailure {
-                                        put("type", "input_text")
-                                        put("text", "Error: Failed to encode image to base64")
+                                        put("type", if (role == MessageRole.USER) "input_text" else "output_text")
+                                        put("text", "[Image unavailable: the attachment could not be read. Do not infer its contents.]")
                                     }
                                 })
                             }

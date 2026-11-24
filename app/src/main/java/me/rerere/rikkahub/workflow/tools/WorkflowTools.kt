@@ -51,6 +51,8 @@ fun workflowCreateTool(
         every condition passes, then run the actions in order through the existing tool
         dispatcher (HARDLINE applies at fire time, every action goes through the same
         approval-bypass headless path scheduled jobs use).
+        Workspace actions may omit workspace_id to use the authoring assistant's current default at execution.
+        Explicit targets must remain bound to that assistant; file transfers require both source/destination IDs.
 
         ALL WORKFLOW TRIGGERS ARE RECURRING (event-driven). There is NO one-shot mode.
         For one-shot "fire once at X time" the user wants the schedule_job tool instead
@@ -217,9 +219,7 @@ fun workflowGetTool(repository: WorkflowRepository): Tool = Tool(
         val runs = repository.lastRuns(id, limit = 10)
         val payload = buildJsonObject {
             put("ok", true)
-            put("definition", WorkflowJson.parseStored(loaded.entity.definitionJson)?.let {
-                kotlinx.serialization.json.Json.parseToJsonElement(WorkflowJson.encode(it))
-            } ?: JsonPrimitive(loaded.entity.definitionJson))
+            put("definition", kotlinx.serialization.json.Json.parseToJsonElement(WorkflowJson.encode(loaded.definition)))
             put("last_run_at_ms", JsonPrimitive(loaded.entity.lastRunAtMs?.toString()))
             put("last_run_status", JsonPrimitive(loaded.entity.lastRunStatus))
             put("last_run_error", JsonPrimitive(loaded.entity.lastRunError))

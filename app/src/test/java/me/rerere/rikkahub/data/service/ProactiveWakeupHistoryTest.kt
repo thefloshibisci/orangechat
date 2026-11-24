@@ -36,6 +36,26 @@ class ProactiveWakeupHistoryTest {
         assertEquals(ProactiveWakeupStatus.Running, record(old.token).status)
     }
 
+    @Test fun `cold start leaves overdue appointment available for its alarm`() {
+        val pending = appointment()
+        store().put(pending)
+        ProactiveTaskExecutor.initialize(context)
+        assertEquals(listOf(pending), store().all())
+    }
+
+    @Test fun `deleting terminal history preserves pending and running appointments`() {
+        val ended = appointment("ended")
+        val pending = appointment("pending")
+        val running = appointment("running")
+        val ledger = store()
+        listOf(ended, pending, running).forEach(ledger::put)
+        assertTrue(ledger.consume(running))
+        assertTrue(ledger.cancel(ended.conversationId, ended.token))
+        listOf(ended, pending, running).forEach { ledger.deleteHistory(it.token) }
+        assertEquals(setOf(pending, running), ledger.snapshot().map { it.appointment }.toSet())
+        assertEquals(listOf(pending), ledger.all())
+    }
+
     @Test fun `claimed appointment persists final send and never becomes pending again`() {
         val pending = appointment()
         store().put(pending)
@@ -52,13 +72,20 @@ class ProactiveWakeupHistoryTest {
 
     @Test fun `failure and interruption remain visible without repeating a paid generation`() {
         listOf("failed", "cancelled", "no_model", "pass", "wait", "stop", "user_returned",
-            "appointment_conversation_removed", "follow_up_limit", "disabled_or_quiet_hours").forEach { outcome ->
+            "appointment_conversation_removed", "follow_up_limit", "disabled_or_quiet_hours",
+            "appointment_disabled", "appointment_not_due").forEach { outcome ->
             val pending = appointment()
             store().put(pending)
             store().consume(pending)
             store().finish(pending, outcome)
             val result = record(pending.token)
-            assertEquals(outcome, ProactiveWakeupStatus.Failed, result.status)
+            val expected = when (outcome) {
+                "cancelled", "user_returned" -> ProactiveWakeupStatus.Interrupted
+                "pass", "wait", "stop", "follow_up_limit", "disabled_or_quiet_hours",
+                "appointment_disabled", "appointment_not_due" -> ProactiveWakeupStatus.Skipped
+                else -> ProactiveWakeupStatus.Failed
+            }
+            assertEquals(outcome, expected, result.status)
             assertTrue(result.outcome.isNotBlank())
             assertTrue(store().all().isEmpty())
         }
@@ -92,6 +119,26 @@ class ProactiveWakeupHistoryTest {
         assertFalse(store().cancel(running.conversationId, running.token))
     }
 
+    @Test fun `failure detail survives reopening without storing raw provider text`() {
+        val pending = appointment()
+        store().put(pending)
+        store().consume(pending)
+        store().finish(pending, "failed", "生成最终正文",
+            IllegalStateException("private prompt", java.net.SocketTimeoutException("private signed URL")))
+        val result = record(pending.token)
+        assertEquals(ProactiveWakeupStatus.Failed, result.status)
+        assertEquals("生成最终正文时出错：请求超时", result.outcome)
+        assertTrue(store().all().isEmpty())
+    }
+
+    @Test fun `provider failure records HTTP status without the response body`() {
+        val pending = appointment()
+        store().put(pending)
+        store().consume(pending)
+        store().finish(pending, "failed", "模型回复或工具执行", Exception("Failed to get response: 429 private body"))
+        assertEquals("模型回复或工具执行时出错：服务商返回 HTTP 429", record(pending.token).outcome)
+    }
+
     @Test fun `terminal history keeps last ten without dropping pending or running`() {
         val running = appointment("running")
         val pending = appointment("pending")
@@ -122,7 +169,7 @@ class ProactiveWakeupHistoryTest {
         assertEquals(ProactiveWakeupStatus.Running,
             original.snapshot().single { it.appointment == interrupted }.status)
         val reopened = store().snapshot()
-        assertEquals(ProactiveWakeupStatus.Failed, reopened.single { it.appointment == interrupted }.status)
+        assertEquals(ProactiveWakeupStatus.Interrupted, reopened.single { it.appointment == interrupted }.status)
         assertTrue(reopened.single { it.appointment == interrupted }.outcome.contains("未确认"))
         assertEquals(ProactiveWakeupStatus.Sent, reopened.single { it.appointment == sent }.status)
         assertEquals(listOf(pending), store().all())

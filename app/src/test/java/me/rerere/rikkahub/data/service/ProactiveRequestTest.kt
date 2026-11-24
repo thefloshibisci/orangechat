@@ -15,6 +15,17 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ProactiveRequestTest {
+    @Test fun `synthetic doorbell is not a human anchor and reserved final step cannot call tools`() {
+        val human = UIMessage.user("人类消息")
+        val event = UIMessage(role = MessageRole.USER, parts = listOf(UIMessagePart.Text("通知", metadata =
+            kotlinx.serialization.json.JsonObject(mapOf("gongdu_event_id" to kotlinx.serialization.json.JsonPrimitive("id"))))))
+        assertNull(listOf(event).latestProactiveUser()); assertEquals(human.id, listOf(human,event).latestProactiveUser()?.id)
+        val normal = UIMessage.user("我回来了"); assertEquals(normal.id, listOf(human,event,normal).latestProactiveUser()?.id)
+        val tools = listOf(me.rerere.rikkahub.data.ai.tools.buildWriteFilesTool("test"))
+        assertSame(tools, proactiveToolsForStep(tools, 0, 2)); assertSame(tools, proactiveToolsForStep(tools, 1, 2))
+        assertTrue(proactiveToolsForStep(tools, 2, 2).isEmpty())
+    }
+
     private fun wire(messages: List<UIMessage>, google: Boolean): JsonArray {
         val provider = if (google) GoogleProvider(OkHttpClient()) else ClaudeProvider(OkHttpClient())
         val method = if (google) provider.javaClass.getDeclaredMethod("buildContents", List::class.java)

@@ -4,6 +4,16 @@ import java.net.URLDecoder
 
 /** Links address files in the conversation's bound workspace, never host filesystem paths. */
 internal object WorkspaceDownloadPath {
+    /** Explicit target links remain safe when the chat default or binding order changes. */
+    fun parseTargeted(url: String, roots: Map<String, String>): Pair<String, String>? {
+        val uri = runCatching { java.net.URI(url) }.getOrNull() ?: return null
+        if (uri.scheme != "workspace" || uri.rawQuery != null || uri.rawFragment != null || uri.userInfo != null || uri.port != -1) return null
+        val id = uri.host ?: return null
+        val root = roots[id] ?: return null
+        val encodedPath = uri.rawPath ?: return null
+        return parse("sandbox:$encodedPath", root)?.let { id to it }
+    }
+
     fun isWorkspaceLink(url: String, workspaceDir: String = "/workspace") =
         url.startsWith("sandbox:") || url.startsWith(workspaceDir.trimEnd('/') + "/")
 

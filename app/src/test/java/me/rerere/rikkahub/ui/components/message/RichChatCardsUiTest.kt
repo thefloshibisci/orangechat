@@ -115,6 +115,10 @@ class RichChatCardsUiTest {
         compose.onNodeWithText("今天想听你唱歌。").assertIsDisplayed()
         compose.onNodeWithText("好呀，我唱给你听。").assertIsDisplayed()
         compose.onNodeWithText("通话结束 · 01:02").assertIsDisplayed()
+        val lastLine = compose.onNodeWithText("好呀，我唱给你听。").fetchSemanticsNode().boundsInRoot
+        val close = compose.onNodeWithTag("gift-detail-close").fetchSemanticsNode().boundsInRoot
+        val density = compose.activity.resources.displayMetrics.density
+        assertTrue("Short transcripts should wrap their content", (close.top - lastLine.bottom) / density < 60f)
         capture("flow-call-history")
         compose.onNodeWithTag("gift-detail-close").performClick()
         assertTrue(closed)

@@ -43,11 +43,15 @@ class PluginToolProvider(
     suspend fun getTools(recentMessages: List<UIMessage> = emptyList(), conversationId: String? = null): List<Tool> {
         // 等待插件初始化完成，避免竞态条件导致工具列表为空
         pluginManager.awaitInitialization()
-        return availablePlugins().flatMap { plugin ->
+        val plugins = availablePlugins()
+        return plugins.flatMap { plugin ->
             plugin.manifest.tools.filterNot { plugin.manifest.id == "com.orangechat.plugin.ledger" && it.name == "chat_payment" }.map { toolDef ->
                 createTool(plugin, toolDef, recentMessages, conversationId)
             }
-        }
+        } + if (!conversationId.isNullOrBlank() && plugins.any {
+            "conversation_sync" in it.manifest.permissions &&
+                it.manifest.tools.any { tool -> tool.parameters.any { parameter -> parameter.source != null } }
+        }) listOf(chatImages.browserTool(recentMessages, conversationId)) else emptyList()
     }
 
     /**
@@ -106,10 +110,14 @@ class PluginToolProvider(
                     // Generic host-filled parameters declared in the manifest, so any plugin can
                     // consume chat images without a per-plugin app change.
                     try {
+                        var imageReceipt: JsonObject? = null
                         val resolved = chatImages.resolveToolParameters(
                             toolDef.parameters, params, attachments, conversationId.orEmpty(), plugin.manifest.permissions,
+                            onImageResolved = { imageReceipt = it },
                         )
-                        executeTool(plugin, toolDef, resolved)
+                        executeTool(plugin, toolDef, resolved) + listOfNotNull(imageReceipt?.let {
+                            UIMessagePart.Text(buildJsonObject { put("chat_image_input", it) }.toString())
+                        })
                     } catch (error: kotlinx.coroutines.CancellationException) {
                         throw error
                     } catch (error: Exception) {
@@ -130,6 +138,9 @@ class PluginToolProvider(
     private fun buildDescription(plugin: PluginInfo, toolDef: PluginToolDefinition): String {
         val sb = StringBuilder()
         sb.appendLine(toolDef.description)
+        if (toolDef.parameters.any { it.source in IMAGE_VALUE_SOURCES }) {
+            sb.appendLine("使用 chat_images 列出或预览当前分支图片，传 attachment_id 精确选图。多张图片时不可省略编号；选图错误会失败，不会改用其他图片。")
+        }
         sb.appendLine()
         sb.appendLine("Provided by plugin: ${plugin.manifest.name} (${plugin.manifest.id})")
         return sb.toString().trim()
@@ -138,29 +149,7 @@ class PluginToolProvider(
     /**
      * 构建参数定义
      */
-    private fun buildParameters(toolDef: PluginToolDefinition): JsonObject {
-        return buildJsonObject {
-            toolDef.parameters.filter { it.source == null }.forEach { param ->
-                put(param.name, buildJsonObject {
-                    put("type", param.type)
-                    if (param.description != null) {
-                        put("description", param.description)
-                    }
-                    // 根据类型添加额外信息
-                    when (param.type) {
-                        "array" -> {
-                            put("items", buildJsonObject {
-                                put("type", "string")
-                            })
-                        }
-                        "object" -> {
-                            // 可以在这里添加properties定义
-                        }
-                    }
-                })
-            }
-        }
-    }
+    private fun buildParameters(toolDef: PluginToolDefinition): JsonObject = pluginToolParameters(toolDef)
 
     /**
      * 执行工具

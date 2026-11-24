@@ -30,6 +30,45 @@ import org.robolectric.annotation.Config
 class ChatMessageToolsUiTest {
     @get:Rule val compose = createAndroidComposeRule<ComponentActivity>()
 
+    @Test fun failedWorkspaceWritesDoNotShowFileDownloadChips() {
+        val header = UIMessagePart.Text("腾讯云 · ubuntu@host:22").apply {
+            metadata = kotlinx.serialization.json.buildJsonObject {
+                put("machine", kotlinx.serialization.json.JsonPrimitive(text))
+                put("workspace_id", kotlinx.serialization.json.JsonPrimitive("cloud"))
+                put("workspace_root", kotlinx.serialization.json.JsonPrimitive("/srv/chat"))
+            }
+        }
+        val calls = listOf("workspace_write_file", "workspace_edit_file", "workspace_transfer_file").map { name ->
+            UIMessagePart.Tool(name, name,
+                """{"path":"/srv/chat/failed.txt","destination_path":"/srv/chat/failed.txt"}""",
+                listOf(header, UIMessagePart.Text("""{"ok":false,"isError":true,"error":"offline"}""")))
+        }
+        compose.setContent { MaterialTheme { EditedFilesList(calls, assistant = null) } }
+        compose.onNodeWithText("failed.txt").assertDoesNotExist()
+    }
+
+    @Test fun remoteWorkspaceFailureIsVisibleInToolCard() {
+        val error = "腾讯云 · ubuntu@host:22\nSSH offline; no local fallback"
+        renderHistories(listOf(UIMessagePart.Tool("remote-failure", "workspace_shell", """{"workspace_id":"cloud","command":"python mail.py"}""",
+            listOf(UIMessagePart.Text(kotlinx.serialization.json.buildJsonObject {
+                put("error", kotlinx.serialization.json.JsonPrimitive(error))
+            }.toString())))))
+        compose.onNodeWithText(error).assertIsDisplayed()
+    }
+
+    @Test fun labeledWorkspaceFailureDisplaysMachineHeader() {
+        val machine = "腾讯云 · ubuntu@host:22"
+        val header = UIMessagePart.Text(machine).apply {
+            metadata = kotlinx.serialization.json.buildJsonObject {
+                put("machine", kotlinx.serialization.json.JsonPrimitive(machine))
+            }
+        }
+        renderHistories(listOf(UIMessagePart.Tool("labeled-failure", "workspace_shell", "{}",
+            listOf(header, UIMessagePart.Text("""{"ok":false,"error":"SSH offline"}""")))))
+        compose.onNodeWithText(machine).assertIsDisplayed()
+        compose.onNodeWithText("SSH offline").assertIsDisplayed()
+    }
+
     // Exercise both recomposition and replacing the displayed assistant's history.
     private fun renderHistories(histories: List<UIMessagePart.Tool>) {
         val current = mutableStateOf(histories.first())

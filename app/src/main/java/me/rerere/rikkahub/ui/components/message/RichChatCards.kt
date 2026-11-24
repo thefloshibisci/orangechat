@@ -27,7 +27,6 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.role
@@ -39,6 +38,7 @@ import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.service.ChatService
 import me.rerere.rikkahub.service.createChatInteraction
 import me.rerere.rikkahub.service.respondChatInteraction
+import me.rerere.rikkahub.ui.components.ui.EdgeToEdgeDialog
 import me.rerere.rikkahub.ui.components.ui.permission.PermissionRecordAudio
 import me.rerere.rikkahub.ui.components.ui.permission.rememberPermissionState
 import me.rerere.rikkahub.ui.context.LocalNavController
@@ -65,7 +65,10 @@ internal fun InteractionGlass(theme: String, modifier: Modifier = Modifier, cont
 @Composable
 fun RichChatCard(card: ChatInteraction, conversationId: Uuid?, readOnly: Boolean, modifier: Modifier = Modifier,
     senderName: String = if (card.actor == "user") "你" else "对方") {
-    val interactive = !readOnly && conversationId?.toString() == card.conversationId
+    val interactive = !readOnly && card.canAccessCallHistory(conversationId)
+    val historySource = me.rerere.rikkahub.ui.pages.voice.LocalCallHistorySource.current
+    val loadHistory = interactive || (historySource != null &&
+        historySource.conversationId == conversationId && card.canAccessCallHistory(historySource.conversationId))
     val service: ChatService? = if (interactive) koinInject() else null
     val scope = rememberCoroutineScope()
     val nav = if (interactive) LocalNavController.current else null
@@ -74,7 +77,11 @@ fun RichChatCard(card: ChatInteraction, conversationId: Uuid?, readOnly: Boolean
     var busy by remember(card.id) { mutableStateOf(false) }
     var error by remember(card.id) { mutableStateOf<String?>(null) }
     val recipient = card.actor == "assistant"
-    val title = when (card.kind) { "red_packet" -> "专属红包"; "transfer" -> "转账"; else -> "语音通话" }
+    val title = when (card.kind) {
+        "red_packet" -> "专属红包"
+        "transfer" -> "转账"
+        else -> if (card.videoCall) "视频通话" else "语音通话"
+    }
     val illustration = when {
         card.kind == "call" && card.theme == "lavender" -> R.drawable.interaction_moon
         card.theme == "sakura" -> R.drawable.interaction_bear
@@ -103,7 +110,10 @@ fun RichChatCard(card: ChatInteraction, conversationId: Uuid?, readOnly: Boolean
             when (card.callDestination(me.rerere.rikkahub.service.VoiceCallService.activeConversationId.value,
                 me.rerere.rikkahub.service.VoiceCallService.startedAtMillis.value)) {
                 CallCardDestination.Incoming -> { nav?.navigate(Screen.IncomingCall(card.conversationId, card.id)); return }
-                CallCardDestination.Active -> { nav?.navigate(Screen.VoiceCall(card.conversationId)); return }
+                CallCardDestination.Active -> {
+                    val video = me.rerere.rikkahub.service.VoiceCallService.isVideoCall()
+                    nav?.navigate(if (video) Screen.VideoCall(card.conversationId) else Screen.VoiceCall(card.conversationId)); return
+                }
                 CallCardDestination.History -> Unit
             }
         }
@@ -145,23 +155,28 @@ fun RichChatCard(card: ChatInteraction, conversationId: Uuid?, readOnly: Boolean
                     Image(painterResource(illustration), null, Modifier.size(24.dp), colorFilter = interactionIconColorFilter(illustration, colors.accent))
                 }
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    val callLabel = if (card.videoCall) "视频通话" else "语音通话"
                     Text(when (card.status) {
-                        "pending" -> "语音通话邀请"
-                        "declined" -> "语音通话 · 未接听"
-                        "ended" -> if (seconds == null) "语音通话 · 已结束" else "通话结束 · %02d:%02d".format(seconds / 60, seconds % 60)
-                        else -> if (seconds == null) "语音通话" else "语音通话 · %02d:%02d".format(seconds / 60, seconds % 60)
+                        "pending" -> if (card.videoCall) "视频通话邀请" else "语音通话邀请"
+                        "declined" -> "$callLabel · 未接听"
+                        "ended" -> if (seconds == null) "$callLabel · 已结束" else "通话结束 · %02d:%02d".format(seconds / 60, seconds % 60)
+                        else -> if (seconds == null) callLabel else "$callLabel · %02d:%02d".format(seconds / 60, seconds % 60)
                     },
                         color = colors.ink, fontSize = 12.sp, lineHeight = 16.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Text("✦ $callState · 点击查看", color = colors.ink.copy(alpha = .75f), fontSize = 10.sp, lineHeight = 15.sp,
                         maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    if (card.giftSummary.isNotBlank()) {
+                        Text("🎁 ${card.giftSummary}", color = colors.ink.copy(alpha = .85f), fontSize = 10.sp,
+                            lineHeight = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
                 }
             }
         } else GiftChatBubble(card, state, senderName) { expanded = true }
     }
 
     if (expanded && card.kind == "call") {
-        Dialog(onDismissRequest = { expanded = false }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-            me.rerere.rikkahub.ui.pages.voice.CallHistoryRoute(card, conversationId, interactive) { expanded = false }
+        EdgeToEdgeDialog(onDismiss = { expanded = false }, darkSystemIcons = true) {
+            me.rerere.rikkahub.ui.pages.voice.CallHistoryRoute(card, conversationId, loadHistory) { expanded = false }
         }
     } else if (expanded) InteractionDetailDialog(onDismiss = { if (!busy) expanded = false }, enabled = !busy) { close ->
         Column(Modifier.verticalScroll(rememberScrollState()), horizontalAlignment = Alignment.CenterHorizontally) {

@@ -1032,7 +1032,7 @@ private fun ElevenLabsTTSConfiguration(
     }
 
     var modelExpanded by remember { mutableStateOf(false) }
-    val models = listOf("eleven_multilingual_v2", "eleven_flash_v2_5", "eleven_turbo_v2_5", "eleven_v3")
+    val models = listOf("eleven_v4", "eleven_v4_turbo", "eleven_v3", "eleven_multilingual_v2", "eleven_flash_v2_5", "eleven_turbo_v2_5")
 
     FormItem(
         label = { Text(stringResource(R.string.setting_tts_page_model)) },

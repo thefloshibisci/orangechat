@@ -40,4 +40,55 @@ data class ProactiveMessageSetting(
     // 悬浮球：主动消息到达时以 Telegram 风格悬浮球提醒，点击直接进入聊天页
     // Deprecated compatibility field. The proactive floating bubble is no longer used.
     val floatingBubbleEnabled: Boolean = false,
+    // null = pre-migration; empty = explicitly no participants. Never use an empty-list fallback.
+    // Migrated once by the dispatcher/settings page; each participant pins one owned window.
+    val assistantConfigs: List<AssistantProactiveConfig>? = null,
+    val globalPolicy: ProactiveGlobalPolicy = ProactiveGlobalPolicy(),
+)
+
+@Serializable
+data class AssistantProactiveConfig(
+    val assistantId: String,
+    val conversationId: String,
+    val enabled: Boolean = true,
+    /**
+     * false = 跟随该助手**最新**的聊天窗口（[conversationId] 记的是上一次解析到的目标，
+     * 调度器会把它更新到最新）；true = 固定投递到 [conversationId] 这个窗口，不跟随。
+     * 旧数据没有该字段，解码为 false —— 即既有参与者自动变成"跟随最新"（设计意图）。
+     */
+    val pinConversation: Boolean = false,
+    // Opt-in for this assistant's own cooldown/daily limit/prompt/active hours. Default false:
+    // the global proactive settings are used and the per-assistant values stay dormant.
+    val customEnabled: Boolean = false,
+    val cooldownMinutes: Int = 30,
+    // Number of admitted tasks, including PASS/failed tasks; not the number of model turns.
+    val dailyLimit: Int = 4,
+    val promptOverride: String? = null,
+    val minIntervalMinutes: Int? = null,
+    val activeHoursEnabled: Boolean? = null,
+    val activeStartHour: Int? = null,
+    val activeEndHour: Int? = null,
+)
+
+/** Per-assistant overrides only apply when the user explicitly enabled "另设该助手". */
+val AssistantProactiveConfig.effectiveCooldownMinutes: Int
+    get() = if (customEnabled) cooldownMinutes.coerceAtLeast(0) else 0
+
+val AssistantProactiveConfig.effectiveDailyLimit: Int
+    get() = if (customEnabled) dailyLimit.coerceAtLeast(1) else Int.MAX_VALUE
+
+val AssistantProactiveConfig.effectivePromptOverride: String?
+    get() = if (customEnabled) promptOverride?.takeIf { it.isNotBlank() } else null
+
+val AssistantProactiveConfig.effectiveActiveHoursEnabled: Boolean
+    get() = customEnabled && activeHoursEnabled == true
+
+@Serializable
+data class ProactiveGlobalPolicy(
+    val paused: Boolean = false,
+    // Includes every initial, tool-continuation and finalizer network turn.
+    val dailyModelTurnLimit: Int = 40,
+    // Written once during migration. Empty/invalid zones fail closed in the new scheduler.
+    // Travel does not reset the ledger; use this pinned zone's calendar days (including DST).
+    val budgetZoneId: String = "",
 )

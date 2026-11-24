@@ -9,6 +9,7 @@ import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.util.HttpException
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.data.ai.prompts.DEFAULT_COMPRESS_PROMPT
+import me.rerere.rikkahub.data.ai.prompts.CHINESE_V1_COMPRESS_PROMPT
 import me.rerere.rikkahub.data.ai.prompts.LEGACY_DEFAULT_COMPRESS_PROMPT
 import me.rerere.rikkahub.data.ai.prompts.STRUCTURED_V1_COMPRESS_PROMPT
 import me.rerere.rikkahub.data.ai.prompts.STRUCTURED_V2_COMPRESS_PROMPT
@@ -55,6 +56,35 @@ class CompressionInputTest {
             UIMessagePart.VoiceMessage("file:///recording.ogg", transcript = "不要打包，先修 UI"),
         ))
         assertTrue(voice.compressionTranscript().contains("不要打包，先修 UI"))
+    }
+
+    @Test fun `camera media keeps its meaning without leaking the private file path`() {
+        val input = UIMessage(role = MessageRole.USER, parts = listOf(
+            UIMessagePart.Text("这是我刚才视频里的样子"),
+            UIMessagePart.Image("file:///data/user/0/orange/files/video_call_snapshots/snap.jpg"),
+            UIMessagePart.Image("file:///data/user/0/orange/files/uploads/normal.jpg"),
+        )).compressionTranscript()
+        assertFalse(input.contains("video_call_snapshots"))
+        assertTrue(input.contains("[Image]"))
+        assertTrue(input.contains("camera media"))
+        assertTrue(input.contains("这是我刚才视频里的样子"))
+        // Ordinary attachments keep their path, so the summary stays useful.
+        assertTrue(input.contains("file:///data/user/0/orange/files/uploads/normal.jpg"))
+    }
+
+    @Test fun `camera path inside tool text is scrubbed while the sentence survives`() {
+        val clip = "file:///data/user/0/orange/files/video_call_clips/clip.jpg"
+        val message = UIMessage(role = MessageRole.ASSISTANT, parts = listOf(
+            UIMessagePart.Tool(
+                "call1", "workspace_read", "{\"path\":\"$clip\"}",
+                listOf(UIMessagePart.Text("read $clip")),
+            ),
+        ))
+        val input = message.compressionTranscript()
+        assertFalse(input.contains("video_call_clips"))
+        assertTrue(input.contains("workspace_read"))
+        assertTrue(input.contains("read "))
+        assertTrue(input.contains("camera media"))
     }
 
     @Test fun `embedded media is represented without dumping base64 into text requests`() {
@@ -133,10 +163,12 @@ class CompressionInputTest {
         assertEquals(DEFAULT_COMPRESS_PROMPT, resolveCompressPrompt(STRUCTURED_V1_COMPRESS_PROMPT))
         assertEquals(DEFAULT_COMPRESS_PROMPT, resolveCompressPrompt(STRUCTURED_V2_COMPRESS_PROMPT))
         assertEquals(DEFAULT_COMPRESS_PROMPT, resolveCompressPrompt(STRUCTURED_V3_COMPRESS_PROMPT))
+        assertEquals(DEFAULT_COMPRESS_PROMPT, resolveCompressPrompt(CHINESE_V1_COMPRESS_PROMPT))
         assertNotEquals(STRUCTURED_V1_COMPRESS_PROMPT, DEFAULT_COMPRESS_PROMPT)
         assertEquals(DEFAULT_COMPRESS_PROMPT, resolveCompressPrompt(DEFAULT_COMPRESS_PROMPT))
         listOf(LEGACY_DEFAULT_COMPRESS_PROMPT, STRUCTURED_V1_COMPRESS_PROMPT,
-            STRUCTURED_V2_COMPRESS_PROMPT, STRUCTURED_V3_COMPRESS_PROMPT, DEFAULT_COMPRESS_PROMPT).forEach {
+            STRUCTURED_V2_COMPRESS_PROMPT, STRUCTURED_V3_COMPRESS_PROMPT,
+            CHINESE_V1_COMPRESS_PROMPT, DEFAULT_COMPRESS_PROMPT).forEach {
             val custom = it + "\nKeep my personal style"
             assertEquals(custom, resolveCompressPrompt(custom))
         }
@@ -160,10 +192,11 @@ class CompressionInputTest {
             providers = listOf(ProviderSetting.OpenAI(models = listOf(firstModel, otherModel, overrideModel))))
         assertEquals(firstModel, settings.compressionModelFor(first.id))
         assertEquals(overrideModel, settings.copy(compressModelId = overrideModel.id).compressionModelFor(first.id))
-        assertEquals("当前助手模型：OpenAI / first", settings.compressionModelLabelFor(first.id))
+        assertEquals("当前聊天模型：OpenAI / first", settings.compressionModelLabelFor(first.id))
         assertEquals("指定压缩模型：OpenAI / compression",
             settings.copy(compressModelId = overrideModel.id).compressionModelLabelFor(first.id))
-        assertEquals("当前助手模型：OpenAI / first",
-            settings.copy(compressModelId = Model().id).compressionModelLabelFor(first.id))
+        val missingOverride = settings.copy(compressModelId = Model().id)
+        assertNull(missingOverride.compressionModelFor(first.id))
+        assertEquals("指定压缩模型不可用，请重新选择或清除指定项", missingOverride.compressionModelLabelFor(first.id))
     }
 }

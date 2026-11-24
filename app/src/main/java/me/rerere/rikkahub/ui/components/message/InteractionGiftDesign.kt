@@ -81,6 +81,7 @@ internal fun ReferenceGlass(
     theme: String, modifier: Modifier = Modifier, radius: Dp = 22.dp,
     settled: Boolean = false, onClick: (() -> Unit)? = null,
     pressFeedback: Boolean = true, receiptScale: Float = 1f,
+    backdropBlur: Modifier = Modifier,
     content: @Composable BoxScope.() -> Unit,
 ) {
     val colors = interactionColors(theme)
@@ -88,20 +89,22 @@ internal fun ReferenceGlass(
     val source = remember { MutableInteractionSource() }
     val pressed by source.collectIsPressedAsState()
     val scale by animateFloatAsState(if (pressed && pressFeedback) .97f else 1f, label = "glassPress")
-    Box(modifier.semantics { this[GlassScale] = scale * receiptScale }.graphicsLayer {
-        scaleX = scale * receiptScale
-        scaleY = scale * receiptScale
-        alpha = if (settled) .82f else 1f
-    }
+    val glass = Modifier
         .shadow(12.dp, shape, clip = false, ambientColor = colors.accent.copy(alpha = .15f), spotColor = colors.accent.copy(alpha = .22f))
-        .clip(shape).background(Brush.linearGradient(listOf(colors.top, colors.bottom)))
+        .clip(shape).then(backdropBlur).background(Brush.linearGradient(listOf(colors.top, colors.bottom)))
         .drawWithCache {
             val sheen = Brush.verticalGradient(listOf(Color.White.copy(alpha = .60f), Color.Transparent), endY = size.height * .38f)
             onDrawBehind {
                 drawOval(sheen, topLeft = Offset(-size.width * .1f, -size.height * .42f), size = Size(size.width * 1.2f, size.height * .82f))
                 drawLine(Color.White.copy(alpha = .65f), Offset(22.dp.toPx(), 2.dp.toPx()), Offset(size.width - 22.dp.toPx(), 2.dp.toPx()), 1.dp.toPx())
             }
-        }.border(1.5.dp, Color.White.copy(alpha = .88f), shape)
+        }
+    Box(modifier.semantics { this[GlassScale] = scale * receiptScale }.graphicsLayer {
+        scaleX = scale * receiptScale
+        scaleY = scale * receiptScale
+        alpha = if (settled) .82f else 1f
+    }
+        .then(glass).border(1.5.dp, Color.White.copy(alpha = .88f), shape)
         .then(if (onClick != null) Modifier.clickable(source, indication = null, onClick = onClick) else Modifier)) {
         CompositionLocalProvider(LocalContentColor provides colors.ink) { content() }
     }

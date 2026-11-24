@@ -181,7 +181,7 @@ class ConversationConfigTest {
         assertEquals(source.streamOutput, resolvedFromOldDefaults.streamOutput)
         assertEquals(source.customHeaders, resolvedFromOldDefaults.customHeaders)
         assertEquals(source.customBodies, resolvedFromOldDefaults.customBodies)
-        assertEquals(source.workspaceId, resolvedFromOldDefaults.workspaceId)
+        assertEquals(owner.workspaceId, resolvedFromOldDefaults.workspaceId)
         assertEquals(source.modeInjectionIds, resolvedFromOldDefaults.modeInjectionIds)
         assertEquals(source.lorebookIds, resolvedFromOldDefaults.lorebookIds)
     }
@@ -228,11 +228,11 @@ class ConversationConfigTest {
         assertEquals(previous.localTools, resolved.localTools)
         assertTrue(resolved.mcpServers.isEmpty())
         assertTrue(resolved.enabledSkills.isEmpty())
-        assertNull(resolved.workspaceId)
+        assertEquals(previous.workspaceId, resolved.workspaceId) // Binding is live; a stale request edit cannot revoke it.
     }
 
     @Test
-    fun deletedModelFallsBackAndRebindsWithoutLosingConversationOverrides() {
+    fun deletedSelectedModelDoesNotSendConversationToDefaultOrRewriteItsSelection() {
         val bound = chat().bindConfig(settings)
         val changed = settings.copy(
             assistants = listOf(owner.copy(chatModelId = second.id)),
@@ -240,12 +240,10 @@ class ConversationConfigTest {
         )
         val rebound = bound.bindConfig(changed)
 
-        assertEquals(second.id, changed.getChatModelOf(bound)!!.id)
-        assertEquals(second.id, changed.getAssistantOf(bound).chatModelId)
-        assertEquals(second.id, changed.withConversationConfig(bound).getAssistantOf(bound).chatModelId)
-        assertEquals(second.id, rebound.config!!.chatModelId)
-        assertEquals(bound.config!!.copy(chatModelId = second.id), rebound.config)
-        assertTrue(BuiltInTools.Search in changed.getChatModelOf(rebound)!!.tools)
+        assertNull(changed.getChatModelOf(bound))
+        assertNull(changed.withConversationConfig(bound).getChatModelOf(bound))
+        assertEquals(bound, rebound)
+        assertEquals(first.id, rebound.config!!.chatModelId)
         assertEquals(second, changed.findModelById(second.id))
     }
 
@@ -303,5 +301,18 @@ class ConversationConfigTest {
 
         assertEquals(first.id, config.chatModelId)
         assertEquals(owner.localTools, resolved.localTools)
+    }
+
+    @Test fun workspaceSwitchImmediatelyOverridesOldConversationSnapshot() {
+        val local = Uuid.random()
+        val remote = Uuid.random()
+        val original = settings.copy(assistants = listOf(owner.copy(workspaceId = local)))
+        val bound = chat().bindConfig(original)
+        assertEquals(local, bound.config!!.workspaceId)
+        val changed = settings.copy(assistants = listOf(owner.copy(workspaceId = remote, workspaceIds = setOf(local, remote))))
+        assertEquals(remote, changed.getAssistantOf(bound).workspaceId)
+        assertEquals(setOf(local, remote), changed.getAssistantOf(bound).boundWorkspaceIds())
+        assertEquals(remote, changed.withConversationConfig(bound).getAssistantOf(bound).workspaceId)
+        assertNull(settings.copy(assistants = listOf(owner.copy(workspaceId = null))).getAssistantOf(bound).workspaceId)
     }
 }

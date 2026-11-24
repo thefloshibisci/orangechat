@@ -66,7 +66,7 @@ internal fun SereinHookCard(assistant: Assistant) {
     }, onTest = { config ->
         val start = System.nanoTime()
         val result = withTimeoutOrNull(config.waitMs) {
-            client.recall(config, "Serein connection test: synthetic memory check", "orangechat-connection-test", emptyList())
+            client.testConnection(config)
         }
         val elapsed = (System.nanoTime() - start) / 1_000_000
         sereinConnectionLabel(result, elapsed)
@@ -200,11 +200,11 @@ internal fun SereinHookControls(
             text = { Column(Modifier.heightIn(max = 430.dp).verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("请使用只供此助手的记忆实例。当前接口会查找该实例的记忆，不能按助手隔离。")
-                OutlinedTextField(url, { url = it }, label = { Text("HTTPS 实例根地址") }, singleLine = true, enabled = !working)
+                OutlinedTextField(url, { url = it }, label = { Text("HTTP / HTTPS 实例根地址") }, singleLine = true, enabled = !working)
                 OutlinedTextField(key, { key = it }, label = { Text("Gateway Key") }, singleLine = true,
                     visualTransformation = PasswordVisualTransformation(), enabled = !working)
                 Text("Gateway Key 是部署时保存的 api-token 文件内容。Zeabur 部署查看 gateway 服务的 /secrets/api-token；只填密钥，不加 Bearer。", style = MaterialTheme.typography.bodySmall)
-                Text("根地址填 gateway 的 HTTPS 域名，不加 /v1。网页登录密码和模型 API Key 不适用于这里。", style = MaterialTheme.typography.bodySmall)
+                Text("根地址填 gateway 的 HTTP 或 HTTPS 地址，不加 /v1。网页登录密码和模型 API Key 不适用于这里。", style = MaterialTheme.typography.bodySmall)
                 Text("最长等待：${wait / 1000} 秒")
                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     (2L..5L).forEach { seconds -> FilterChip(wait == seconds * 1000,

@@ -29,3 +29,7 @@ internal fun useFullProactiveTools(setting: ProactiveMessageSetting, roll: Int):
 
 internal fun canExecuteProactiveTool(needsApproval: Boolean, forceConfirm: Boolean, autoApprove: Boolean): Boolean =
     autoApprove || (!needsApproval && !forceConfirm)
+
+/** The reserved last turn must ask for text, not advertise tools the loop is forbidden to execute. */
+internal fun proactiveToolsForStep(tools: List<me.rerere.ai.core.Tool>, step: Int, limit: Int) =
+    if (step < limit) tools else emptyList()

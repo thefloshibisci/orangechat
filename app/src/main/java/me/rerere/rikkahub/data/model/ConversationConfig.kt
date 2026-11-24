@@ -96,7 +96,7 @@ fun Assistant.withConversation(config: ConversationConfig?): Assistant = config?
         customBodies = it.customBodies,
         mcpServers = it.mcpServers,
         enabledSkills = it.enabledSkills,
-        workspaceId = it.workspaceId,
+        // Workspace permissions always follow live assistant settings, not this request snapshot.
         modeInjectionIds = it.modeInjectionIds,
         lorebookIds = it.lorebookIds,
     )
@@ -110,9 +110,11 @@ fun Settings.getAssistantOf(conversation: Conversation): Assistant {
 
 fun Settings.getChatModelOf(conversation: Conversation): Model? {
     val assistant = getAssistantById(conversation.assistantId) ?: getCurrentAssistant()
-    val selected = conversation.config?.chatModelId?.let { findModelById(it) }
-        ?: assistant.chatModelId?.let { findModelById(it) }
-        ?: findModelById(chatModelId) ?: return null
+    val selectedId = conversation.config?.chatModelId
+    // An explicit selection is not permission to send this conversation to a different model.
+    val selected = if (selectedId != null) findModelById(selectedId) ?: return null
+        else assistant.chatModelId?.let { findModelById(it) }
+            ?: findModelById(chatModelId) ?: return null
     val config = conversation.config ?: return selected
     return selected.copy(tools = if (config.builtInSearch) selected.tools + BuiltInTools.Search
         else selected.tools - BuiltInTools.Search)

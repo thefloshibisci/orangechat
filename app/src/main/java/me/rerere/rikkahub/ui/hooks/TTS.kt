@@ -105,6 +105,7 @@ interface CustomTtsState {
      * @param text 要追加朗读的文本片段
      */
     fun enqueueText(text: String)
+    suspend fun awaitCompletion()
 }
 
 internal class CustomTtsStateImpl(
@@ -167,6 +168,10 @@ internal class CustomTtsStateImpl(
         val processed = SpeechMarkup.prepare(text) { it.stripMarkdown() }
         if (processed.isBlank()) return
         controller.speak(processed, flush = false)
+    }
+
+    override suspend fun awaitCompletion() {
+        controller.awaitCompletion()
     }
 
     override fun cleanup() {

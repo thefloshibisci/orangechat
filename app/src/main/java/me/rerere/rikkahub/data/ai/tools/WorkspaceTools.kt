@@ -18,7 +18,6 @@ import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.repository.WorkspaceRepository
 import me.rerere.rikkahub.utils.generateUnifiedDiff
-import me.rerere.workspace.WorkspaceCommandResult
 import me.rerere.workspace.WorkspaceFileEntry
 import me.rerere.workspace.WorkspaceManager
 import me.rerere.workspace.WorkspaceStorageArea
@@ -34,12 +33,13 @@ val WorkspaceToolDefaultApprovals: Map<String, Boolean> = mapOf(
     "workspace_write_file" to false,
     "workspace_edit_file" to false,
     "workspace_shell" to true,
+    "workspace_transfer_file" to true,
 )
  
 fun resolveWorkspaceToolApproval(name: String, overrides: Map<String, Boolean>): Boolean =
     overrides[name] ?: WorkspaceToolDefaultApprovals[name] ?: false
  
-suspend fun createWorkspaceTools(
+internal suspend fun createFixedWorkspaceTools(
     workspaceId: String?,
     workspaceRepository: WorkspaceRepository,
     cwd: String? = null,
@@ -84,7 +84,7 @@ private fun createReadFileTool(
     },
     needsApproval = needsApproval,
     execute = {
-        val path = it.jsonObject.absolutePath("path")
+        val path = workspaceRepository.validateToolPath(workspaceId, it.jsonObject.absolutePath("path"))
         if (path.isImagePath()) {
             workspaceRepository.readImageInRootfs(workspaceId, path)
         } else {
@@ -130,7 +130,7 @@ private fun createWriteFileTool(
     needsApproval = needsApproval,
     execute = {
         val params = it.jsonObject
-        val path = params.absolutePath("path")
+        val path = workspaceRepository.validateToolPath(workspaceId, params.absolutePath("path"))
         val text = params.string("text") ?: error("text is required")
         val overwrite = params["overwrite"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() ?: true
         val entry = workspaceRepository.writeTextInRootfs(workspaceId, path, text, overwrite)
@@ -173,7 +173,7 @@ private fun createEditFileTool(
     needsApproval = needsApproval,
     execute = {
         val params = it.jsonObject
-        val path = params.absolutePath("path")
+        val path = workspaceRepository.validateToolPath(workspaceId, params.absolutePath("path"))
         val oldText = params.string("old_text") ?: error("old_text is required")
         val newText = params.string("new_text") ?: error("new_text is required")
         val replaceAll = params["replace_all"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() ?: false
@@ -256,8 +256,9 @@ private fun createShellTool(
         val params = it.jsonObject
         val command = params.string("command") ?: error("command is required")
         val layout = checkNotNull(workspaceRepository.layout(workspaceId)) { "Workspace not found" }
-        val cwd = layout.relativeToWorkspace(params.string("cwd") ?: defaultCwd.orEmpty())
+        val cwd = me.rerere.workspace.WorkspacePathPolicy.cwd(layout.workspaceDir, params.string("cwd") ?: defaultCwd.orEmpty())
         require(!cwd.startsWith('/')) { "cwd must be inside the bound workspace directory" }
+        workspaceRepository.validateToolPath(workspaceId, layout.absolutePath(WorkspaceStorageArea.FILES, cwd))
         val timeoutMillis = params.string("timeout")?.toLongOrNull()
             ?.coerceIn(1L, SHELL_TIMEOUT_MAX_SECONDS)
             ?.times(1_000L)
@@ -266,6 +267,8 @@ private fun createShellTool(
         listOf(
             UIMessagePart.Text(
                 buildJsonObject {
+                    put("ok", result.exitCode == 0 && !result.timedOut)
+                    if (result.exitCode != 0 || result.timedOut) put("error", if (result.timedOut) "Command timed out" else "Command exited with code ${result.exitCode}")
                     put("exitCode", result.exitCode)
                     put("stdout", result.stdout)
                     put("stderr", result.stderr)
@@ -331,31 +334,8 @@ private suspend fun WorkspaceRepository.writeTextInRootfs(
     text: String,
     overwrite: Boolean,
 ): WorkspaceFileEntry {
-    if (getById(workspaceId)?.isSsh() == true) {
-        val (area, relative) = rootfsPathToAreaAndRelative(path, checkNotNull(layout(workspaceId)).workspaceDir)
-        return writeText(workspaceId, area, relative, text, overwrite)
-    }
-    val pathArg = path.shellQuote()
-    val result = runRootfsCommand(
-        workspaceId = workspaceId,
-        action = "Write file",
-        command = """
-            if [ -e $pathArg ] && [ ${(!overwrite).shellFlag()} = 1 ]; then
-              printf '%s\n' ${"File already exists: $path".shellQuote()} >&2
-              exit 1
-            fi
-            if [ -e $pathArg ] && [ ! -f $pathArg ]; then
-              printf '%s\n' ${"Path is not a file: $path".shellQuote()} >&2
-              exit 1
-            fi
-            parent=${'$'}(dirname -- $pathArg) || exit 1
-            mkdir -p -- "${'$'}parent" || exit 1
-            cat > $pathArg || exit 1
-            ${statEntryCommand(path)}
-        """.trimIndent(),
-        stdin = text.toByteArray(Charsets.UTF_8),
-    )
-    return result.stdout.parseRootfsEntry()
+    // Use the same confined file API on both machines; never use arbitrary rootfs shell writes.
+    return writeToolBytes(workspaceId, path, text.toByteArray(Charsets.UTF_8), overwrite)
 }
 
 /** Stat is advisory: a remote file may grow while it is downloaded. */
@@ -374,62 +354,6 @@ internal fun boundedWorkspaceOutput(output: OutputStream, limit: Long): OutputSt
     override fun close() = output.close()
 }
  
-private suspend fun WorkspaceRepository.runRootfsCommand(
-    workspaceId: String,
-    action: String,
-    command: String,
-    stdin: ByteArray? = null,
-): WorkspaceCommandResult {
-    val result = executeCommand(
-        id = workspaceId,
-        command = command,
-        timeoutMillis = WorkspaceManager.DEFAULT_COMMAND_TIMEOUT_MS,
-        stdin = stdin,
-    )
-    if (result.timedOut) {
-        error("$action timed out")
-    }
-    if (result.exitCode != 0) {
-        val message = result.stderr.ifBlank { result.stdout }.trim()
-        error(if (message.isBlank()) "$action failed with exit code ${result.exitCode}" else message)
-    }
-    if (result.truncated) {
-        error("$action output is too large")
-    }
-    return result
-}
- 
-private fun statEntryCommand(path: String): String {
-    val pathArg = path.shellQuote()
-    return """
-        if [ -d $pathArg ]; then entry_type=d; else entry_type=f; fi
-        entry_size=${'$'}(stat -c '%s' -- $pathArg) || exit 1
-        entry_mtime=${'$'}(stat -c '%Y' -- $pathArg) || exit 1
-        printf '%s\0%s\0%s\0%s\0' "${'$'}entry_type" "${'$'}entry_size" "${'$'}entry_mtime" $pathArg
-    """.trimIndent()
-}
- 
-private fun String.parseRootfsEntry(): WorkspaceFileEntry =
-    parseRootfsEntries().singleOrNull() ?: error("Invalid file metadata output")
- 
-private fun String.parseRootfsEntries(): List<WorkspaceFileEntry> {
-    val fields = split('\u0000').dropLastWhile { it.isEmpty() }
-    require(fields.size % 4 == 0) { "Invalid file metadata output" }
-    return fields.chunked(4).map { chunk ->
-        val type = chunk[0]
-        val size = chunk[1].toLongOrNull() ?: error("Invalid file size: ${chunk[1]}")
-        val updatedAt = (chunk[2].toLongOrNull() ?: error("Invalid file mtime: ${chunk[2]}")) * 1_000L
-        val path = chunk[3]
-        WorkspaceFileEntry(
-            path = path,
-            name = path.rootfsName(),
-            isDirectory = type == "d",
-            sizeBytes = size,
-            updatedAt = updatedAt,
-        )
-    }
-}
- 
 private fun kotlinx.serialization.json.JsonObject.absolutePath(name: String): String {
     val path = string(name)?.replace('\\', '/')?.trim() ?: error("$name is required")
     require(path.isNotBlank()) { "$name is required" }
@@ -437,14 +361,6 @@ private fun kotlinx.serialization.json.JsonObject.absolutePath(name: String): St
     require(!path.contains('\u0000')) { "$name contains invalid character" }
     return path
 }
- 
-private fun String.rootfsName(): String =
-    trimEnd('/').substringAfterLast('/').ifBlank { "/" }
- 
-private fun String.shellQuote(): String =
-    "'" + replace("'", "'\"'\"'") + "'"
- 
-private fun Boolean.shellFlag(): Int = if (this) 1 else 0
  
 private fun JsonObjectBuilder.putPathProperty(required: Boolean) {
     put("path", buildJsonObject {

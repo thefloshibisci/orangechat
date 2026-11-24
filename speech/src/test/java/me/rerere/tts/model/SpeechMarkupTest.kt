@@ -71,4 +71,29 @@ class SpeechMarkupTest {
             assertEquals("你好", SpeechMarkup.miniMaxText("你好$suffix", true))
         }
     }
+
+    @Test fun `streaming reads long clauses before the sentence is complete`() {
+        // 整句还没写完：够长的分句先出声，首字延后得更少。
+        val text = "我今天走了很长很长的一段路，才终于到这里"
+        val clause = text.indexOf("，") + 1
+        assertEquals(clause, SpeechMarkup.streamPrefixLength(text))
+        // 分句太短时继续等，避免一个字一个字地合成。
+        assertEquals(0, SpeechMarkup.streamPrefixLength("好啊，那就这样吧"))
+        // 已经有整句时，整句照旧优先，后面的长分句也能提前读。
+        val mixed = "你好。我今天走了很长很长的一段路，才到这里"
+        val mixedCut = SpeechMarkup.streamPrefixLength(mixed)
+        assertTrue(mixedCut > "你好。".length)
+        assertTrue(mixed.take(mixedCut).endsWith("，"))
+    }
+
+    @Test fun `streaming never splits inside markup`() {
+        // 未闭合的 voice 块：任何分句边界都不许切（切了就会把半个标签读出来）。
+        val unclosed = "[[voice emotion=happy speed=1.0]]这句话里面有很长很长的一个逗号，后面还有字"
+        assertEquals(0, SpeechMarkup.streamPrefixLength(unclosed))
+        // 停顿标记完整时照常按分句切，但绝不能切在 <#...#> 中间。
+        val pause = "你好<#0.3#>我好，然后还有很多很多的话"
+        val pauseCut = SpeechMarkup.streamPrefixLength(pause)
+        assertTrue(pauseCut >= pause.indexOf("，") + 1)
+        assertTrue(pause.take(pauseCut).contains("<#0.3#>"))
+    }
 }

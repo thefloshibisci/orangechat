@@ -16,6 +16,7 @@ import me.rerere.ai.ui.MessageChunk
 import me.rerere.ai.ui.ImageGenerationResult
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.CancellationException
+import me.rerere.ai.provider.providers.openai.CodexHttpFailure
 import me.rerere.ai.provider.providers.openai.CodexResponseAPI
 import me.rerere.ai.ui.UIMessage
 import me.rerere.common.http.await
@@ -44,7 +45,7 @@ class CodexProvider(
                 .build().newCall(request).await()
             if (!response.isSuccessful) {
                 response.close()
-                error("Failed to get Codex models: ${response.code}")
+                throw CodexHttpFailure(response.code)
             }
             parseCodexModels(json.parseToJsonElement(response.body.string()))
         }}
@@ -57,7 +58,7 @@ class CodexProvider(
     override suspend fun streamText(providerSetting: ProviderSetting.Codex, messages: List<UIMessage>, params: TextGenerationParams): Flow<MessageChunk> = codexSafe {
         val account = repository.acquireAccount(params.conversationId)
         responseApiFor(account).streamText(account.accessToken, account.chatgptAccountId, messages, params).catch { error ->
-            if (error is CancellationException) throw error
+            if (error is CancellationException || error is CodexHttpFailure) throw error
             throw IllegalStateException("Codex 回复中断；请检查网络、登录状态和订阅额度")
         }
     }

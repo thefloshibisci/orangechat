@@ -75,8 +75,8 @@ class GongduRepository(private val store: SettingsStore, private val transport: 
         }
     }
 
-    suspend fun configureDoorbell(conversationId: Uuid, enabled: Boolean) {
-        store.update { it.copy(gongdu = it.gongdu.copy(targetConversationId = conversationId, doorbellEnabled = enabled)) }
+    suspend fun configureDoorbell(conversationId: Uuid, assistantId: Uuid, enabled: Boolean) {
+        store.update { it.copy(gongdu = it.gongdu.copy(targetConversationId = conversationId, doorbellAssistantId = assistantId, doorbellEnabled = enabled)) }
     }
 
     suspend fun connect() = lock.withLock {
@@ -140,7 +140,7 @@ class GongduRepository(private val store: SettingsStore, private val transport: 
         }
         val incoming = mutableListOf<GongduEvent>()
         for (tab in listOf("mentions", "likes", "connections")) {
-            val events = GongduCodec.events(data("list_notifications", buildJsonObject { put("tab", tab); put("limit", 50) }))
+            val events = GongduCodec.events(data("list_notifications", buildJsonObject { put("tab", tab); put("limit", 50) }), tab)
             incoming += events.map { it.copy(id = "$tab:${it.id}") }
         }
         store.update { current -> current.copy(gongdu = current.gongdu.copy(inbox = GongduCodec.mergeInbox(
@@ -149,8 +149,27 @@ class GongduRepository(private val store: SettingsStore, private val transport: 
         store.settingsFlowRaw.first().gongdu.inbox
     }
 
-    suspend fun acknowledge(id: String) {
-        store.update { current -> current.copy(gongdu = current.gongdu.copy(inbox = current.gongdu.inbox.copy(
+    /** Store the destination before enqueueing. If interrupted, check that chat's receipt before rerouting. */
+    suspend fun reserveDelivery(event: GongduEvent, target: Uuid, config: GongduSetting): Boolean {
+        var reserved = false
+        store.update { live ->
+            val g = live.gongdu
+            if (!g.doorbellEnabled || g.serverId != config.serverId || g.targetConversationId != config.targetConversationId ||
+                g.doorbellAssistantId != config.doorbellAssistantId) return@update live
+            val row = g.inbox.events.find { it.id == event.id } ?: return@update live
+            if (row.acknowledged || row.deliveryTarget != event.deliveryTarget) return@update live
+            reserved = true
+            if (row.deliveryTarget == target) live else live.copy(gongdu = g.copy(inbox = g.inbox.copy(
+                events = g.inbox.events.map { if (it.id == row.id) it.copy(deliveryTarget = target) else it },
+            )))
+        }
+        return reserved
+    }
+
+    suspend fun acknowledge(id: String, expectedServer: Uuid? = null) {
+        // A refresh or profile reconfiguration must not complete an event for another inbox.
+        store.update { current -> if (expectedServer != null && expectedServer != current.gongdu.serverId) current
+        else current.copy(gongdu = current.gongdu.copy(inbox = current.gongdu.inbox.copy(
             events = current.gongdu.inbox.events.map { if (it.id == id) it.copy(acknowledged = true) else it },
         ))) }
     }

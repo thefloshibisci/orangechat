@@ -10,6 +10,7 @@ class SereinStatusTest {
         assertTrue(sereinConnectionLabel(null, 3000).contains("超时"))
         assertFalse(sereinFailureLabel("secret-response-token").contains("secret"))
         assertTrue(sereinConnectionLabel(HookRecall(), 10).startsWith("连接成功"))
+        assertTrue(sereinConnectionLabel(HookRecall(), 10).contains("未运行召回"))
         assertTrue(sereinRecallLabel(SereinRecallStatus("empty", "[]", 1)).contains("未命中"))
         assertTrue(sereinRecallLabel(SereinRecallStatus("ready", "[\"scene:test\"]", 1)).contains("1 条候选"))
     }

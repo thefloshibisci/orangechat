@@ -19,6 +19,12 @@ import java.io.FileNotFoundException
 /** All workspace downloads share collision handling, error reporting and a captured source. */
 @Composable
 internal fun rememberWorkspaceFileExporter(workspaceId: String?): (WorkspaceStorageArea, String) -> Unit {
+    val export = rememberWorkspaceTargetedFileExporter()
+    return { area, path -> export(workspaceId, area, path) }
+}
+
+@Composable
+internal fun rememberWorkspaceTargetedFileExporter(): (String?, WorkspaceStorageArea, String) -> Unit {
     val context = LocalContext.current
     val toaster = LocalToaster.current
     val repository = koinInject<WorkspaceRepository>()
@@ -79,7 +85,7 @@ internal fun rememberWorkspaceFileExporter(workspaceId: String?): (WorkspaceStor
             }
         }
     }
-    return { area, path ->
+    return { workspaceId, area, path ->
         when {
             workspaceId == null -> toaster.show("此会话的助手未绑定工作区")
             busy || pending != null -> toaster.show("请先完成当前文件保存")

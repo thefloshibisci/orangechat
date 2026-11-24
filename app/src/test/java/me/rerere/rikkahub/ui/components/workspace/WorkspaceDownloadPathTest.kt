@@ -4,6 +4,14 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class WorkspaceDownloadPathTest {
+    @org.junit.Test fun targetedLinksKeepMachineAndRootEvenWhenDefaultChanges() {
+        val roots = mapOf("phone" to "/workspace", "cloud" to "/srv/chat")
+        org.junit.Assert.assertEquals("cloud" to "笔记 1.txt", WorkspaceDownloadPath.parseTargeted("workspace://cloud/srv/chat/%E7%AC%94%E8%AE%B0%201.txt", roots))
+        for (url in listOf("workspace://cloud/workspace/file", "workspace://phone/srv/chat/file", "workspace://deleted/workspace/file",
+            "workspace://cloud/srv/chat/%2e%2e/secret", "workspace://cloud/srv/chat/file?target=phone", "workspace://cloud/srv/chat/file#x")) {
+            org.junit.Assert.assertNull(url, WorkspaceDownloadPath.parseTargeted(url, roots))
+        }
+    }
     @Test fun acceptsUnicodeSpacesAndLiteralPlus() {
         assertEquals("目录/a b+c.zip", WorkspaceDownloadPath.parse("sandbox:/workspace/%E7%9B%AE%E5%BD%95/a%20b+c.zip"))
         assertEquals("result.zip", WorkspaceDownloadPath.parse("/workspace/result.zip"))

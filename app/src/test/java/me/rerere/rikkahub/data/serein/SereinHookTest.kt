@@ -95,7 +95,15 @@ class SereinHookTest {
         assertEquals(2000L, config.copy(timeoutMs = 1).waitMs)
         assertEquals(5000L, config.copy(timeoutMs = 9000).waitMs)
         assertTrue(config.usableBy("a")); assertFalse(config.usableBy("b"))
-        listOf("http://memory.example", "https://u:p@memory.example", "https://memory.example/v1", "https://memory.example/?key=x").forEach {
+        for (root in listOf("http://memory.example", "https://memory.example", "http://127.0.0.1:8080")) {
+            val candidate = config.copy(baseUrl = " $root/ ", uploadEnabled = true, uploadStartedAt = "2026-11-11")
+            assertEquals(root, candidate.rootUrl())
+            assertTrue(candidate.usableBy("a"))
+            assertTrue(candidate.uploadsFor("a"))
+        }
+        listOf("ftp://memory.example", "memory.example", "https://u:p@memory.example",
+            "http://u:p@memory.example", "https://memory.example/v1", "http://memory.example/v1",
+            "https://memory.example/?key=x", "http://memory.example/?key=x", "http://memory.example/#fragment").forEach {
             assertNull(config.copy(baseUrl = it).rootUrl())
         }
         assertFalse(config.toString().contains("synthetic-key"))
@@ -116,6 +124,9 @@ class SereinHookTest {
         val request = seen.single()
         assertEquals("https://memory.example/api/hook/recall", request.url.toString())
         assertEquals("Bearer synthetic-key", request.header("Authorization"))
+        assertEquals(recall, client.recall(config.copy(baseUrl = "http://memory.example:8080"),
+            "original query", "chat", emptyList()))
+        assertEquals("http://memory.example:8080/api/hook/recall", seen.last().url.toString())
         val buffer = okio.Buffer(); request.body!!.writeTo(buffer)
         val json = Json.parseToJsonElement(buffer.readUtf8()).jsonObject
         assertEquals("original query", json.getValue("query").jsonPrimitive.content)
@@ -124,7 +135,42 @@ class SereinHookTest {
         assertEquals("http_401", client.recall(config, "q", "chat", emptyList()).status)
         code = 302
         assertEquals("http_302", client.recall(config, "q", "chat", emptyList()).status)
-        assertEquals(3, seen.size)
+        assertEquals(4, seen.size)
+    }
+
+    @Test fun `connection check authenticates without requesting memory or changing real recall`() = runBlocking {
+        val seen = mutableListOf<okhttp3.Request>()
+        var code = 200
+        var body = """{"ok":true,"injected":false,"additional_context":"","recalled_ids":[]}"""
+        val http = OkHttpClient.Builder().addInterceptor { chain ->
+            seen += chain.request()
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(code).message("synthetic")
+                .body(body.toResponseBody()).build()
+        }.build()
+        val client = SereinHookClient(http)
+        assertEquals("empty", client.testConnection(config).status)
+        val request = seen.single()
+        assertEquals("https://memory.example/api/hook/recall", request.url.toString())
+        assertEquals("Bearer synthetic-key", request.header("Authorization"))
+        fun payload(request: okhttp3.Request): JsonObject {
+            val buffer = okio.Buffer()
+            request.body!!.writeTo(buffer)
+            return Json.parseToJsonElement(buffer.readUtf8()).jsonObject
+        }
+        assertEquals(0, payload(request).getValue("max_notes").jsonPrimitive.int)
+        assertTrue(payload(request).getValue("delivered_ids").jsonArray.isEmpty())
+        client.recall(config, "actual question", "chat", listOf("scene:delivered"))
+        assertEquals(2, payload(seen.last()).getValue("max_notes").jsonPrimitive.int)
+        assertEquals("actual question", payload(seen.last()).getValue("query").jsonPrimitive.content)
+        assertEquals("scene:delivered", payload(seen.last()).getValue("delivered_ids").jsonArray.single().jsonPrimitive.content)
+        code = 401
+        assertEquals("http_401", client.testConnection(config).status)
+        code = 302
+        assertEquals("http_302", client.testConnection(config).status)
+        code = 200
+        body = "{}"
+        assertEquals("invalid_response", client.testConnection(config).status)
+        assertEquals(5, seen.size)
     }
 
     @Test fun `strict response handling never promotes malformed or oversized material`() {
@@ -146,16 +192,16 @@ class SereinHookTest {
             val user = UIMessage.user("hello")
             var calls = 0
             suspend fun fetch(q: String, ids: List<String>): HookRecall { calls++; assertTrue(q.isNotBlank()); return recall }
-            assertEquals(recall, repo.prepareWith(config, "a", "chat", user, true, { true }, ::fetch))
-            assertEquals(recall, SereinHookRepository(db, SereinHookClient()).prepareWith(config, "a", "chat", user, false, { true }, ::fetch))
+            assertEquals(recall, repo.prepareWith(config, "a", "chat", user, true, { true }, fetch = ::fetch))
+            assertEquals(recall, SereinHookRepository(db, SereinHookClient()).prepareWith(config, "a", "chat", user, false, { true }, fetch = ::fetch))
             assertEquals(1, calls)
-            assertNull(repo.prepareWith(config, "b", "other", user, true, { true }, ::fetch))
-            assertNull(repo.prepareWith(config, "a", "other", user, true, { true }, ::fetch))
-            assertNull(repo.prepareWith(config, "a", "chat", user, true, { false }, ::fetch))
+            assertNull(repo.prepareWith(config, "b", "other", user, true, { true }, fetch = ::fetch))
+            assertNull(repo.prepareWith(config, "a", "other", user, true, { true }, fetch = ::fetch))
+            assertNull(repo.prepareWith(config, "a", "chat", user, true, { false }, fetch = ::fetch))
             val edited = user.copy(parts = listOf(UIMessagePart.Text("edited")))
-            assertNull(repo.prepareWith(config, "a", "chat", edited, false, { true }, ::fetch))
-            repo.prepareWith(config, "a", "chat", edited, true, { true }, ::fetch)
-            repo.prepareWith(config.copy(generation = "new"), "a", "chat", edited, true, { true }, ::fetch)
+            assertNull(repo.prepareWith(config, "a", "chat", edited, false, { true }, fetch = ::fetch))
+            repo.prepareWith(config, "a", "chat", edited, true, { true }, fetch = ::fetch)
+            repo.prepareWith(config.copy(generation = "new"), "a", "chat", edited, true, { true }, fetch = ::fetch)
             assertEquals(3, calls)
         } finally { db.close() }
     }
@@ -208,6 +254,67 @@ class SereinHookTest {
             db.openHelper.writableDatabase.execSQL("DELETE FROM ConversationEntity WHERE id='chat'")
             assertNull(db.sereinHookDao().snapshot("chat", user.id.toString()))
             assertTrue(db.sereinHookDao().recent("chat", config.fingerprint()).isEmpty())
+        } finally { db.close() }
+    }
+
+    @Test fun `failed recall expires but tool continuation never starts a new network request`() = runBlocking {
+        val db = database()
+        try {
+            var now = 1_000L
+            val repo = SereinHookRepository(db, SereinHookClient()) { now }
+            val user = UIMessage.user("retry after a transient failure")
+            var calls = 0
+            val failed = HookRecall(status = "network_error")
+            assertEquals(failed, repo.prepareWith(config, "a", "chat", user, true, { true }) { _, _ -> calls++; failed })
+            now += 29_999
+            assertEquals(failed, repo.prepareWith(config, "a", "chat", user, true, { true }) { _, _ -> error("failure is fresh") })
+            now++
+            assertEquals(failed, repo.prepareWith(config, "a", "chat", user, false, { true }) { _, _ -> error("tool continuation must not retry") })
+            assertEquals(recall, repo.prepareWith(config, "a", "chat", user, true, { true }) { _, _ -> calls++; recall })
+            now += 600_000
+            assertEquals(recall, repo.prepareWith(config, "a", "chat", user, true, { true }, retryFailed = true) { _, _ -> error("successful snapshots remain stable") })
+            assertEquals(2, calls)
+        } finally { db.close() }
+    }
+
+    @Test fun `explicit regeneration retries a fresh failure once and keeps empty results stable`() = runBlocking {
+        val db = database()
+        try {
+            var now = 1_000L
+            val repo = SereinHookRepository(db, SereinHookClient()) { now }
+            val user = UIMessage.user("explicit retry")
+            var calls = 0
+            val failed = HookRecall(status = "timeout")
+            assertEquals(failed, repo.prepareWith(config, "a", "chat", user, true, { true }) { _, _ -> calls++; failed })
+            assertEquals(failed, repo.prepareWith(config, "a", "chat", user, true, { true }) { _, _ -> error("no automatic retry") })
+            now++
+            assertEquals(HookRecall(), repo.prepareWith(config, "a", "chat", user, true, { true }, retryFailed = true) { _, _ -> calls++; HookRecall() })
+            now += 60_000
+            assertEquals(HookRecall(), repo.prepareWith(config, "a", "chat", user, true, { true }, retryFailed = true) { _, _ -> error("empty is a successful result") })
+            assertEquals(2, calls)
+        } finally { db.close() }
+    }
+
+    @Test fun `concurrent explicit retries share the replacement failure and clock rollback expires old failures`() = runBlocking {
+        val db = database()
+        try {
+            var now = 1_000L
+            val repo = SereinHookRepository(db, SereinHookClient()) { now }
+            val user = UIMessage.user("concurrent retry")
+            val failed = HookRecall(status = "timeout")
+            repo.prepareWith(config, "a", "chat", user, true, { true }) { _, _ -> failed }
+            var calls = 0
+            coroutineScope {
+                (1..3).map { async {
+                    repo.prepareWith(config, "a", "chat", user, true, { true }, retryFailed = true) { _, _ ->
+                        calls++; delay(20); now++; failed
+                    }
+                } }.awaitAll()
+            }
+            assertEquals(1, calls)
+            now = 500
+            assertEquals(recall, repo.prepareWith(config, "a", "chat", user, true, { true }) { _, _ -> calls++; recall })
+            assertEquals(2, calls)
         } finally { db.close() }
     }
 

@@ -2,6 +2,8 @@ package me.rerere.tts.provider
 
 /** A request-only call instruction: no model or secret is written into the conversation. */
 fun speechDeliveryPrompt(provider: TTSProviderSetting?): String {
+    if (provider is TTSProviderSetting.ElevenLabs) return "当前正在语音通话，回复会自动朗读，不要调用tts工具重复播放。直接用自然口语简短回复。" +
+            speechCapabilities(provider).description + "不要在正文输出 JSON 参数。"
     val model = (provider as? TTSProviderSetting.MiniMax)?.model
     val known = model in setOf(
         "speech-2.8-hd", "speech-2.8-turbo", "speech-2.6-hd", "speech-2.6-turbo",

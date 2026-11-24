@@ -8,6 +8,7 @@ package me.rerere.rikkahub.data.ai.transformers
 
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
+import me.rerere.rikkahub.data.ai.tools.isGeneratedSpeech
 
 /** 助手设置里滑条的上限；0 表示不限制。 */
 const val MAX_CONTEXT_IMAGES_RANGE = 120
@@ -60,7 +61,7 @@ fun limitRecentParts(
 }
 
 fun isHistoryAudio(part: UIMessagePart): Boolean =
-    part is UIMessagePart.VoiceMessage || part is UIMessagePart.Audio
+    part is UIMessagePart.VoiceMessage || part is UIMessagePart.Audio && !part.isGeneratedSpeech()
 
 /** 较早的语音：有转写就发转写，没有就发占位说明，避免模型瞎猜。 */
 fun downgradeOldAudio(part: UIMessagePart): UIMessagePart = when (part) {

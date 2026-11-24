@@ -82,6 +82,22 @@ class GongduRepositoryTest {
             assertTrue(store.settingsFlowRaw.first().gongdu.inbox.events.all { it.acknowledged })
         }
     }
+    @Test fun reservationsSurvivePollsAndCannotBeStolenByAStaleWindow() = runBlocking {
+        fixture { store, repo, transport ->
+            repo.saveConfiguration("https://example.test/mcp", ""); repo.connect(); repo.refreshInbox()
+            transport.notificationId = "later"; repo.refreshInbox()
+            val a = kotlin.uuid.Uuid.random(); val b = kotlin.uuid.Uuid.random(); val owner = kotlin.uuid.Uuid.random()
+            repo.configureDoorbell(a, owner, true)
+            val g = store.settingsFlowRaw.first().gongdu
+            val event = g.inbox.events.first { !it.acknowledged }
+            assertTrue(repo.reserveDelivery(event, a, g)); repo.refreshInbox()
+            assertFalse(repo.reserveDelivery(event, b, g))
+            val held = store.settingsFlowRaw.first().gongdu.inbox.events.first { it.id == event.id }
+            assertEquals(a, held.deliveryTarget)
+            repo.acknowledge(held.id); assertFalse(repo.reserveDelivery(held, b, g))
+        }
+    }
+
     @Test fun unsupportedNotificationsDoNotPreventBrowsingAndAreNotInvented() = runBlocking {
         fixture { _, repo, transport ->
             transport.names = transport.names - "list_notifications"

@@ -795,7 +795,7 @@ class GoogleProvider(private val client: OkHttpClient, context: Context? = null)
         }
 
         is UIMessagePart.Image -> {
-            encodeBase64(false).getOrNull()?.let { encoded ->
+            encodeBase64(false).fold(onSuccess = { encoded ->
                 buildJsonObject {
                     put("inlineData", buildJsonObject {
                         put("mimeType", encoded.mimeType)
@@ -805,7 +805,11 @@ class GoogleProvider(private val client: OkHttpClient, context: Context? = null)
                         put("thoughtSignature", it)
                     }
                 }
-            }
+            }, onFailure = {
+                buildJsonObject {
+                    put("text", "[Image unavailable: the attachment could not be read. Do not infer its contents.]")
+                }
+            })
         }
 
         is UIMessagePart.Video -> {
