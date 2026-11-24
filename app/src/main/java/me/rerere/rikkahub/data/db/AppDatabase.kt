@@ -17,7 +17,6 @@ import me.rerere.rikkahub.data.db.dao.FavoriteDAO
 import me.rerere.rikkahub.data.db.dao.FolderDAO
 import me.rerere.rikkahub.data.db.dao.GenMediaDAO
 import me.rerere.rikkahub.data.db.dao.ManagedFileDAO
-import me.rerere.rikkahub.data.db.dao.MemoryBankDAO
 import me.rerere.rikkahub.data.db.dao.MemoryDAO
 import me.rerere.rikkahub.data.db.dao.MessageNodeDAO
 import me.rerere.rikkahub.data.db.dao.WorkspaceDAO
@@ -57,6 +56,7 @@ import me.rerere.rikkahub.utils.JsonInstant
         MessageNodeEntity::class,
         ManagedFileEntity::class,
         FavoriteEntity::class,
+        // Retained solely to keep Room schema v43 backward compatible with existing user DBs.
         MemoryBankEntity::class,
         WorkspaceEntity::class,
         FolderEntity::class,
@@ -117,8 +117,6 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun managedFileDao(): ManagedFileDAO
 
     abstract fun favoriteDao(): FavoriteDAO
-
-    abstract fun memoryBankDao(): MemoryBankDAO
 
     abstract fun workspaceDao(): WorkspaceDAO
 

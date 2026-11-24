@@ -159,12 +159,9 @@ import me.rerere.rikkahub.ui.pages.setting.SettingWebPage
 import me.rerere.rikkahub.ui.pages.setting.SettingSystemToolsPage
 import me.rerere.rikkahub.ui.pages.setting.SecuritySettingPage
 import me.rerere.rikkahub.ui.pages.setting.SettingProactiveMessagePage
-import me.rerere.rikkahub.ui.pages.setting.SettingWeixinBotPage
-import me.rerere.rikkahub.ui.pages.setting.SettingQqBotPage
 import me.rerere.rikkahub.ui.pages.setting.components.SettingsBackground
 import me.rerere.rikkahub.plugin.webview.PluginWebViewPage
 import me.rerere.rikkahub.ui.pages.gongdu.GongduPage
-import me.rerere.rikkahub.ui.pages.memory.MemoryBankPage
 import me.rerere.rikkahub.ui.components.ui.EmojiPickerPage
 import me.rerere.rikkahub.ui.pages.share.handler.ShareHandlerPage
 import me.rerere.rikkahub.ui.pages.anniversary.AnniversaryPage
@@ -690,14 +687,6 @@ class RouteActivity : ComponentActivity() {
                                 SettingExtraInjectionPage()
                             }
 
-                            entry<Screen.SettingWeixinBot> {
-                                SettingWeixinBotPage()
-                            }
-
-                            entry<Screen.SettingQqBot> {
-                                SettingQqBotPage()
-                            }
-
                             entry<Screen.Workflows> {
                                 me.rerere.rikkahub.workflow.ui.WorkflowsScreen()
                             }
@@ -734,11 +723,7 @@ class RouteActivity : ComponentActivity() {
                                 me.rerere.rikkahub.plugin.ui.PluginDetailPage(
                                     pluginId = key.pluginId,
                                     onNavigateBack = { backStack.removeLastOrNull() },
-                                    onNavigateToCustomPage = { customPage ->
-                                        when (customPage) {
-                                            "memory_bank" -> nav.navigate(Screen.MemoryBank)
-                                        }
-                                    },
+                                    onNavigateToCustomPage = { _ -> },
                                     onNavigateToWebView = { pluginId, entryPath ->
                                         nav.navigate(Screen.PluginWebView(pluginId, entryPath))
                                     },
@@ -776,12 +761,6 @@ class RouteActivity : ComponentActivity() {
                                 GongduPage(
                                     conversationId = key.conversationId,
                                     onNavigateBack = { backStack.removeLastOrNull() },
-                                )
-                            }
-
-                            entry<Screen.MemoryBank> {
-                                MemoryBankPage(
-                                    onBack = { backStack.removeLastOrNull() }
                                 )
                             }
 
@@ -1062,12 +1041,6 @@ sealed interface Screen : NavKey {
     data object SettingExtraInjection : Screen
 
     @Serializable
-    data object SettingWeixinBot : Screen
-
-    @Serializable
-    data object SettingQqBot : Screen
-
-    @Serializable
     data object Health : Screen
 
     @Serializable
@@ -1093,9 +1066,6 @@ sealed interface Screen : NavKey {
 
     @Serializable
     data class PluginDeclarativeUI(val pluginId: String) : Screen
-
-    @Serializable
-    data object MemoryBank : Screen
 
     @Serializable
     data object EmojiPicker : Screen

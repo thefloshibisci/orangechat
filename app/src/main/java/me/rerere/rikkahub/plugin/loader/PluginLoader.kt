@@ -18,7 +18,6 @@ import me.rerere.ai.provider.ProviderSetting
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.datastore.findModelById
 import me.rerere.rikkahub.data.datastore.findProvider
-import me.rerere.rikkahub.data.service.MemoryBankService
 import me.rerere.rikkahub.plugin.data.PluginDataStore
 import me.rerere.rikkahub.plugin.model.PluginInfo
 import me.rerere.rikkahub.plugin.model.resolvePluginConfig
@@ -32,7 +31,6 @@ import kotlin.uuid.Uuid
 class PluginLoader(
     private val context: Context,
     private val okHttpClient: OkHttpClient,
-    private val memoryBankService: MemoryBankService? = null,
     private val settingsStore: SettingsStore? = null
 ) {
  
@@ -66,7 +64,7 @@ class PluginLoader(
             // 为此插件创建独立的 PluginDataStore，并注入沙箱
             val dataStore = PluginDataStore(context, pluginInfo.manifest.id)
 
-            val pluginSandbox = PluginSandbox(context, okHttpClient, memoryBankService, dataStore)
+            val pluginSandbox = PluginSandbox(context, okHttpClient, dataStore)
             sandbox = pluginSandbox
             pluginSandbox.allowedHosts = pluginInfo.manifest.allowedHosts
             pluginSandbox.grantedPermissions = pluginInfo.manifest.permissions

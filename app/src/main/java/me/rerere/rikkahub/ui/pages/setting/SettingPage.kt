@@ -306,18 +306,6 @@ fun SettingPage(vm: SettingVM = koinViewModel()) {
                         headlineContent = { Text("额外注入") },
                     )
                     item(
-                        onClick = { navController.navigate(Screen.SettingWeixinBot) },
-                        leadingContent = { Icon(HugeIcons.MessageMultiple01, null) },
-                        supportingContent = { Text("把微信号变成 AI 入口，扫码登录后用微信收发消息") },
-                        headlineContent = { Text("微信 Bot") },
-                    )
-                    item(
-                        onClick = { navController.navigate(Screen.SettingQqBot) },
-                        leadingContent = { Icon(HugeIcons.Message01, null) },
-                        supportingContent = { Text("填 AppID/Secret，用 QQ 私聊跟 AI 对话") },
-                        headlineContent = { Text("QQ Bot") },
-                    )
-                    item(
                         onClick = { navController.navigate(Screen.Workflows) },
                         leadingContent = { Icon(HugeIcons.SmartPhone01, null) },
                         supportingContent = { Text("Tasker 风格自动化：触发器 + 条件 -> 执行动作，由 AI 编写") },

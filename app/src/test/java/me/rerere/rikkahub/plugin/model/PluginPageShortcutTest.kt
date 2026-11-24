@@ -24,8 +24,8 @@ class PluginPageShortcutTest {
         assertFalse(plugin.copy(manifest = plugin.manifest.copy(customPageWebView = null)).hasPageShortcut())
     }
 
-    @Test fun onlySupportedBuiltInPagesHaveShortcuts() {
-        assertTrue(plugin.copy(manifest = plugin.manifest.copy(customPageWebView = null,
+    @Test fun legacyBuiltInPagesHaveNoShortcuts() {
+        assertFalse(plugin.copy(manifest = plugin.manifest.copy(customPageWebView = null,
             customPage = "memory_bank")).hasPageShortcut())
         assertFalse(plugin.copy(manifest = plugin.manifest.copy(customPageWebView = null,
             customPage = "unknown")).hasPageShortcut())

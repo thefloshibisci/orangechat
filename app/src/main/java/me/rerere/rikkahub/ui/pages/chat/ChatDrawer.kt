@@ -1481,7 +1481,6 @@ private fun openPluginPage(navigator: Navigator, plugin: PluginInfo, conversatio
         manifest.customPageWebView != null -> navigator.navigate(
             Screen.PluginWebView(manifest.id, manifest.customPageWebView.entry, conversationId)
         )
-        manifest.customPage == "memory_bank" -> navigator.navigate(Screen.MemoryBank)
         else -> navigator.navigate(Screen.PluginDetail(manifest.id))
     }
 }

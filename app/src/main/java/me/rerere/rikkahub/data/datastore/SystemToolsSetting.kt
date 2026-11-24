@@ -33,8 +33,6 @@ data class SystemToolsSetting(
     val recentAppUsageContextInjectionEnabled: Boolean = false,
     val screenTextContextInjectionEnabled: Boolean = false,
     val notificationsContextInjectionEnabled: Boolean = false,
-    val memoryContextInjectionEnabled: Boolean = false,
-    val memoryContextInjectionLimit: Int = 3,
     val extraInfoInjectionTimeoutSeconds: Int = 8,
     // Insert a compact elapsed-time marker before messages that follow a long pause.
     // Kept separate from current-time injection so either feature can be used alone.

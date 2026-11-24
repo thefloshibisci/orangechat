@@ -11,7 +11,6 @@ import android.util.Log
 import com.whl.quickjs.wrapper.JSCallFunction
 import com.whl.quickjs.wrapper.QuickJSContext
 import com.whl.quickjs.wrapper.QuickJSObject
-import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -20,7 +19,6 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
-import me.rerere.rikkahub.data.service.MemoryBankService
 import me.rerere.rikkahub.plugin.data.PluginDataStore
 import me.rerere.rikkahub.plugin.webview.MusicPlayerService
 import okhttp3.OkHttpClient
@@ -37,7 +35,6 @@ import java.util.concurrent.TimeUnit
 class PluginSandbox(
     private val context: Context,
     private val okHttpClient: OkHttpClient,
-    private var memoryBankService: MemoryBankService? = null,
     private val dataStore: PluginDataStore? = null
 ) {
  
@@ -721,82 +718,14 @@ var imageAssets = {
     }
  
     /**
-     * 设置记忆库服务引用
-     */
-    fun setMemoryBankService(service: MemoryBankService?) {
-        this.memoryBankService = service
-    }
- 
-    /**
-     * 记忆库桥接
+     * 记忆库桥接已下线：对旧插件固定返回明确错误，避免 JS 抛出未定义异常。
      */
     private fun nativeMemoryBankBridge(action: String, paramsJson: String): String =
         invokeMemoryBankBridge(action, paramsJson)
 
     internal fun invokeMemoryBankBridge(action: String, paramsJson: String): String {
-        if (grantedPermissions.none { it.trim() == "memory_bank" }) {
-            Log.w(TAG, "memoryBankBridge blocked: permission 'memory_bank' not declared")
-            return """{"success":false,"error":"Permission 'memory_bank' is required"}"""
-        }
-        val service = memoryBankService
-        if (service == null) {
-            return """{"success":false,"error":"记忆库服务未初始化"}"""
-        }
-        return try {
-            runBlocking {
-                when (action) {
-                    "recall" -> {
-                        val params = JSONObject(paramsJson)
-                        val query = params.optString("query", "")
-                        val count = params.optInt("count", service.recallCount)
-                        if (query.isBlank()) {
-                            """{"success":false,"error":"query is required"}"""
-                        } else {
-                            val memories = service.recallMemories(query, count)
-                            val memoriesJson = memories.joinToString(",", "[", "]") { mem ->
-                                """{"id":${mem.id},"content":${escapeJson(mem.content)},"type":${escapeJson(mem.type)},"createdAt":${mem.createdAt},"role":${mem.role?.let { escapeJson(it) } ?: "null"}}"""
-                            }
-                            """{"success":true,"memories":$memoriesJson}"""
-                        }
-                    }
-                    "save" -> {
-                        val params = JSONObject(paramsJson)
-                        val content = params.optString("content", "")
-                        if (content.isBlank()) {
-                            """{"success":false,"error":"content is required"}"""
-                        } else {
-                            val memory = service.saveManualMemory(content)
-                            """{"success":true,"id":${memory.id},"content":${escapeJson(memory.content)}}"""
-                        }
-                    }
-                    "search" -> {
-                        val params = JSONObject(paramsJson)
-                        val keyword = params.optString("keyword", "")
-                        val type = params.optString("type", "")
-                        val limit = params.optInt("limit", 20)
-                        val memories = service.searchMemories(keyword, type, limit)
-                        val memoriesJson = memories.joinToString(",", "[", "]") { mem ->
-                            """{"id":${mem.id},"content":${escapeJson(mem.content)},"type":${escapeJson(mem.type)},"createdAt":${mem.createdAt},"role":${mem.role?.let { escapeJson(it) } ?: "null"}}"""
-                        }
-                        """{"success":true,"memories":$memoriesJson}"""
-                    }
-                    "delete" -> {
-                        val params = JSONObject(paramsJson)
-                        val id = params.optInt("id", -1)
-                        if (id < 0) {
-                            """{"success":false,"error":"id is required"}"""
-                        } else {
-                            service.deleteMemory(id)
-                            """{"success":true,"id":$id}"""
-                        }
-                    }
-                    else -> """{"success":false,"error":"unknown action: $action"}"""
-                }
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "MemoryBank bridge action='$action' failed", e)
-            """{"success":false,"error":${escapeJson(e.message ?: "Unknown error")}}"""
-        }
+        Log.w(TAG, "memoryBankBridge blocked: MemoryBank has been removed (action=$action)")
+        return """{"success":false,"error":"MemoryBank has been removed"}"""
     }
  
     /**

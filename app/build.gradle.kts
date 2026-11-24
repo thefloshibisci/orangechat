@@ -277,8 +277,7 @@ dependencies {
     implementation(libs.ktor.client.content.negotiation)
     implementation(libs.ktor.serialization.kotlinx.json)
 
-    // ktor server (NapCat reverse WS)
-    implementation(libs.ktor.server.websockets)
+    // ktor server (embedded web server & Codex OAuth callback)
     implementation(libs.ktor.server.cio)
     implementation(libs.ktor.server.core)
 

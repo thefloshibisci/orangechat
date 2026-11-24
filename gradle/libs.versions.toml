@@ -58,7 +58,6 @@ ucrop = "2.2.11-native"
 haze = "1.7.2"
 uiautomator = "2.3.0"
 benchmarkMacroJunit4 = "1.4.1"
-baselineprofile = "1.4.1"
 profileinstaller = "1.4.1"
 ktor = "3.4.3"
 sqlite-vector = "0.9.92"
@@ -200,4 +199,3 @@ ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
 google-services = { id = "com.google.gms.google-services", version.ref = "google-services" }
 firebase-crashlytics = { id = "com.google.firebase.crashlytics", version.ref = "firebase-crashlytics" }
 android-test = { id = "com.android.test", version.ref = "agp" }
-baselineprofile = { id = "androidx.baselineprofile", version.ref = "baselineprofile" }

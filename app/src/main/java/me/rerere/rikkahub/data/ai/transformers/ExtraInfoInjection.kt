@@ -41,7 +41,6 @@ import me.rerere.rikkahub.data.service.AmapService
 import me.rerere.rikkahub.data.service.AppUsageService
 import me.rerere.rikkahub.data.service.LocationService
 import me.rerere.rikkahub.data.service.LocationInfo
-import me.rerere.rikkahub.data.service.MemoryBankService
 import me.rerere.rikkahub.data.service.RikkaNotificationListenerService
 import me.rerere.rikkahub.data.service.hasNotificationListenerAccess
 import me.rerere.rikkahub.data.ai.tools.local.NotificationListenerHandle
@@ -69,7 +68,6 @@ fun extraInfoMessagePart(content: String): UIMessagePart.Text = UIMessagePart.Te
 
 class ExtraInfoInjectionCollector(
     private val context: Context,
-    private val memoryBankService: MemoryBankService,
 ) {
     // Device context must not enter the shared AI request logging/interceptor chain.
     private val weatherClient = OkHttpClient.Builder()
@@ -135,15 +133,6 @@ class ExtraInfoInjectionCollector(
                 }
             })
             if (option.notificationsContextInjectionEnabled) source("最近通知", ::notifications)
-            if (option.memoryContextInjectionEnabled) {
-                source("相关记忆") {
-                    memories(
-                        assistantId = assistantId,
-                        queryText = queryText,
-                        limit = option.memoryContextInjectionLimit.coerceIn(1, 20),
-                    )
-                }
-            }
         }
         if (items.isEmpty()) {
             coordinates.cancel()
@@ -315,13 +304,6 @@ class ExtraInfoInjectionCollector(
                 if (notification.content.isNotBlank()) append("\n${notification.content}")
             }
         }
-    }
-
-    private suspend fun memories(assistantId: String, queryText: String, limit: Int): String {
-        if (queryText.isBlank()) return ""
-        val memories = memoryBankService.recallScopedMemories(queryText.take(300), assistantId, limit)
-        if (memories.isEmpty()) return "没有找到与本次消息相关的记忆"
-        return memories.joinToString("\n") { "- ${it.content.replace(Regex("\\s+"), " ").take(500)}" }
     }
 
     private fun requireLocationPermission() {

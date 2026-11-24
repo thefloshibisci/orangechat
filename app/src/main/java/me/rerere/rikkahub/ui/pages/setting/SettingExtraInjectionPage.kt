@@ -188,23 +188,7 @@ internal fun ExtraInjectionSettingsContent(
                 })
             }
             item {
-                CardGroup(modifier = Modifier.padding(horizontal = 8.dp), title = { Text("记忆与时限") }, items = buildCardGroupItems {
-                    injectionToggle("相关记忆", option.memoryContextInjectionEnabled, enabled,
-                        "仅当前助手与全局内置记忆，不调用外部 MCP。") { value ->
-                        updateSystemToolsSetting { it.copy(memoryContextInjectionEnabled = value) }
-                    }
-                    item(
-                        headlineContent = {
-                            InjectionSlider(
-                                value = option.memoryContextInjectionLimit,
-                                range = 1..20,
-                                enabled = enabled && option.memoryContextInjectionEnabled,
-                                label = { "记忆条数：$it" },
-                            ) { value ->
-                                updateSystemToolsSetting { it.copy(memoryContextInjectionLimit = value) }
-                            }
-                        },
-                    )
+                CardGroup(modifier = Modifier.padding(horizontal = 8.dp), title = { Text("等待时限") }, items = buildCardGroupItems {
                     item(
                         headlineContent = {
                             InjectionSlider(

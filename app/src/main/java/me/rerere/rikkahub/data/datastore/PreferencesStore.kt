@@ -202,12 +202,6 @@ class SettingsStore(
         val EXTERNAL_MEMORIES = stringPreferencesKey("external_memories")
         val SEREIN_HOOK = stringPreferencesKey("serein_hook")
 
-        // 微信 Bot (iLink 协议)
-        val WECHAT_BOT_SETTING = stringPreferencesKey("wechat_bot_setting")
-
-        // QQ Bot (API v2, WebSocket 网关)
-        val QQ_BOT_SETTING = stringPreferencesKey("qq_bot_setting")
-
         // Mini App
         val MINI_APPS = stringPreferencesKey("mini_apps")
 
@@ -232,8 +226,6 @@ class SettingsStore(
             ASR_PROVIDERS,
             WEB_SERVER_ACCESS_PASSWORD,
             SYSTEM_TOOLS_SETTING,
-            WECHAT_BOT_SETTING,
-            QQ_BOT_SETTING,
             SEREIN_HOOK,
             MINI_APPS,
         )
@@ -380,8 +372,6 @@ class SettingsStore(
                 sponsorAlertDismissedAt = preferences[SPONSOR_ALERT_DISMISSED_AT] ?: 0,
                 systemToolsSetting = preferences.readPlaintextOrMigrate(SYSTEM_TOOLS_SETTING, SystemToolsSetting()) { JsonInstant.decodeFromString(it) },
                 proactiveMessageSetting = runCatching { preferences[PROACTIVE_MESSAGE_SETTING]?.let { JsonInstant.decodeFromString<ProactiveMessageSetting>(it) } }.getOrNull() ?: ProactiveMessageSetting(),
-                wechatBotSetting = preferences.readPlaintextOrMigrate(WECHAT_BOT_SETTING, WechatBotSetting()) { JsonInstant.decodeFromString(it) },
-                qqBotSetting = preferences.readPlaintextOrMigrate(QQ_BOT_SETTING, QqBotSetting()) { JsonInstant.decodeFromString(it) },
                 keepAliveEnabled = preferences[KEEP_ALIVE_ENABLED] == true,
                 externalMemories = emptyList(),
                 sereinHook = preferences.readPlaintextOrMigrate(SEREIN_HOOK, me.rerere.rikkahub.data.serein.SereinHookConfig()) { JsonInstant.decodeFromString(it) },
@@ -737,18 +727,6 @@ class SettingsStore(
                 ) { JsonInstant.encodeToString(settings.systemToolsSetting) }
             }
             preferences[PROACTIVE_MESSAGE_SETTING] = JsonInstant.encodeToString(settings.proactiveMessageSetting)
-            if (canWriteProtected(WECHAT_BOT_SETTING, settings.wechatBotSetting, loadedSettings.wechatBotSetting)) {
-                preferences.putSecretIfChanged(
-                    WECHAT_BOT_SETTING,
-                    settings.wechatBotSetting != previous.wechatBotSetting,
-                ) { JsonInstant.encodeToString(settings.wechatBotSetting) }
-            }
-            if (canWriteProtected(QQ_BOT_SETTING, settings.qqBotSetting, loadedSettings.qqBotSetting)) {
-                preferences.putSecretIfChanged(
-                    QQ_BOT_SETTING,
-                    settings.qqBotSetting != previous.qqBotSetting,
-                ) { JsonInstant.encodeToString(settings.qqBotSetting) }
-            }
             preferences[KEEP_ALIVE_ENABLED] = settings.keepAliveEnabled
             retireExternalMemoryPreferences(preferences)
             if (canWriteProtected(MINI_APPS, settings.miniApps, loadedSettings.miniApps)) {
@@ -945,8 +923,6 @@ data class Settings(
     val sponsorAlertDismissedAt: Int = 0,
     val systemToolsSetting: SystemToolsSetting = SystemToolsSetting(),
     val proactiveMessageSetting: ProactiveMessageSetting = ProactiveMessageSetting(),
-    val wechatBotSetting: WechatBotSetting = WechatBotSetting(),
-    val qqBotSetting: QqBotSetting = QqBotSetting(),
     val keepAliveEnabled: Boolean = false,
     val externalMemories: List<ExternalMemory> = emptyList(),
     val sereinHook: me.rerere.rikkahub.data.serein.SereinHookConfig = me.rerere.rikkahub.data.serein.SereinHookConfig(),

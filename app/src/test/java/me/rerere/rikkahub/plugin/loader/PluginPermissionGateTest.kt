@@ -17,22 +17,16 @@ import org.robolectric.annotation.Config
 @Config(sdk = [28], manifest = Config.NONE, application = Application::class)
 class PluginPermissionGateTest {
     @Test
-    fun `memory bank bridge denies undeclared plugins across all actions`() {
+    fun `memory bank bridge always returns removed regardless of manifest permissions`() {
         val sandbox = PluginSandbox(RuntimeEnvironment.getApplication(), OkHttpClient())
-        listOf("recall", "save", "search", "delete").forEach { action ->
-            val result = JSONObject(sandbox.invokeMemoryBankBridge(action, "{}"))
-            assertFalse(result.getBoolean("success"))
-            assertEquals("Permission 'memory_bank' is required", result.getString("error"))
+        listOf(emptySet(), setOf("memory_bank")).forEach { perms ->
+            sandbox.grantedPermissions = perms
+            listOf("recall", "save", "search", "delete").forEach { action ->
+                val result = JSONObject(sandbox.invokeMemoryBankBridge(action, """{"query":"hi","content":"x"}"""))
+                assertFalse(result.getBoolean("success"))
+                assertEquals("MemoryBank has been removed", result.getString("error"))
+            }
         }
-    }
-
-    @Test
-    fun `memory bank bridge passes permission gate when declared`() {
-        val sandbox = PluginSandbox(RuntimeEnvironment.getApplication(), OkHttpClient())
-        sandbox.grantedPermissions = setOf("  memory_bank  ")
-        val result = JSONObject(sandbox.invokeMemoryBankBridge("recall", """{"query":"hi"}"""))
-        assertFalse(result.getBoolean("success"))
-        assertFalse(result.getString("error").contains("Permission 'memory_bank' is required"))
     }
 
     @Test
@@ -40,6 +34,5 @@ class PluginPermissionGateTest {
         assertFalse(hasPluginPermission(emptyList(), "overlay"))
         assertFalse(hasPluginPermission(listOf("conversation_sync", "overlay_extra"), "overlay"))
         assertTrue(hasPluginPermission(listOf("  overlay "), "overlay"))
-        assertTrue(hasPluginPermission(listOf("memory_bank"), "memory_bank"))
     }
 }

@@ -191,14 +191,8 @@ fun PluginDetailPage(
             } else if (plugin.manifest.customPage != null) {
                 val customPage = plugin.manifest.customPage
                 CustomPageEntry(
-                    label = when (customPage) {
-                        "memory_bank" -> "记忆库管理"
-                        else -> "管理页面"
-                    },
-                    description = when (customPage) {
-                        "memory_bank" -> "查看、搜索和管理记忆库中的记忆数据"
-                        else -> "打开插件专属管理页面"
-                    },
+                    label = "管理页面",
+                    description = "打开插件专属管理页面",
                     onClick = { onNavigateToCustomPage(customPage) }
                 )
                 Spacer(modifier = Modifier.height(24.dp))

@@ -43,7 +43,7 @@ data class PluginInfo(
 ) {
     // Runtime errors must not hide the page used to configure or repair a plugin.
     fun hasPageShortcut(): Boolean = isEnabled && with(manifest) {
-        ui != null || customPageWebView != null || customPage == "memory_bank"
+        ui != null || customPageWebView != null
     }
 
     /**

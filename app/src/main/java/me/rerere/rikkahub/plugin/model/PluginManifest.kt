@@ -61,9 +61,8 @@ data class PluginManifest(
     val config: List<PluginConfigField> = emptyList(),
 
     /**
-     * 内置页面标识，用于插件提供专属管理页面
-     * 支持: "memory_bank" - 记忆库管理页面
-     * 当 customPageWebView 非空时，此字段忽略
+     * 内置页面标识（历史预留字段）
+     * 当 ui 或 customPageWebView 非空时，此字段忽略
      */
     val customPage: String? = null,
 
@@ -102,7 +101,6 @@ data class PluginManifest(
      * - "ai_chat": 允许插件调用 AI 生成文本（Bridge.callAI）
      * - "provider_credentials": 允许 QuickJS 插件读取所选模型的 API key 配置（谨慎授予）
      * - "conversation_sync": 允许读取当前助手会话列表或向会话发送消息
-     * - "memory_bank": 允许 QuickJS 插件查询、保存或删除记忆库内容（默认关闭）
      * - "overlay": 允许自定义 WebView 页面弹出系统悬浮窗与番茄钟（默认关闭）
      * - "disable_native_selection": 禁用 WebView 原生长按选择菜单，由 JS 自行处理选区
      */

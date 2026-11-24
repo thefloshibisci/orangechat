@@ -68,7 +68,6 @@ import me.rerere.ai.core.ReasoningLevel
 import me.rerere.ai.core.Tool
 import me.rerere.ai.provider.Model
 import me.rerere.ai.provider.ModelAbility
-import me.rerere.rikkahub.data.service.MemoryBankService
 import me.rerere.rikkahub.data.service.acceptsWindow
 import me.rerere.ai.provider.ProviderManager
 import me.rerere.ai.provider.TextGenerationParams
@@ -281,7 +280,6 @@ class ChatService(
     private val pluginToolProvider: PluginToolProvider,
     private val pluginLoader: PluginLoader,
     private val workspaceRepository: WorkspaceRepository,
-    private val memoryBankService: MemoryBankService,
     private val folderRepository: FolderRepository,
     private val extraInfoInjectionCollector: ExtraInfoInjectionCollector,
     private val sereinHookRepository: me.rerere.rikkahub.data.serein.SereinHookRepository,

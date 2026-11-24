@@ -35,7 +35,6 @@ import me.rerere.rikkahub.data.db.fts.ensureMessageFtsLookup
 import me.rerere.rikkahub.data.db.fts.MessageFtsManager
 import me.rerere.rikkahub.data.db.fts.SimpleDictManager
 import me.rerere.rikkahub.data.ai.mcp.McpManager
-import me.rerere.rikkahub.data.service.MemoryBankService
 import me.rerere.rikkahub.data.interaction.ChatInteractionRepository
 import me.rerere.rikkahub.data.sync.webdav.WebDavSync
 import me.rerere.search.SearchService
@@ -144,10 +143,6 @@ val dataSourceModule = module {
     }
 
     single {
-        get<AppDatabase>().memoryBankDao()
-    }
-
-    single {
         get<AppDatabase>().workspaceDao()
     }
 
@@ -161,14 +156,6 @@ val dataSourceModule = module {
 
     single { McpManager(settingsStore = get(), appScope = get(), filesManager = get(), appEventBus = get()) }
 
-    single {
-        MemoryBankService(
-            memoryBankDAO = get(),
-            okHttpClient = get(),
-            context = get()
-        )
-    }
-
     single { ChatInteractionRepository(get(), get()) }
 
     single {
@@ -179,7 +166,6 @@ val dataSourceModule = module {
             memoryRepo = get(),
             conversationRepo = get(),
             aiLoggingManager = get(),
-            memoryBankService = get(),
             filesManager = get(),
             chatInteractionRepository = get(),
             localScenes = get(),

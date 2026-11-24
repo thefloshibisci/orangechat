@@ -59,7 +59,6 @@ import me.rerere.rikkahub.data.video.withTransientRequestAudio
 import me.rerere.rikkahub.data.ai.tools.buildMemoryTools
 import me.rerere.rikkahub.data.ai.tools.buildWriteFilesTool
 import me.rerere.rikkahub.data.datastore.Settings
-import me.rerere.rikkahub.data.service.MemoryBankService
 import me.rerere.rikkahub.data.datastore.findModelById
 import me.rerere.rikkahub.data.datastore.findProvider
 import me.rerere.rikkahub.data.model.Assistant
@@ -95,7 +94,6 @@ class GenerationHandler(
     private val memoryRepo: MemoryRepository,
     private val conversationRepo: ConversationRepository,
     private val aiLoggingManager: AILoggingManager,
-    private val memoryBankService: MemoryBankService,
     private val filesManager: me.rerere.rikkahub.data.files.FilesManager,
     private val chatInteractionRepository: ChatInteractionRepository,
     private val localScenes: me.rerere.rikkahub.data.serein.LocalSceneRepository,
