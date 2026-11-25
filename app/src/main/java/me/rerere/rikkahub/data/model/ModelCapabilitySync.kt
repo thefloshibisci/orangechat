@@ -50,11 +50,13 @@ class ModelCapabilitySync(
     val state = stateMutable.asStateFlow()
     @Volatile private var catalog: ModelCapabilityCatalog? = null
     private var lastAttemptAt = 0L
-    private val client = OkHttpClient.Builder()
-        .connectTimeout(10, TimeUnit.SECONDS)
-        .readTimeout(20, TimeUnit.SECONDS)
-        .callTimeout(30, TimeUnit.SECONDS)
-        .build()
+    private val client by lazy {
+        OkHttpClient.Builder()
+            .connectTimeout(10, TimeUnit.SECONDS)
+            .readTimeout(20, TimeUnit.SECONDS)
+            .callTimeout(30, TimeUnit.SECONDS)
+            .build()
+    }
 
     fun start(scope: CoroutineScope) {
         if (!started.compareAndSet(false, true)) return

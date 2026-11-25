@@ -20,7 +20,7 @@ import java.io.IOException
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 
-internal class SereinObservationClient(private val http: OkHttpClient = OkHttpClient()) {
+internal class SereinObservationClient(private val http: OkHttpClient = SereinHttp.client) {
     suspend fun send(config: SereinHookConfig, row: SereinObservation): String? {
         val root = config.rootUrl() ?: return "invalid_config"
         val call = http.newBuilder().followRedirects(false).followSslRedirects(false).retryOnConnectionFailure(false)
@@ -80,7 +80,7 @@ object SereinObservationScheduler : KoinComponent {
                 .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS).build())
     }
     fun start(context: Context) = get<AppScope>().launch(Dispatchers.IO) {
-        get<SettingsStore>().settingsFlow.filter { !it.init }.map { it.sereinHook }.distinctUntilChanged().collectLatest { config ->
+        get<SettingsStore>().sereinHookFlow.collectLatest { config ->
             val manager = WorkManager.getInstance(context)
             if (!config.usableBy(config.assistantId)) {
                 manager.cancelUniqueWork(NOW); manager.cancelUniqueWork(PERIODIC)

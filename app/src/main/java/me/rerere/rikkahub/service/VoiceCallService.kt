@@ -7,22 +7,17 @@
 package me.rerere.rikkahub.service
 
 import me.rerere.tts.model.SpeechMarkup
-import me.rerere.tts.provider.speechDeliveryPrompt
 import me.rerere.rikkahub.data.datastore.getSelectedTTSProvider
 
 import me.rerere.rikkahub.data.sync.isChatRecoveryBlocking
 import android.app.NotificationManager
-import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
-import android.media.AudioDeviceInfo
-import android.media.AudioManager
 import android.content.pm.ServiceInfo
 import android.os.Binder
 import android.os.IBinder
 import android.util.Log
-import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CoroutineExceptionHandler
@@ -73,9 +68,6 @@ import me.rerere.rikkahub.data.video.VideoVoiceStatus
 import me.rerere.rikkahub.data.video.VideoVoiceUiState
 import me.rerere.rikkahub.data.video.directSegmentResult
 import me.rerere.rikkahub.data.video.VoiceCallTurnGate
-import me.rerere.rikkahub.R
-import me.rerere.rikkahub.RouteActivity
-import me.rerere.rikkahub.VOICE_CALL_NOTIFICATION_CHANNEL_ID
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.ui.hooks.CustomAsrState
@@ -493,9 +485,7 @@ class VoiceCallService : Service(), KoinComponent {
 
     // 静音状态 (独立于 _uiState.isMuted, 检测循环里直接读这个字段更快)
     private var isMuted: Boolean = false
-    private var initialAudioMode: Int? = null
-    private var initialSpeakerphoneOn = false
-    private var initialCommunicationDevice: AudioDeviceInfo? = null
+    private val audioRouter by lazy { VoiceCallAudioRouter(this) }
 
     companion object {
         private val _startedAtMillis = MutableStateFlow(0L)
@@ -2244,56 +2234,28 @@ class VoiceCallService : Service(), KoinComponent {
         }
     }
 
-    /**
-     * 本轮的 system prompt。
-     *
-     * [actual] 是这一轮真实带了附件（手动夹帧、自动抓帧、音频）时用的版本；
-     * [withoutTransientAttachments] 是**同一轮**在"本轮临时附件"（临时图或临时录音）被摘掉
-     * 之后改用（队列暂停会让临时附件失效）。永久手动夹帧仍然在 parts 里，所以那个变体按
-     * [permanentPicture] 重新算"有没有图"，音频一律算没有。
-     */
-    private data class TurnSystemPrompts(
-        val actual: String?,
-        val withoutTransientAttachments: String?,
-        val withoutCamera: String? = null,
-    )
-
     private fun callSystemPrompts(
         pictureAttached: Boolean,
         audioAttached: Boolean,
         permanentPicture: Boolean = false,
         hasTransientAttachment: Boolean = false,
-    ): TurnSystemPrompts {
-        val speech = speechDeliveryPrompt(settingsStore.settingsFlow.value.getSelectedTTSProvider())
-        fun join(videoPrompt: String?): String? = listOfNotNull(
-            speech.takeIf { it.isNotBlank() },
-            videoPrompt?.takeIf { it.isNotBlank() },
-        ).joinToString("\n\n").ifBlank { null }
+    ): TurnSystemPrompts = buildCallSystemPrompts(
+        ttsProvider = settingsStore.settingsFlow.value.getSelectedTTSProvider(),
+        coordinator = video,
+        pictureAttached = pictureAttached,
+        audioAttached = audioAttached,
+        permanentPicture = permanentPicture,
+        hasTransientAttachment = hasTransientAttachment,
+    )
 
-        // 语音通话原有的 system prompt（朗读风格），视频模式下再叠加视频上下文。
-        val coordinator = video ?: return TurnSystemPrompts(join(null), null)
-        // 本轮的备注只被"真实版本"消费一次；降级变体不再重复取用。
-        val withAttachments = coordinator.turnContext(
-            pictureAttached = pictureAttached,
-            includeTurnNotes = true,
-            audioAttached = audioAttached,
-        )
-        val degraded = if (hasTransientAttachment) {
-            coordinator.turnContext(
-                pictureAttached = permanentPicture,
-                includeTurnNotes = false,
-                audioAttached = false,
-            )
-        } else {
-            null
-        }
-        val withoutCamera = coordinator.turnContext(
-            pictureAttached = permanentPicture, includeTurnNotes = false,
-            audioAttached = audioAttached, cameraRevoked = true,
-        )
-        return TurnSystemPrompts(join(withAttachments), join(degraded), join(withoutCamera))
-    }
-
+    private data class VoiceCallRouteKey(
+        val providers: List<me.rerere.ai.provider.ProviderSetting>,
+        val assistants: List<me.rerere.rikkahub.data.model.Assistant>,
+        val asrProviders: List<me.rerere.asr.ASRProviderSetting>,
+        val selectedASRProviderId: Uuid?,
+        val chatModelId: Uuid,
+        val videoCallSetting: me.rerere.rikkahub.data.video.VideoCallSetting,
+    )
 
     /**
      * 监听对话流变化, 实现:
@@ -2308,7 +2270,19 @@ class VoiceCallService : Service(), KoinComponent {
             // 无条件刷新会把一次性的提示（例如"没有识别到内容，请重新录一段"）在每次
             // settings 发射时清回 Idle，用户就再也看不到失败原因了。
             var lastAvailability: me.rerere.rikkahub.data.video.VideoVoiceAvailability? = null
-            combine(conversation, settingsStore.settingsFlow) { conv, _ -> conv }.collect { conv ->
+            combine(
+                conversation,
+                settingsStore.settingsFlow.map {
+                    VoiceCallRouteKey(
+                        providers = it.providers,
+                        assistants = it.assistants,
+                        asrProviders = it.asrProviders,
+                        selectedASRProviderId = it.selectedASRProviderId,
+                        chatModelId = it.chatModelId,
+                        videoCallSetting = it.videoCallSetting,
+                    )
+                }.distinctUntilChanged(),
+            ) { conv, _ -> conv }.collect { conv ->
                 // Route follows this conversation's model/provider and current settings while idle.
                 // Active recordings retain their frozen route until they finish or are cancelled.
                 val availability = runCatching { videoVoiceAvailability() }.getOrNull()
@@ -2672,33 +2646,12 @@ class VoiceCallService : Service(), KoinComponent {
     }
 
     fun toggleSpeaker() {
-        val audioManager = getSystemService(AudioManager::class.java) ?: return
         val enableSpeaker = !_uiState.value.isSpeakerOn
-        try {
-            if (initialAudioMode == null) {
-                initialAudioMode = audioManager.mode
-                @Suppress("DEPRECATION")
-                run { initialSpeakerphoneOn = audioManager.isSpeakerphoneOn }
+        audioRouter.setSpeakerEnabled(enableSpeaker).onSuccess { applied ->
+            if (applied != null) {
+                _uiState.update { it.copy(isSpeakerOn = applied, errorMessage = null) }
             }
-            audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
-                if (initialCommunicationDevice == null) initialCommunicationDevice = audioManager.communicationDevice
-                val targetType = if (enableSpeaker) AudioDeviceInfo.TYPE_BUILTIN_SPEAKER else AudioDeviceInfo.TYPE_BUILTIN_EARPIECE
-                val device = if (enableSpeaker) {
-                    audioManager.availableCommunicationDevices.firstOrNull { it.type == targetType }
-                } else {
-                    initialCommunicationDevice?.takeIf { it.type == targetType }
-                        ?: audioManager.availableCommunicationDevices.firstOrNull { it.type == targetType }
-                }
-                check(device != null && audioManager.setCommunicationDevice(device)) {
-                    if (enableSpeaker) "扬声器当前不可用" else "听筒当前不可用"
-                }
-            } else {
-                @Suppress("DEPRECATION")
-                run { audioManager.isSpeakerphoneOn = enableSpeaker }
-            }
-            _uiState.update { it.copy(isSpeakerOn = enableSpeaker, errorMessage = null) }
-        } catch (error: Exception) {
+        }.onFailure { error ->
             _uiState.update { it.copy(errorMessage = error.message ?: "切换扬声器失败") }
         }
     }
@@ -2857,18 +2810,7 @@ class VoiceCallService : Service(), KoinComponent {
     }
 
     private fun restoreCallAudioRoute() {
-        val audioManager = getSystemService(AudioManager::class.java) ?: return
-        runCatching {
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
-                audioManager.clearCommunicationDevice()
-                initialCommunicationDevice = null
-            } else if (initialAudioMode != null) {
-                @Suppress("DEPRECATION")
-                run { audioManager.isSpeakerphoneOn = initialSpeakerphoneOn }
-            }
-            initialAudioMode?.let { audioManager.mode = it }
-            initialAudioMode = null
-        }.onFailure { Log.w(TAG, "恢复通话音频路由失败", it) }
+        audioRouter.restore()
     }
 
     /**
@@ -2953,46 +2895,14 @@ class VoiceCallService : Service(), KoinComponent {
     /**
      * 构建通话通知. 通话中这种更醒目、带操作按钮的通知.
      */
-    private fun buildNotification(state: VoiceCallUiState): android.app.Notification {
-        val contentText = when (state.status) {
-            // 视频通话是手动采音，"聆听"会误以为麦克风一直在录。
-            VoiceCallStatus.Listening -> if (videoMode) "通话中" else "正在聆听..."
-            VoiceCallStatus.Processing -> "正在思考..."
-            VoiceCallStatus.Speaking -> "正在说话..."
-            VoiceCallStatus.Error -> state.errorMessage ?: "通话出错"
-            VoiceCallStatus.Idle -> "通话中"
-        }
-
-        // 点击通知本体: 回到 RouteActivity 并导航到 VoiceCallPage
-        val contentIntent = PendingIntent.getActivity(
-            this,
-            conversationId.hashCode(),
-            Intent(this, RouteActivity::class.java).apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-                putExtra("openVoiceCallConversationId", conversationId.toString())
-            },
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+    private fun buildNotification(state: VoiceCallUiState): android.app.Notification =
+        buildVoiceCallNotification(
+            context = this,
+            conversationId = conversationId,
+            videoMode = videoMode,
+            state = state,
+            hangUpAction = ACTION_HANG_UP,
         )
-
-        // 通知上的"挂断"按钮: 直接发一个带 ACTION_HANG_UP 的 Intent 给自己这个 Service
-        val hangUpIntent = PendingIntent.getService(
-            this,
-            0,
-            Intent(this, VoiceCallService::class.java).apply { action = ACTION_HANG_UP },
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-        )
-
-        return NotificationCompat.Builder(this, VOICE_CALL_NOTIFICATION_CHANNEL_ID)
-            .setContentTitle(if (videoMode) "视频通话" else "语音通话")
-            .setContentText(contentText)
-            .setSmallIcon(R.drawable.small_icon)
-            .setOngoing(true)
-            .setOnlyAlertOnce(true)
-            .setContentIntent(contentIntent)
-            .addAction(0, "挂断", hangUpIntent)
-            .setCategory(NotificationCompat.CATEGORY_CALL)
-            .build()
-    }
 
     override fun onDestroy() {
         super.onDestroy()

@@ -34,12 +34,13 @@ private class ManagerGongduTransport(private val mcp: McpManager) : GongduTransp
 class GongduRepository(private val store: SettingsStore, private val transport: GongduTransport, scope: AppScope) {
     constructor(store: SettingsStore, mcp: McpManager, scope: AppScope) : this(store, ManagerGongduTransport(mcp), scope)
     private val lock = Mutex()
-    val setting = store.settingsFlow.map { it.gongdu }.stateIn(scope, SharingStarted.Eagerly, store.settingsFlow.value.gongdu)
+    val setting = store.settingsFlow.map { it.gongdu }.distinctUntilChanged()
+        .stateIn(scope, SharingStarted.Eagerly, store.settingsFlow.value.gongdu)
     val configuration = store.settingsFlow.map { settings ->
         val server = settings.mcpServers.find { it.id == settings.gongdu.serverId } as? McpServerConfig.StreamableHTTPServer
         GongduConfiguration(server?.url.orEmpty(), server?.commonOptions?.headers
             ?.firstOrNull { it.first.equals("Authorization", true) }?.second?.removePrefix("Bearer ").orEmpty())
-    }.stateIn(scope, SharingStarted.Eagerly, GongduConfiguration())
+    }.distinctUntilChanged().stateIn(scope, SharingStarted.Eagerly, GongduConfiguration())
     val status = MutableStateFlow("尚未连接")
     val connected = MutableStateFlow(false)
 

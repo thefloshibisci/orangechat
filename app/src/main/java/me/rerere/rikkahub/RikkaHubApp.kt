@@ -26,11 +26,8 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.runBlocking
 import me.rerere.common.android.appTempFolder
-import com.whl.quickjs.android.QuickJSLoader
 import me.rerere.rikkahub.di.appModule
 import me.rerere.rikkahub.di.dataSourceModule
 import me.rerere.rikkahub.di.repositoryModule
@@ -146,23 +143,6 @@ class RikkaHubApp : Application() {
     private fun initializeAfterRecovery() {
         this.createNotificationChannel()
 
-        // 恢复结束后在主线程预热 ChatService，界面与后台任务仍在等待启动门禁。
-        // 原因: ChatService.init 里有 ProcessLifecycleOwner
-        // 的 addObserver, 该 API 强制要求主线程; 而 ChatService 是 Koin 普通 single
-        // (懒汉式), 默认在"首次注入它的调用者所在线程"构造。进程冷启动后, 若第一个
-        // 访问 chatService 的是 ProactiveMessageTriggerService(它在自己的
-        // Dispatchers.IO 协程里首次访问), 就会在后台线程构造并抛
-        // "addObserver must be called on the main thread" 崩溃。这里预热后, 任何
-        // 后续入口(主动消息/语音通话/WebServer/新功能)拿到的都是已在主线程建好的现成单例。
-        // 必须放在 startWebServerIfEnabled() 之前, 因为后者会间接触发 WebServerManager
-        // -> chatService 解析链。
-        runCatching { get<ChatService>() }.onFailure { e ->
-            android.util.Log.e(TAG, "Failed to pre-warm ChatService singleton", e)
-        }
-
-        // Init QuickJS native library
-        QuickJSLoader.init()
-
         // delete temp files
         deleteTempFiles()
 
@@ -178,9 +158,7 @@ class RikkaHubApp : Application() {
         me.rerere.rikkahub.data.serein.SereinUploadScheduler.start(this)
         me.rerere.rikkahub.data.serein.SereinObservationScheduler.start(this)
         get<AppScope>().launch {
-            get<SettingsStore>().settingsFlowRaw
-                .map { it.autoBackupConfig.scheduleConfig() }
-                .distinctUntilChanged()
+            get<SettingsStore>().selectRaw { it.autoBackupConfig.scheduleConfig() }
                 .collect {
                     runCatching { me.rerere.rikkahub.data.sync.AutoBackupScheduler.schedule(this@RikkaHubApp) }
                         .onFailure { Log.e(TAG, "Unable to schedule automatic backup", it) }
@@ -193,9 +171,6 @@ class RikkaHubApp : Application() {
         // Reschedule proactive message alarm if enabled
         rescheduleProactiveMessageIfEnabled()
 
-        runCatching { me.rerere.rikkahub.data.service.retireLegacyDeviceSync(this) }
-            .onFailure { Log.w(TAG, "Unable to retire legacy device uploader", it) }
-
         // Start workflow trigger registry (event-driven automation)
         startWorkflowTriggers()
 
@@ -205,11 +180,13 @@ class RikkaHubApp : Application() {
         // Start App Lock guard (intercepts locked apps when opened) if any app is locked
         startAppLockGuardIfEnabled()
 
-        // 激进模式已退役：迁移期间主动停止旧版本遗留的常驻服务。
-        stopLegacyAggressiveMode()
-
-        // Reschedule daily_cron alarm if plugins need it
-        rescheduleDailyCronIfEnabled()
+        // Non-critical startup housekeeping & legacy cleanup off the main thread.
+        get<AppScope>().launch(Dispatchers.IO) {
+            runCatching { me.rerere.rikkahub.data.service.retireLegacyDeviceSync(this@RikkaHubApp) }
+                .onFailure { Log.w(TAG, "Unable to retire legacy device uploader", it) }
+            stopLegacyAggressiveMode()
+            rescheduleDailyCronIfEnabled()
+        }
 
         // Diary summary is now generated entirely by Supabase Edge Function.
         // App no longer schedules local diary summary alarms.
@@ -224,8 +201,13 @@ class RikkaHubApp : Application() {
         get<AppScope>().launch {
             runCatching {
                 val store = get<SettingsStore>()
-                store.update { current -> current.copy(launchCount = current.launchCount + 1) }
-                Log.i(TAG, "incrementLaunchCount: ${store.settingsFlowRaw.first().launchCount}")
+                var updatedCount = 0
+                store.update { current ->
+                    val next = current.launchCount + 1
+                    updatedCount = next
+                    current.copy(launchCount = next)
+                }
+                Log.i(TAG, "incrementLaunchCount: $updatedCount")
             }.onFailure {
                 Log.e(TAG, "incrementLaunchCount failed", it)
             }

@@ -15,7 +15,7 @@ data class HookRecall(val context: String = "", val ids: List<String> = emptyLis
 
 /** Dedicated client: no chat logging interceptors, no redirects carrying the instance-wide key. */
 class SereinHookClient internal constructor(private val client: OkHttpClient) {
-    constructor() : this(OkHttpClient.Builder().build())
+    constructor() : this(SereinHttp.client)
 
     suspend fun testConnection(config: SereinHookConfig): HookRecall = request(
         config, "Serein connection test: synthetic memory check", "orangechat-connection-test", emptyList(), maxNotes = 0,

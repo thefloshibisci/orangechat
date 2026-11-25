@@ -13,7 +13,7 @@ internal data class UploadResult(val status: String, val error: String = "")
 
 /** No request logging, redirects, or hidden retries carrying original text or bearer credentials. */
 class SereinUploadClient internal constructor(private val http: OkHttpClient) {
-    constructor() : this(OkHttpClient.Builder().build())
+    constructor() : this(SereinHttp.client)
 
     internal suspend fun send(config: SereinHookConfig, row: SereinUpload): UploadResult {
         val root = config.rootUrl() ?: return UploadResult("retry", "invalid_config")

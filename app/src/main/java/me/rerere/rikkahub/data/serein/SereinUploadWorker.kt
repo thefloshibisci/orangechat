@@ -63,7 +63,7 @@ object SereinUploadScheduler : KoinComponent {
     /** One indexed count observer while opted in; no per-button or per-stream upload task. */
     @OptIn(ExperimentalCoroutinesApi::class)
     fun start(context: Context) = get<AppScope>().launch(Dispatchers.IO) {
-        get<SettingsStore>().settingsFlow.filter { !it.init }.map { it.sereinHook }.distinctUntilChanged()
+        get<SettingsStore>().sereinHookFlow
             .collectLatest { config ->
                 val manager = WorkManager.getInstance(context)
                 if (!config.uploadsFor(config.assistantId)) {

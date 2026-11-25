@@ -72,6 +72,7 @@ class PluginSandbox(
     fun initialize() {
         if (quickJSContext != null) return
  
+        me.rerere.rikkahub.utils.QuickJsRuntime.ensureInitialized()
         Log.d(TAG, "Initializing QuickJS sandbox")
         quickJSContext = QuickJSContext.create().apply {
  

@@ -24,9 +24,11 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import androidx.datastore.preferences.preferencesDataStoreFile
 import io.pebbletemplates.pebble.PebbleEngine
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -235,6 +237,7 @@ class SettingsStore(
     private val updateMutex = Mutex()
     private val legacyMemoryRetirement = LegacyExternalMemoryRetirement()
     private val protectedDecodeCache = ProtectedSettingsDecodeCache()
+    private val plainJsonDecodeCache = ProtectedSettingsDecodeCache()
 
     init {
         // Upgrade existing plaintext secrets in the background. The read path below still
@@ -281,15 +284,15 @@ class SettingsStore(
             }
         }.map { preferences ->
             Settings(
-                gongdu = preferences[GONGDU_SETTING]?.let {
-                    runCatching { JsonInstant.decodeFromString<me.rerere.rikkahub.data.gongdu.GongduSetting>(it) }.getOrNull()
-                } ?: me.rerere.rikkahub.data.gongdu.GongduSetting(),
+                gongdu = preferences.readCachedJson(GONGDU_SETTING, me.rerere.rikkahub.data.gongdu.GongduSetting()) {
+                    JsonInstant.decodeFromString(it)
+                },
                 disclaimerAccepted = preferences[DISCLAIMER_ACCEPTED] == true,
                 disclaimerAcceptedAt = preferences[DISCLAIMER_ACCEPTED_AT] ?: 0,
                 enableWebSearch = preferences[ENABLE_WEB_SEARCH] == true,
-                favoriteModels = preferences[FAVORITE_MODELS]?.let {
+                favoriteModels = preferences.readCachedJson(FAVORITE_MODELS, emptyList()) {
                     JsonInstant.decodeFromString(it)
-                } ?: emptyList(),
+                },
                 chatModelId = preferences[SELECT_MODEL]?.let { Uuid.parse(it) }
                     ?: DEFAULT_AUTO_MODEL_ID,
                 titleModelId = preferences[TITLE_MODEL]?.let { Uuid.parse(it) }
@@ -298,7 +301,8 @@ class SettingsStore(
                     ?: DEFAULT_AUTO_MODEL_ID,
                 suggestionModelId = preferences[SUGGESTION_MODEL]?.let { Uuid.parse(it) }
                     ?: DEFAULT_AUTO_MODEL_ID,
-                imageGenerationModelId = preferences[IMAGE_GENERATION_MODEL]?.let { Uuid.parse(it) } ?: Uuid.random(),
+                imageGenerationModelId = preferences[IMAGE_GENERATION_MODEL]?.let { Uuid.parse(it) }
+                    ?: DEFAULT_IMAGE_GENERATION_MODEL_ID,
                 imageGenerationAspectRatio = preferences[IMAGE_GENERATION_ASPECT_RATIO]
                     ?.let { saved -> ImageAspectRatio.entries.firstOrNull { it.name == saved } }
                     ?: ImageAspectRatio.SQUARE,
@@ -306,30 +310,37 @@ class SettingsStore(
                 translatePrompt = preferences[TRANSLATION_PROMPT] ?: DEFAULT_TRANSLATION_PROMPT,
                 translateThinkingBudget = preferences[TRANSLATE_THINKING_BUDGET] ?: 0,
                 suggestionPrompt = preferences[SUGGESTION_PROMPT] ?: DEFAULT_SUGGESTION_PROMPT,
-                ocrModelId = preferences[OCR_MODEL]?.let { Uuid.parse(it) } ?: Uuid.random(),
+                ocrModelId = preferences[OCR_MODEL]?.let { Uuid.parse(it) }
+                    ?: DEFAULT_OCR_MODEL_ID,
                 ocrPrompt = preferences[OCR_PROMPT] ?: DEFAULT_OCR_PROMPT,
                 compressModelId = preferences[COMPRESS_MODEL]?.let { Uuid.parse(it) },
                 compressPrompt = resolveCompressPrompt(preferences[COMPRESS_PROMPT] ?: DEFAULT_COMPRESS_PROMPT),
                 assistantId = preferences[SELECT_ASSISTANT]?.let { Uuid.parse(it) }
                     ?: DEFAULT_ASSISTANT_ID,
-                assistantTags = preferences[ASSISTANT_TAGS]?.let {
+                assistantTags = preferences.readCachedJson(ASSISTANT_TAGS, emptyList()) {
                     JsonInstant.decodeFromString(it)
-                } ?: emptyList(),
+                },
                 providers = preferences.readPlaintextOrMigrate(PROVIDERS, emptyList()) { JsonInstant.decodeFromString(it) },
                 assistants = preferences.readPlaintextOrMigrate(ASSISTANTS, emptyList()) { JsonInstant.decodeFromString(it) },
                 dynamicColor = preferences[DYNAMIC_COLOR] != false,
                 themeId = preferences[THEME_ID] ?: PresetThemes[0].id,
-                customThemes = runCatching { preferences[CUSTOM_THEMES]?.let { JsonInstant.decodeFromString<List<CustomTheme>>(it) } }.getOrNull() ?: emptyList(),
+                customThemes = preferences.readCachedJson(CUSTOM_THEMES, emptyList()) {
+                    JsonInstant.decodeFromString(it)
+                },
                 developerMode = preferences[DEVELOPER_MODE] == true,
-                customReactionPresets = runCatching {
-                    preferences[CUSTOM_REACTION_PRESETS]?.let { JsonInstant.decodeFromString<List<String>>(it) }
-                }.getOrNull()?.let(::normalizeCustomChatReactionPresets).orEmpty(),
-                displaySetting = runCatching { JsonInstant.decodeFromString<DisplaySetting>(preferences[DISPLAY_SETTING] ?: "{}") }.getOrElse { DisplaySetting() },
+                customReactionPresets = preferences.readCachedJson(CUSTOM_REACTION_PRESETS, emptyList()) {
+                    normalizeCustomChatReactionPresets(JsonInstant.decodeFromString(it))
+                },
+                displaySetting = preferences.readCachedJson(DISPLAY_SETTING, DisplaySetting()) {
+                    JsonInstant.decodeFromString(it)
+                },
                 searchServices = preferences.readPlaintextOrMigrate<List<SearchServiceOptions>>(
                     SEARCH_SERVICES,
                     listOf<SearchServiceOptions>(SearchServiceOptions.DEFAULT),
                 ) { JsonInstant.decodeFromString(it) },
-                searchCommonOptions = runCatching { preferences[SEARCH_COMMON]?.let { JsonInstant.decodeFromString<SearchCommonOptions>(it) } }.getOrNull() ?: SearchCommonOptions(),
+                searchCommonOptions = preferences.readCachedJson(SEARCH_COMMON, SearchCommonOptions()) {
+                    JsonInstant.decodeFromString(it)
+                },
                 searchServiceSelected = preferences[SEARCH_SELECTED] ?: 0,
                 mcpServers = preferences.readPlaintextOrMigrate(MCP_SERVERS, emptyList()) { JsonInstant.decodeFromString(it) },
                 webDavConfig = preferences.readPlaintextOrMigrate(WEBDAV_CONFIG, WebDavConfig()) { JsonInstant.decodeFromString(it) },
@@ -340,11 +351,8 @@ class SettingsStore(
                 asrProviders = preferences.readPlaintextOrMigrate(ASR_PROVIDERS, emptyList()) { JsonInstant.decodeFromString(it) },
                 selectedASRProviderId = preferences[SELECTED_ASR_PROVIDER]?.let { Uuid.parse(it) },
                 voiceCallKeepListeningDuringReply = preferences[VOICE_CALL_KEEP_LISTENING_DURING_REPLY] ?: true,
-                videoCallSetting = runCatching {
-                    preferences[VIDEO_CALL_SETTING]?.let {
-                        JsonInstant.decodeFromString<me.rerere.rikkahub.data.video.VideoCallSetting>(it)
-                    }
-                }.getOrNull()?.let { stored ->
+                videoCallSetting = preferences.readCachedJson(VIDEO_CALL_SETTING, me.rerere.rikkahub.data.video.VideoCallSetting()) {
+                    val stored = JsonInstant.decodeFromString<me.rerere.rikkahub.data.video.VideoCallSetting>(it)
                     // 预览校准角度只允许 0/90/180/270：手写过 datastore、或旧版本留下的
                     // 任意整数在进矩阵之前先归一化，绝不让非法角度把预览转成一个奇怪的角度。
                     stored.copy(
@@ -353,25 +361,33 @@ class SettingsStore(
                         previewRotationBackDegrees = me.rerere.rikkahub.data.video.PreviewCalibration
                             .normalize(stored.previewRotationBackDegrees),
                     )
-                } ?: me.rerere.rikkahub.data.video.VideoCallSetting(),
-                modeInjections = runCatching { preferences[MODE_INJECTIONS]?.let { JsonInstant.decodeFromString<List<PromptInjection.ModeInjection>>(it) } }.getOrNull() ?: emptyList(),
-                lorebooks = runCatching { preferences[LOREBOOKS]?.let { JsonInstant.decodeFromString<List<Lorebook>>(it) } }.getOrNull() ?: emptyList(),
-                quickMessages = runCatching { preferences[QUICK_MESSAGES]?.let { JsonInstant.decodeFromString<List<QuickMessage>>(it) } }.getOrNull() ?: emptyList(),
+                },
+                modeInjections = preferences.readCachedJson(MODE_INJECTIONS, emptyList()) {
+                    JsonInstant.decodeFromString(it)
+                },
+                lorebooks = preferences.readCachedJson(LOREBOOKS, emptyList()) {
+                    JsonInstant.decodeFromString(it)
+                },
+                quickMessages = preferences.readCachedJson(QUICK_MESSAGES, emptyList()) {
+                    JsonInstant.decodeFromString(it)
+                },
                 webServerEnabled = preferences[WEB_SERVER_ENABLED] == true,
                 webServerPort = preferences[WEB_SERVER_PORT] ?: 8080,
                 webServerJwtEnabled = preferences[WEB_SERVER_JWT_ENABLED] == true,
                 webServerAccessPassword = preferences.readPlaintextOrMigrate(WEB_SERVER_ACCESS_PASSWORD, "") { it },
                 webServerLocalhostOnly = preferences[WEB_SERVER_LOCALHOST_ONLY] ?: true,
-                backupReminderConfig = preferences[BACKUP_REMINDER_CONFIG]?.let {
+                backupReminderConfig = preferences.readCachedJson(BACKUP_REMINDER_CONFIG, BackupReminderConfig()) {
                     JsonInstant.decodeFromString(it)
-                } ?: BackupReminderConfig(),
-                autoBackupConfig = runCatching {
-                    preferences[AUTO_BACKUP_CONFIG]?.let { JsonInstant.decodeFromString<AutoBackupConfig>(it) }
-                }.getOrNull() ?: AutoBackupConfig(),
+                },
+                autoBackupConfig = preferences.readCachedJson(AUTO_BACKUP_CONFIG, AutoBackupConfig()) {
+                    JsonInstant.decodeFromString(it)
+                },
                 launchCount = preferences[LAUNCH_COUNT] ?: 0,
                 sponsorAlertDismissedAt = preferences[SPONSOR_ALERT_DISMISSED_AT] ?: 0,
                 systemToolsSetting = preferences.readPlaintextOrMigrate(SYSTEM_TOOLS_SETTING, SystemToolsSetting()) { JsonInstant.decodeFromString(it) },
-                proactiveMessageSetting = runCatching { preferences[PROACTIVE_MESSAGE_SETTING]?.let { JsonInstant.decodeFromString<ProactiveMessageSetting>(it) } }.getOrNull() ?: ProactiveMessageSetting(),
+                proactiveMessageSetting = preferences.readCachedJson(PROACTIVE_MESSAGE_SETTING, ProactiveMessageSetting()) {
+                    JsonInstant.decodeFromString(it)
+                },
                 keepAliveEnabled = preferences[KEEP_ALIVE_ENABLED] == true,
                 externalMemories = emptyList(),
                 sereinHook = preferences.readPlaintextOrMigrate(SEREIN_HOOK, me.rerere.rikkahub.data.serein.SereinHookConfig()) { JsonInstant.decodeFromString(it) },
@@ -487,6 +503,18 @@ class SettingsStore(
     val settingsFlow = MutableStateFlow(Settings.dummy())
     private val pendingWrites = AtomicInteger()
 
+    fun <T> select(selector: (Settings) -> T): Flow<T> =
+        settingsFlow.filter { !it.init }.map(selector).distinctUntilChanged()
+
+    fun <T> selectRaw(selector: (Settings) -> T): Flow<T> =
+        settingsFlowRaw.map(selector).distinctUntilChanged()
+
+    val displaySettingFlow: Flow<DisplaySetting> = select { it.displaySetting }
+    val sereinHookFlow: Flow<me.rerere.rikkahub.data.serein.SereinHookConfig> = select { it.sereinHook }
+    val gongduFlow: Flow<me.rerere.rikkahub.data.gongdu.GongduSetting> = select { it.gongdu }
+    val videoCallSettingFlow: Flow<me.rerere.rikkahub.data.video.VideoCallSetting> = select { it.videoCallSetting }
+    val proactiveMessageSettingFlow: Flow<ProactiveMessageSetting> = select { it.proactiveMessageSetting }
+
     init {
         scope.launch {
             runCatching {
@@ -597,35 +625,72 @@ class SettingsStore(
             return true
         }
         dataStore.edit { preferences ->
-            preferences[DYNAMIC_COLOR] = settings.dynamicColor
-            preferences[THEME_ID] = settings.themeId
-            preferences[CUSTOM_THEMES] = JsonInstant.encodeToString(settings.customThemes)
-            preferences[DEVELOPER_MODE] = settings.developerMode
-            preferences[CUSTOM_REACTION_PRESETS] =
-                JsonInstant.encodeToString(normalizeCustomChatReactionPresets(settings.customReactionPresets))
-            preferences[DISPLAY_SETTING] = JsonInstant.encodeToString(settings.displaySetting)
-            if (settings.gongdu != previous.gongdu) preferences[GONGDU_SETTING] = JsonInstant.encodeToString(settings.gongdu)
+            preferences.putIfChanged(DYNAMIC_COLOR, settings.dynamicColor, previous.dynamicColor)
+            preferences.putIfChanged(THEME_ID, settings.themeId, previous.themeId)
+            preferences.putJsonIfChanged(CUSTOM_THEMES, settings.customThemes != previous.customThemes) {
+                JsonInstant.encodeToString(settings.customThemes)
+            }
+            preferences.putIfChanged(DEVELOPER_MODE, settings.developerMode, previous.developerMode)
+            val nextPresets = normalizeCustomChatReactionPresets(settings.customReactionPresets)
+            val prevPresets = normalizeCustomChatReactionPresets(previous.customReactionPresets)
+            preferences.putJsonIfChanged(CUSTOM_REACTION_PRESETS, nextPresets != prevPresets) {
+                JsonInstant.encodeToString(nextPresets)
+            }
+            preferences.putJsonIfChanged(DISPLAY_SETTING, settings.displaySetting != previous.displaySetting) {
+                JsonInstant.encodeToString(settings.displaySetting)
+            }
+            preferences.putJsonIfChanged(GONGDU_SETTING, settings.gongdu != previous.gongdu) {
+                JsonInstant.encodeToString(settings.gongdu)
+            }
 
-            preferences[DISCLAIMER_ACCEPTED] = settings.disclaimerAccepted
-            preferences[DISCLAIMER_ACCEPTED_AT] = settings.disclaimerAcceptedAt
+            preferences.putIfChanged(DISCLAIMER_ACCEPTED, settings.disclaimerAccepted, previous.disclaimerAccepted)
+            preferences.putIfChanged(
+                DISCLAIMER_ACCEPTED_AT,
+                settings.disclaimerAcceptedAt,
+                previous.disclaimerAcceptedAt,
+            )
 
-            preferences[ENABLE_WEB_SEARCH] = settings.enableWebSearch
-            preferences[FAVORITE_MODELS] = JsonInstant.encodeToString(settings.favoriteModels)
-            preferences[SELECT_MODEL] = settings.chatModelId.toString()
-            preferences[TITLE_MODEL] = settings.titleModelId.toString()
-            preferences[TRANSLATE_MODEL] = settings.translateModeId.toString()
-            preferences[SUGGESTION_MODEL] = settings.suggestionModelId.toString()
-            preferences[IMAGE_GENERATION_MODEL] = settings.imageGenerationModelId.toString()
-            preferences[IMAGE_GENERATION_ASPECT_RATIO] = settings.imageGenerationAspectRatio.name
-            preferences[TITLE_PROMPT] = settings.titlePrompt
-            preferences[TRANSLATION_PROMPT] = settings.translatePrompt
-            preferences[TRANSLATE_THINKING_BUDGET] = settings.translateThinkingBudget
-            preferences[SUGGESTION_PROMPT] = settings.suggestionPrompt
-            preferences[OCR_MODEL] = settings.ocrModelId.toString()
-            preferences[OCR_PROMPT] = settings.ocrPrompt
-            settings.compressModelId?.let { preferences[COMPRESS_MODEL] = it.toString() }
-                ?: preferences.remove(COMPRESS_MODEL)
-            preferences[COMPRESS_PROMPT] = settings.compressPrompt
+            preferences.putIfChanged(ENABLE_WEB_SEARCH, settings.enableWebSearch, previous.enableWebSearch)
+            preferences.putJsonIfChanged(FAVORITE_MODELS, settings.favoriteModels != previous.favoriteModels) {
+                JsonInstant.encodeToString(settings.favoriteModels)
+            }
+            preferences.putIfChanged(SELECT_MODEL, settings.chatModelId.toString(), previous.chatModelId.toString())
+            preferences.putIfChanged(TITLE_MODEL, settings.titleModelId.toString(), previous.titleModelId.toString())
+            preferences.putIfChanged(
+                TRANSLATE_MODEL,
+                settings.translateModeId.toString(),
+                previous.translateModeId.toString(),
+            )
+            preferences.putIfChanged(
+                SUGGESTION_MODEL,
+                settings.suggestionModelId.toString(),
+                previous.suggestionModelId.toString(),
+            )
+            preferences.putIfChanged(
+                IMAGE_GENERATION_MODEL,
+                settings.imageGenerationModelId.toString(),
+                previous.imageGenerationModelId.toString(),
+            )
+            preferences.putIfChanged(
+                IMAGE_GENERATION_ASPECT_RATIO,
+                settings.imageGenerationAspectRatio.name,
+                previous.imageGenerationAspectRatio.name,
+            )
+            preferences.putIfChanged(TITLE_PROMPT, settings.titlePrompt, previous.titlePrompt)
+            preferences.putIfChanged(TRANSLATION_PROMPT, settings.translatePrompt, previous.translatePrompt)
+            preferences.putIfChanged(
+                TRANSLATE_THINKING_BUDGET,
+                settings.translateThinkingBudget,
+                previous.translateThinkingBudget,
+            )
+            preferences.putIfChanged(SUGGESTION_PROMPT, settings.suggestionPrompt, previous.suggestionPrompt)
+            preferences.putIfChanged(OCR_MODEL, settings.ocrModelId.toString(), previous.ocrModelId.toString())
+            preferences.putIfChanged(OCR_PROMPT, settings.ocrPrompt, previous.ocrPrompt)
+            if (settings.compressModelId != previous.compressModelId) {
+                settings.compressModelId?.let { preferences[COMPRESS_MODEL] = it.toString() }
+                    ?: preferences.remove(COMPRESS_MODEL)
+            }
+            preferences.putIfChanged(COMPRESS_PROMPT, settings.compressPrompt, previous.compressPrompt)
 
             if (canWriteProtected(PROVIDERS, settings.providers, loadedSettings.providers)) {
                 preferences.putSecretIfChanged(
@@ -640,8 +705,14 @@ class SettingsStore(
                     settings.assistants != previous.assistants,
                 ) { JsonInstant.encodeToString(settings.assistants) }
             }
-            preferences[SELECT_ASSISTANT] = settings.assistantId.toString()
-            preferences[ASSISTANT_TAGS] = JsonInstant.encodeToString(settings.assistantTags)
+            preferences.putIfChanged(
+                SELECT_ASSISTANT,
+                settings.assistantId.toString(),
+                previous.assistantId.toString(),
+            )
+            preferences.putJsonIfChanged(ASSISTANT_TAGS, settings.assistantTags != previous.assistantTags) {
+                JsonInstant.encodeToString(settings.assistantTags)
+            }
 
             val canWriteSearchServices = canWriteProtected(
                 SEARCH_SERVICES,
@@ -654,10 +725,16 @@ class SettingsStore(
                     settings.searchServices != previous.searchServices,
                 ) { JsonInstant.encodeToString(settings.searchServices) }
             }
-            preferences[SEARCH_COMMON] = JsonInstant.encodeToString(settings.searchCommonOptions)
+            preferences.putJsonIfChanged(
+                SEARCH_COMMON,
+                settings.searchCommonOptions != previous.searchCommonOptions,
+            ) { JsonInstant.encodeToString(settings.searchCommonOptions) }
             val maxSearchIndex = (settings.searchServices.size - 1).coerceAtLeast(0)
-            if (canWriteSearchServices || settings.searchServiceSelected != loadedSettings.searchServiceSelected) {
-                preferences[SEARCH_SELECTED] = settings.searchServiceSelected.coerceIn(0, maxSearchIndex)
+            val clampedSearchSelected = settings.searchServiceSelected.coerceIn(0, maxSearchIndex)
+            if ((canWriteSearchServices || settings.searchServiceSelected != loadedSettings.searchServiceSelected) &&
+                (clampedSearchSelected != previous.searchServiceSelected || preferences[SEARCH_SELECTED] == null)
+            ) {
+                preferences[SEARCH_SELECTED] = clampedSearchSelected
             }
 
             if (canWriteProtected(MCP_SERVERS, settings.mcpServers, loadedSettings.mcpServers)) {
@@ -684,26 +761,42 @@ class SettingsStore(
                     settings.ttsProviders != previous.ttsProviders,
                 ) { JsonInstant.encodeToString(settings.ttsProviders) }
             }
-            settings.selectedTTSProviderId?.let {
-                preferences[SELECTED_TTS_PROVIDER] = it.toString()
-            } ?: preferences.remove(SELECTED_TTS_PROVIDER)
+            if (settings.selectedTTSProviderId != previous.selectedTTSProviderId) {
+                settings.selectedTTSProviderId?.let {
+                    preferences[SELECTED_TTS_PROVIDER] = it.toString()
+                } ?: preferences.remove(SELECTED_TTS_PROVIDER)
+            }
             if (canWriteProtected(ASR_PROVIDERS, settings.asrProviders, loadedSettings.asrProviders)) {
                 preferences.putSecretIfChanged(
                     ASR_PROVIDERS,
                     settings.asrProviders != previous.asrProviders,
                 ) { JsonInstant.encodeToString(settings.asrProviders) }
             }
-            settings.selectedASRProviderId?.let {
-                preferences[SELECTED_ASR_PROVIDER] = it.toString()
-            } ?: preferences.remove(SELECTED_ASR_PROVIDER)
-            preferences[VOICE_CALL_KEEP_LISTENING_DURING_REPLY] = settings.voiceCallKeepListeningDuringReply
-            preferences[VIDEO_CALL_SETTING] = JsonInstant.encodeToString(settings.videoCallSetting)
-            preferences[MODE_INJECTIONS] = JsonInstant.encodeToString(settings.modeInjections)
-            preferences[LOREBOOKS] = JsonInstant.encodeToString(settings.lorebooks)
-            preferences[QUICK_MESSAGES] = JsonInstant.encodeToString(settings.quickMessages)
-            preferences[WEB_SERVER_ENABLED] = settings.webServerEnabled
-            preferences[WEB_SERVER_PORT] = settings.webServerPort
-            preferences[WEB_SERVER_JWT_ENABLED] = settings.webServerJwtEnabled
+            if (settings.selectedASRProviderId != previous.selectedASRProviderId) {
+                settings.selectedASRProviderId?.let {
+                    preferences[SELECTED_ASR_PROVIDER] = it.toString()
+                } ?: preferences.remove(SELECTED_ASR_PROVIDER)
+            }
+            preferences.putIfChanged(
+                VOICE_CALL_KEEP_LISTENING_DURING_REPLY,
+                settings.voiceCallKeepListeningDuringReply,
+                previous.voiceCallKeepListeningDuringReply,
+            )
+            preferences.putJsonIfChanged(VIDEO_CALL_SETTING, settings.videoCallSetting != previous.videoCallSetting) {
+                JsonInstant.encodeToString(settings.videoCallSetting)
+            }
+            preferences.putJsonIfChanged(MODE_INJECTIONS, settings.modeInjections != previous.modeInjections) {
+                JsonInstant.encodeToString(settings.modeInjections)
+            }
+            preferences.putJsonIfChanged(LOREBOOKS, settings.lorebooks != previous.lorebooks) {
+                JsonInstant.encodeToString(settings.lorebooks)
+            }
+            preferences.putJsonIfChanged(QUICK_MESSAGES, settings.quickMessages != previous.quickMessages) {
+                JsonInstant.encodeToString(settings.quickMessages)
+            }
+            preferences.putIfChanged(WEB_SERVER_ENABLED, settings.webServerEnabled, previous.webServerEnabled)
+            preferences.putIfChanged(WEB_SERVER_PORT, settings.webServerPort, previous.webServerPort)
+            preferences.putIfChanged(WEB_SERVER_JWT_ENABLED, settings.webServerJwtEnabled, previous.webServerJwtEnabled)
             if (canWriteProtected(
                     WEB_SERVER_ACCESS_PASSWORD,
                     settings.webServerAccessPassword,
@@ -715,19 +808,36 @@ class SettingsStore(
                     settings.webServerAccessPassword != previous.webServerAccessPassword,
                 ) { settings.webServerAccessPassword }
             }
-            preferences[WEB_SERVER_LOCALHOST_ONLY] = settings.webServerLocalhostOnly
-            preferences[BACKUP_REMINDER_CONFIG] = JsonInstant.encodeToString(settings.backupReminderConfig)
-            preferences[AUTO_BACKUP_CONFIG] = JsonInstant.encodeToString(settings.autoBackupConfig)
-            preferences[LAUNCH_COUNT] = settings.launchCount
-            preferences[SPONSOR_ALERT_DISMISSED_AT] = settings.sponsorAlertDismissedAt
+            preferences.putIfChanged(
+                WEB_SERVER_LOCALHOST_ONLY,
+                settings.webServerLocalhostOnly,
+                previous.webServerLocalhostOnly,
+            )
+            preferences.putJsonIfChanged(
+                BACKUP_REMINDER_CONFIG,
+                settings.backupReminderConfig != previous.backupReminderConfig,
+            ) { JsonInstant.encodeToString(settings.backupReminderConfig) }
+            preferences.putJsonIfChanged(
+                AUTO_BACKUP_CONFIG,
+                settings.autoBackupConfig != previous.autoBackupConfig,
+            ) { JsonInstant.encodeToString(settings.autoBackupConfig) }
+            preferences.putIfChanged(LAUNCH_COUNT, settings.launchCount, previous.launchCount)
+            preferences.putIfChanged(
+                SPONSOR_ALERT_DISMISSED_AT,
+                settings.sponsorAlertDismissedAt,
+                previous.sponsorAlertDismissedAt,
+            )
             if (canWriteProtected(SYSTEM_TOOLS_SETTING, settings.systemToolsSetting, loadedSettings.systemToolsSetting)) {
                 preferences.putSecretIfChanged(
                     SYSTEM_TOOLS_SETTING,
                     settings.systemToolsSetting != previous.systemToolsSetting,
                 ) { JsonInstant.encodeToString(settings.systemToolsSetting) }
             }
-            preferences[PROACTIVE_MESSAGE_SETTING] = JsonInstant.encodeToString(settings.proactiveMessageSetting)
-            preferences[KEEP_ALIVE_ENABLED] = settings.keepAliveEnabled
+            preferences.putJsonIfChanged(
+                PROACTIVE_MESSAGE_SETTING,
+                settings.proactiveMessageSetting != previous.proactiveMessageSetting,
+            ) { JsonInstant.encodeToString(settings.proactiveMessageSetting) }
+            preferences.putIfChanged(KEEP_ALIVE_ENABLED, settings.keepAliveEnabled, previous.keepAliveEnabled)
             retireExternalMemoryPreferences(preferences)
             if (canWriteProtected(MINI_APPS, settings.miniApps, loadedSettings.miniApps)) {
                 preferences.putSecretIfChanged(
@@ -740,9 +850,21 @@ class SettingsStore(
                     JsonInstant.encodeToString(settings.sereinHook)
                 }
             }
-            preferences[FORCE_CONFIRM_TOOL_CALLS] = settings.forceConfirmToolCalls
-            preferences[WORKFLOW_HEADLESS_BLOCK_SENSITIVE] = settings.workflowHeadlessBlockSensitive
-            preferences[AUTO_APPROVE_ALL_TOOLS] = settings.autoApproveAllTools
+            preferences.putIfChanged(
+                FORCE_CONFIRM_TOOL_CALLS,
+                settings.forceConfirmToolCalls,
+                previous.forceConfirmToolCalls,
+            )
+            preferences.putIfChanged(
+                WORKFLOW_HEADLESS_BLOCK_SENSITIVE,
+                settings.workflowHeadlessBlockSensitive,
+                previous.workflowHeadlessBlockSensitive,
+            )
+            preferences.putIfChanged(
+                AUTO_APPROVE_ALL_TOOLS,
+                settings.autoApproveAllTools,
+                previous.autoApproveAllTools,
+            )
         }
     }
 
@@ -825,6 +947,20 @@ class SettingsStore(
         )
     }
 
+    private inline fun <T> Preferences.readCachedJson(
+        key: Preferences.Key<String>,
+        default: T,
+        crossinline decode: (String) -> T,
+    ): T {
+        val raw = this[key] ?: run {
+            plainJsonDecodeCache.forget(key.name)
+            return default
+        }
+        return runCatching {
+            plainJsonDecodeCache.read(key.name, raw) { decode(raw) }
+        }.getOrElse { default }
+    }
+
     private inline fun <reified T> Preferences.readPlaintextOrMigrate(
         key: Preferences.Key<String>,
         default: T,
@@ -863,6 +999,29 @@ class SettingsStore(
     }
 }
 
+internal val DEFAULT_IMAGE_GENERATION_MODEL_ID = Uuid.parse("00000000-0000-0000-0000-000000000002")
+internal val DEFAULT_OCR_MODEL_ID = Uuid.parse("00000000-0000-0000-0000-000000000003")
+
+internal inline fun <T> MutablePreferences.putIfChanged(
+    key: Preferences.Key<T>,
+    newValue: T,
+    oldValue: T,
+) {
+    if (newValue != oldValue) {
+        this[key] = newValue
+    }
+}
+
+internal inline fun MutablePreferences.putJsonIfChanged(
+    key: Preferences.Key<String>,
+    changed: Boolean,
+    encode: () -> String,
+) {
+    if (changed) {
+        this[key] = encode()
+    }
+}
+
 @Serializable
 data class Settings(
     val gongdu: me.rerere.rikkahub.data.gongdu.GongduSetting = me.rerere.rikkahub.data.gongdu.GongduSetting(),
@@ -881,7 +1040,7 @@ data class Settings(
     val favoriteModels: List<Uuid> = emptyList(),
     val chatModelId: Uuid = Uuid.random(),
     val titleModelId: Uuid = Uuid.random(),
-    val imageGenerationModelId: Uuid = Uuid.random(),
+    val imageGenerationModelId: Uuid = DEFAULT_IMAGE_GENERATION_MODEL_ID,
     val imageGenerationAspectRatio: ImageAspectRatio = ImageAspectRatio.SQUARE,
     val titlePrompt: String = DEFAULT_TITLE_PROMPT,
     val translateModeId: Uuid = Uuid.random(),
@@ -889,7 +1048,7 @@ data class Settings(
     val translateThinkingBudget: Int = 0,
     val suggestionModelId: Uuid = Uuid.random(),
     val suggestionPrompt: String = DEFAULT_SUGGESTION_PROMPT,
-    val ocrModelId: Uuid = Uuid.random(),
+    val ocrModelId: Uuid = DEFAULT_OCR_MODEL_ID,
     val ocrPrompt: String = DEFAULT_OCR_PROMPT,
     val compressModelId: Uuid? = null,
     val compressPrompt: String = DEFAULT_COMPRESS_PROMPT,

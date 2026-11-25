@@ -284,6 +284,7 @@ class LocalTools(
                 )
             },
             execute = {
+                me.rerere.rikkahub.utils.QuickJsRuntime.ensureInitialized()
                 val logs = arrayListOf<String>()
                 val context = QuickJSContext.create()
                 context.setConsole(object : QuickJSContext.Console {

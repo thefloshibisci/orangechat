@@ -1,5 +1,7 @@
 package me.rerere.rikkahub.data.datastore
 
+import androidx.datastore.preferences.core.booleanPreferencesKey
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.mutablePreferencesOf
 import androidx.datastore.preferences.core.stringPreferencesKey
 import org.junit.Assert.*
@@ -79,5 +81,33 @@ class SettingsHotPathTest {
         assertEquals(original, prefs[key])
         retirement.retire(prefs, { raw, _ -> raw }, { raw, _ -> raw })
         assertEquals("[{}]", prefs[key])
+    }
+
+    @Test fun `putIfChanged and putJsonIfChanged skip writes when values are unchanged`() {
+        val boolKey = booleanPreferencesKey("enable_web_search")
+        val intKey = intPreferencesKey("launch_count")
+        val jsonKey = stringPreferencesKey("display_setting")
+        val prefs = mutablePreferencesOf()
+
+        prefs.putIfChanged(boolKey, newValue = false, oldValue = false)
+        assertFalse(prefs.contains(boolKey))
+
+        prefs.putIfChanged(intKey, newValue = 2, oldValue = 1)
+        assertEquals(2, prefs[intKey])
+
+        var encodes = 0
+        prefs.putJsonIfChanged(jsonKey, changed = false) {
+            encodes++
+            """{"unchanged":true}"""
+        }
+        assertEquals(0, encodes)
+        assertFalse(prefs.contains(jsonKey))
+
+        prefs.putJsonIfChanged(jsonKey, changed = true) {
+            encodes++
+            """{"updated":true}"""
+        }
+        assertEquals(1, encodes)
+        assertEquals("""{"updated":true}""", prefs[jsonKey])
     }
 }
