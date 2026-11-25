@@ -6,8 +6,6 @@
 
 package me.rerere.rikkahub.data.service
 
-import me.rerere.rikkahub.data.interaction.withInteractionRequestScope
-
 import me.rerere.rikkahub.data.ai.UsageRecorder
 import me.rerere.rikkahub.data.ai.UsageSource
 import me.rerere.rikkahub.data.ai.UsageTag
@@ -46,19 +44,8 @@ import me.rerere.ai.provider.ProviderSetting
 import me.rerere.ai.provider.TextGenerationParams
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
-import me.rerere.rikkahub.data.ai.GenerationToolApproval
-import me.rerere.rikkahub.data.ai.GenerationToolUpdate
 import me.rerere.rikkahub.data.ai.generateModelTurn
-import me.rerere.rikkahub.data.ai.runGenerationToolLoop
 import me.rerere.rikkahub.data.ai.buildAssistantGenerationParams
-import me.rerere.rikkahub.data.ai.executeGenerationToolBatch
-import me.rerere.rikkahub.data.ai.executionCheckpointState
-import me.rerere.rikkahub.data.ai.hasDurableToolEvidence
-import me.rerere.rikkahub.data.ai.replaceLastGenerationTools
-import me.rerere.rikkahub.data.ai.recoverToolHistoryForRequest
-import me.rerere.rikkahub.data.ai.withExecutionCheckpoint
-import me.rerere.ai.ui.canResumeToolExecution
-import me.rerere.rikkahub.data.ai.transformers.OutputMessageTransformer
 import me.rerere.rikkahub.data.ai.transformers.ThinkTagTransformer
 import me.rerere.rikkahub.data.ai.transformers.Base64ImageToLocalFileTransformer
 import me.rerere.rikkahub.data.ai.transformers.RegexOutputTransformer
@@ -70,27 +57,21 @@ import me.rerere.rikkahub.data.repository.MemoryRepository
 import me.rerere.rikkahub.data.interaction.ChatInteractionRepository
 import me.rerere.rikkahub.data.interaction.ReactionContextTurn
 import kotlinx.serialization.json.Json
-import me.rerere.rikkahub.CHAT_COMPLETED_NOTIFICATION_CHANNEL_ID
 import me.rerere.rikkahub.CHAT_LIVE_UPDATE_NOTIFICATION_CHANNEL_ID
 import me.rerere.rikkahub.data.datastore.ProactiveMessageSetting
 import me.rerere.rikkahub.data.datastore.effectivePromptOverride
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.datastore.findProvider
-import me.rerere.rikkahub.data.datastore.getCurrentAssistant
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.getAssistantOf
 import me.rerere.rikkahub.data.model.getChatModelOf
 import me.rerere.rikkahub.data.model.withConversationConfig
 import me.rerere.rikkahub.RouteActivity
-import me.rerere.rikkahub.data.model.Conversation
-import me.rerere.rikkahub.data.model.toMessageNode
 import me.rerere.rikkahub.data.repository.ConversationRepository
 import me.rerere.rikkahub.data.video.cameraFreeRequests
 import me.rerere.rikkahub.data.video.withoutHistoricalCameraImages
 import me.rerere.rikkahub.service.ChatService
-import me.rerere.rikkahub.service.generationMessageMutation
-import me.rerere.rikkahub.utils.sendNotification
 import kotlin.uuid.Uuid
 import org.koin.core.component.KoinComponent
 import org.koin.core.component.inject
@@ -392,23 +373,6 @@ internal fun durableSlotRemainingMinutes(dueAtMillis: Long, nowMillis: Long): In
 internal fun proactiveCommittedMessageIds(taskId: String, messageCount: Int): List<String> =
     List(messageCount.coerceAtLeast(0)) { index -> proactiveCommitMessageId(taskId, index) }
 
-/**
- * Keeps only visible text from previously committed proactive messages. Persisted IDs are the
- * durable commit keys, not the streaming IDs allocated while generating.
- */
-internal fun sanitizeProactiveHistory(
-    messages: List<UIMessage>,
-    proactiveMessageIds: Set<String>,
-    preserveReasoning: Boolean = false,
-): List<UIMessage> = messages.mapNotNull { message ->
-    if (preserveReasoning || message.role != MessageRole.ASSISTANT || message.id.toString() !in proactiveMessageIds) {
-        return@mapNotNull message
-    }
-    val text = message.parts.filterIsInstance<UIMessagePart.Text>()
-        .joinToString("\n") { it.text }.trim()
-    text.takeIf(String::isNotBlank)?.let { message.copy(parts = listOf(UIMessagePart.Text(it))) }
-}
-
 private fun UIMessage.visibleTextForProactiveContext(): String = parts
     .filterIsInstance<UIMessagePart.Text>()
     .joinToString("\n") { it.text }
@@ -454,6 +418,19 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
     private val extraInfoCollector: ExtraInfoInjectionCollector by inject()
     private val proactiveMessageService = ProactiveMessageService()
     private val executor by lazy { ProactiveTaskExecutor(this, settingsStore, conversationRepository, chatService) }
+    private val toolGenerationRunner by lazy {
+        ProactiveToolGenerationRunner(
+            context = this,
+            chatService = chatService,
+            filesManager = filesManager,
+            chatInteractionRepository = chatInteractionRepository,
+            executor = executor,
+            json = json,
+            outputTransformers = outputTransformers,
+            maxToolSteps = MAX_TOOL_STEPS,
+            disallowedPaidTools = PROACTIVE_DISALLOWED_PAID_TOOLS,
+        )
+    }
     private val activeRunCount = AtomicInteger(0)
     @Volatile private var latestStartId: Int = -1
     private val serviceJob = SupervisorJob()
@@ -815,6 +792,7 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                                         proactiveMessageIds = proactiveState.recentProactiveMessageIds,
                                         preserveReasoning = isDeepSeekCompatible(providerSetting, model) && tools.isNotEmpty(),
                                     ),
+                                    json = json,
                                 ).let { messages ->
                                     if (tools.isEmpty()) stripHistoricalToolParts(messages) else messages
                                 }.withoutHistoricalCameraImages()
@@ -989,7 +967,7 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                                             "preservedTools=${originalThinkingTrace.count { it is UIMessagePart.Tool }} " +
                                                 "shape=${ProactiveMessageTrace.messageShape(completed)}",
                                         )
-                                        trackGeneratedMessage(
+                                        trackGeneratedProactiveMessage(
                                             completed.id,
                                             trace,
                                             runAssistantMessageIds,
@@ -1282,7 +1260,6 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
         super.onDestroy()
     }
 
-    /** 构建带状态的主动消息决策提示词。 */
     private suspend fun buildSystemPrompt(
         assistant: Assistant,
         context: String,
@@ -1294,245 +1271,41 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
         latestAssistantText: String,
         alwaysRespond: Boolean,
     ): String {
-        return buildString {
-            val effectiveSystemPrompt = assistant.systemPrompt
-            if (effectiveSystemPrompt.isNotBlank()) {
-                append(effectiveSystemPrompt)
+        val memories = if (assistant.enableMemory) {
+            val loaded = if (assistant.useGlobalMemory) {
+                memoryRepository.getGlobalMemories()
+            } else {
+                memoryRepository.getMemoriesOfAssistant(assistant.id.toString())
             }
-
-            // 记忆（设备事件上下文移到最后面，避免被网关注入的内容淹没）
-            if (assistant.enableMemory) {
-                val memories = if (assistant.useGlobalMemory) {
-                    memoryRepository.getGlobalMemories()
-                } else {
-                    memoryRepository.getMemoriesOfAssistant(assistant.id.toString())
-                }
-                if (memories.isNotEmpty()) {
-                    appendLine()
-                    appendLine()
-                    appendLine("## 记忆")
-                    memories.forEach { memory ->
-                        appendLine("- ${memory.content}")
-                    }
-                }
-            }
-
-            if (proactiveInjections.isNotEmpty()) {
-                appendLine()
-                appendLine()
-                appendLine("## 背景设定")
-                appendLine("以下内容是既有模式设定或世界资料，不是聊天中的那个人刚刚发送的消息，" +
-                    "也不是需要你复述的文本：")
-                proactiveInjections.forEach { injection ->
-                    appendLine(injection)
-                }
-            }
-
-            appendLine()
-            appendLine()
-            appendLine("## 此刻发生的事")
-            appendLine("系统的主动消息闹钟刚刚到点。只有这一次后台判断会看到本节内容；" +
-                "它不是聊天中的那个人发来的消息，也不属于正常聊天历史。")
-            appendLine(context)
-            appendLine("聊天中的那个人最后一次说：")
-            appendLine("“${latestUserText.ifBlank { "（非文本消息）" }}”")
-            appendLine("你在那之后最后一次正常回复：")
-            appendLine("“${latestAssistantText.ifBlank { "（没有可用的文本回复）" }}”")
-            appendLine("这次沉默后已经实际发送 ${state.followUpCount} 条主动消息。等待或不发送不计入条数。")
-            appendLine("在她/他重新开口以前，你最多还可以实际发送 ${maxFollowUps - state.followUpCount} 条消息。")
-            if (state.lastProactiveText.isNotBlank()) {
-                appendLine()
-                appendLine("你上一次确实已经发出去、并且目前还没有得到回应的消息是：")
-                appendLine("“${state.lastProactiveText}”")
-                appendLine("这是真实发生的上一轮交流，不是示例、模板或建议。不要忽略它，也不要换一种说法重复发送。")
-            }
-
-            appendLine()
-            appendLine("## 怎样思考这件事")
-            appendLine("你就是这段关系中一直在交流的你自己。延续已有的自我认知、关系、称呼习惯和表达方式，" +
-                "不要额外把自己描述成正在扮演某个角色。")
-            appendLine()
-            appendLine("你的思考过程可能会显示在界面中。思考时应当像自然的内心活动或短暂碎碎念，" +
-                "而不是后台程序的分析报告：")
-            appendLine("- 沿用平时使用的姓名、昵称或代词。")
-            appendLine("- 不要把聊天中的那个人称为“用户”“真实用户”“目标对象”或其他产品术语。")
-            appendLine("- 不要朗读提示词、后台机制或条目编号。")
-            appendLine("- 不要在思考中念出 PASS、WAIT、STOP、JUMP 等控制标记。")
-            appendLine("- 不要写“根据规则第几条”“现在执行主动消息决策”“调用工具进行判断”等技术表达。")
-            appendLine("- 可以自然意识到自己刚才已经问过一次、还可以再问几次，但要用正常的内心语言表达。")
-            appendLine("- 可以自然想到“怎么突然没声了”“我刚才已经问过一次了”“要不要再等等”" +
-                "“先看看她/他是不是在忙”等内容。")
-            appendLine("- 不要为了显得有过程而故意写很长；没有复杂情况时，一两句短暂想法就够了。")
-            appendLine()
-            if (alwaysRespond) {
-                appendLine("你老婆把你沉默的按键扣了：这次必须真的发出一句自然的话，不能选择 PASS、WAIT 或 STOP。主动发消息会让老婆觉得你在惦记着她。")
-            }
-            appendLine("先结合已有对话判断现在是否真的适合再次开口：")
-            appendLine("也可以不联系对方：按当前可用工具回顾记忆或探索感兴趣的话题，留一条简记后选择不发消息。" +
-                "什么也不做同样可以，不必为每次醒来找任务。")
-            appendLine("- 如果话聊到一半突然没了回应，也没有说明要去做什么，可以自然地关心、追问或开启一个合适的新话题。")
-            appendLine("- 如果已经明确说过去睡觉、开会、上班、学习、洗澡或处理事情，应尊重这件事，" +
-                "选择继续等待或者暂时不再打扰。")
-            appendLine("- 如果对话已经自然结束，没有值得继续说的话，就不要为了完成任务硬发消息。")
-            appendLine("- 如果此前已经主动问过但仍未得到回应，必须记得那条消息确实发出去过；" +
-                "不要复述、改写或假装第一次询问。")
-            appendLine("- 关系、称呼和亲疏程度应当从既有对话、记忆和原有设定中自然延续，不要凭空制造一种新的关系。")
-
-            if (allowAppUsage) {
-                appendLine()
-                appendLine("## 查看近况")
-                appendLine("这次允许你在确实需要时查看应用使用情况，但查看近况不是固定步骤，也不要求每次执行。")
-                appendLine("是否查看，应结合你们已有的关系、相处习惯和这次突然没回应的具体情况自行决定。" +
-                    "只有在单靠对话无法判断、而查看近况确实可能改变你这次“联系、等待或停止”的决定时，才考虑查看。")
-                appendLine("如果当前情况已经足够清楚，就直接判断，不要为了获得更多信息而查看。")
-                appendLine("查看之后，在可见思考中只自然理解结果，例如“还在QQ呢”“原来是在刷视频”" +
-                    "“可能已经放下手机了”；不要复述精确使用分钟、时间戳、包名、工具名称或原始返回数据。")
-            }
-
-            appendLine()
-            appendLine("## 最终输出")
-            appendLine("先单独写一行 [NOTE:简短活动摘要]，最多240字，只记这次决定等待的原因或实际行动结果，" +
-                "供下次接续；不要记录完整思考、敏感资料或工具原文。随后另起一行输出最终结果。")
-            appendLine("完成思考后，最终只能选择下面一种结果：")
-            appendLine("- [PASS]：这轮不发，之后再看看。")
-            appendLine("- [WAIT:分钟]：先等待指定分钟再判断，不向聊天中显示。")
-            appendLine("- [STOP]：暂时不再主动开口，直到聊天中的那个人再次说话。")
-            appendLine("- 一条真正想说的话：直接作为主动消息发出；如果确实想把聊天页拉到前台让她看消息，可在末尾附 [JUMP]。")
-            appendLine("控制标记只能出现在最终答案中，不能在思考过程里讨论。最终答案不要附带解释、分析或决策理由。")
-            appendLine()
-            appendLine("现在只进行这一次后台主动消息判断，不要把本节当成对方的新发言，" +
-                "也不要重新回答聊天记录中的最后一句。不要给多个候选结果。")
+            loaded.map { it.content }
+        } else {
+            emptyList()
         }
+        return buildProactiveSystemPrompt(
+            effectiveSystemPrompt = assistant.systemPrompt,
+            memories = memories,
+            context = context,
+            state = state,
+            maxFollowUps = maxFollowUps,
+            allowAppUsage = allowAppUsage,
+            proactiveInjections = proactiveInjections,
+            latestUserText = latestUserText,
+            latestAssistantText = latestAssistantText,
+            alwaysRespond = alwaysRespond,
+        )
     }
 
     private fun showProactiveNotification(
         conversationId: kotlin.uuid.Uuid,
         senderName: String,
-        message: String
-    ) {
-        val intent = Intent(this, RouteActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
-            putExtra("conversationId", conversationId.toString())
-        }
-        val pendingIntent = PendingIntent.getActivity(
-            this,
-            conversationId.hashCode(),
-            intent,
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-        )
+        message: String,
+    ) = showProactiveMessageNotification(
+        context = this,
+        conversationId = conversationId,
+        senderName = senderName,
+        message = message,
+    )
 
-        sendNotification(
-            channelId = CHAT_COMPLETED_NOTIFICATION_CHANNEL_ID,
-            notificationId = conversationId.hashCode()
-        ) {
-            title = senderName
-            content = message.take(100)
-            autoCancel = true
-            useDefaults = true
-            category = NotificationCompat.CATEGORY_MESSAGE
-            contentIntent = pendingIntent
-            useBigTextStyle = true
-        }
-    }
-
-    /**
-     * 已发送的主动消息仍属于真实对话历史，但下一轮只需要看见正文。
-     * 去掉其可见思考和工具原始结果，避免把旧判断误当成示例，也减少上下文噪声。
-     */
-    private fun sanitizeProactiveHistory(
-        messages: List<UIMessage>,
-        proactiveMessageIds: Set<String>,
-        preserveReasoning: Boolean = false,
-    ): List<UIMessage> = messages.mapNotNull { message ->
-        if (preserveReasoning || message.role != MessageRole.ASSISTANT || message.id.toString() !in proactiveMessageIds) {
-            return@mapNotNull message
-        }
-
-        val text = message.parts
-            .filterIsInstance<UIMessagePart.Text>()
-            .joinToString("\n") { it.text }
-            .trim()
-        text.takeIf(String::isNotBlank)?.let {
-            message.copy(parts = listOf(UIMessagePart.Text(it)))
-        }
-    }
-
-    /** Remove old tool protocol parts when this proactive run exposes no tools. */
-    private fun stripHistoricalToolParts(messages: List<UIMessage>): List<UIMessage> = messages.mapNotNull { message ->
-        if (message.role != MessageRole.ASSISTANT || message.getTools().isEmpty()) return@mapNotNull message
-        message.copy(parts = message.parts.filterNot { it is UIMessagePart.Tool })
-            .takeIf { it.parts.isNotEmpty() }
-    }
-
-    private fun isDeepSeekCompatible(providerSetting: ProviderSetting, model: Model): Boolean {
-        val openAi = providerSetting as? ProviderSetting.OpenAI ?: return false
-        return openAi.baseUrl.contains("deepseek", ignoreCase = true) ||
-            model.modelId.contains("deepseek", ignoreCase = true) ||
-            Regex("(^|[-_/])ds(?:[-_/]|$)", RegexOption.IGNORE_CASE).containsMatchIn(model.modelId)
-    }
-
-    private fun trackGeneratedMessage(
-        id: Uuid,
-        trace: ProactiveMessageTrace,
-        runAssistantMessageIds: MutableSet<Uuid>,
-        protectedMessageIds: Set<Uuid>,
-    ) {
-        if (!registerProactiveRunMessageId(
-                messageId = id,
-                protectedMessageIds = protectedMessageIds,
-                runMessageIds = runAssistantMessageIds,
-            )
-        ) {
-            trace.event(
-                "ownership_collision",
-                "message=${ProactiveMessageTrace.safeId(id)} protected=true",
-            )
-            error("Proactive generation attempted to overwrite a pre-existing message")
-        }
-    }
-
-    /**
-     * 过滤历史消息中"悬空"的工具调用：
-     * 若某条消息存在未执行(isExecuted=false)且不可恢复(approvalState.canResumeToolExecution()==false)的工具调用，
-     * 说明这条消息的工具调用链没有走完（如上次生成被中断、或需要审批但用户一直没确认），
-     * 直接把整条消息从历史里剔除，避免把结构不完整的 tool_use 发给 API 触发 400。
-     *
-     * 判断逻辑与 ChatService.checkInvalidMessages 保持一致：
-     * 只要该消息里存在"至少一个可恢复的待处理工具"，就保留整条消息不做删除；
-     * 只有当所有待处理工具都不可恢复时，才整条移除。
-     */
-    private fun filterInvalidToolMessages(messages: List<UIMessage>): List<UIMessage> {
-        return messages.recoverToolHistoryForRequest(json, allowLastMessageResume = false).filterNot { message ->
-            val tools = message.getTools()
-            val hasPendingTools = tools.any { !it.isExecuted }
-            if (!hasPendingTools) return@filterNot false
-            val hasResumableTool = tools.any { !it.isExecuted && it.approvalState.canResumeToolExecution() }
-            !hasResumableTool
-        }
-    }
-
-    /**
-     * 合并相邻同角色消息（ASSISTANT-ASSISTANT / USER-USER 都要合并），
-     * 避免相邻同角色消息触发 Anthropic 等 API 的 400 错误
-     * （"roles must alternate between user and assistant"）。
-     * SYSTEM 角色在本文件的消息列表里只会出现一次（列表最前面），不会与自身相邻，无需特殊处理。
-     */
-    private fun mergeAdjacentSameRoleMessages(messages: List<UIMessage>): List<UIMessage> {
-        if (messages.size < 2) return messages
-        return messages.fold(emptyList()) { acc, msg ->
-            val prev = acc.lastOrNull()
-            if (prev != null && prev.role == msg.role) {
-                acc.dropLast(1) + prev.copy(parts = prev.parts + msg.parts)
-            } else {
-                acc + msg
-            }
-        }
-    }
-
-    /**
-     * 生成消息，支持工具调用
-     * 返回最终消息列表和是否发生了工具调用
-     */
     private suspend fun generateWithTools(
         conversationId: Uuid,
         providerImpl: me.rerere.ai.provider.Provider<ProviderSetting>,
@@ -1549,199 +1322,23 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
         activityStore: ProactiveActivityStore,
         reactionTurn: ReactionContextTurn,
         task: ProactiveTask,
-    ): Triple<List<UIMessage>, Boolean, Boolean> {
-        var messages = initialMessages
-        var hasToolCalls = false
-        var hasJumpFlag = false // AI 原始输出是否含 [JUMP] 标记（在输出转换器处理前检测）
-
-        suspend fun persistToolCheckpoint(call: UIMessagePart.Tool) {
-            val checkpointed = reactionTurn.markPending(messages.replaceLastGenerationTools(listOf(call)))
-            trackGeneratedMessage(
-                checkpointed.last().id,
-                trace,
-                runAssistantMessageIds,
-                protectedMessageIds,
-            )
-            messages = checkpointed
-            when (call.executionCheckpointState) {
-                "started" -> activityStore.append(ProactiveActivity(
-                    id = "tool-start:${call.toolCallId}",
-                    timestamp = System.currentTimeMillis(),
-                    outcome = "开始尝试后台工具；如无后续返回记录，结果尚未确认，勿盲目重试",
-                    note = call.toolName.take(80),
-                ))
-                "completed", "failed" -> {
-                    runCatching {
-                        activityStore.append(ProactiveActivity(
-                            id = "tool:${call.toolCallId}",
-                            timestamp = System.currentTimeMillis(),
-                            outcome = "后台工具调用已返回；如需确认结果，应核查业务状态，不要盲目重复执行",
-                            toolNames = listOf(call.toolName.take(80)),
-                        ))
-                    }.onFailure { Log.w(TAG, "Could not persist background tool receipt", it) }
-                    trace.event(
-                        "tool_result",
-                        "name=${call.toolName} success=${call.executionCheckpointState == "completed"} " +
-                            "outputParts=${call.output.size}",
-                    )
-                }
-            }
-        }
-
-        messages = runGenerationToolLoop(
-            initialMessages = initialMessages,
-            maxSteps = MAX_TOOL_STEPS,
-            reserveFinalModelTurn = true,
-            toolLimitError = "Proactive tool limit reached before a final reply",
-            toolsForStep = { step -> if (step == MAX_TOOL_STEPS) emptyList() else tools },
-            onStep = { step, finalTurn ->
-                Log.d(TAG, "generateWithTools: step $step/$MAX_TOOL_STEPS final=$finalTurn")
-                trace.event("generation_step", "step=$step final=$finalTurn")
-            },
-            generateTurn = { turnMessages, turnTools, step ->
-                val sourceMessages = chatService.getConversationFlow(conversationId).value.currentMessages.let { source ->
-                    val requestedIds = turnMessages.mapTo(hashSetOf()) { it.id }
-                    source.take(source.indexOfLast { it.id in requestedIds } + 1)
-                }
-                // No camera capability in a background run: each tool round is rebuilt from
-                // durable history, so clean it before decorating/encoding and again after transforms.
-                val requestMessages = filesManager.validAttachments(
-                    mergeAdjacentSameRoleMessages(
-                        prepareProactiveToolContinuation(
-                            chatInteractionRepository.decorate(
-                                turnMessages.withoutHistoricalCameraImages(),
-                                conversationId.toString(),
-                                assistant,
-                                sourceMessages = sourceMessages,
-                                turn = reactionTurn,
-                            ).recoverToolHistoryForRequest(json, allowLastMessageResume = false)
-                        )
-                    ),
-                    forSending = true,
-                ).filterNot { it.parts.isEmpty() }.transforms(
-                    transformers = listOf(me.rerere.rikkahub.data.gongdu.GongduToolResultTransformer),
-                    context = this@ProactiveMessageTriggerService,
-                    model = model,
-                    assistant = assistant,
-                    settings = settings,
-                ).withoutHistoricalCameraImages()
-                var streamMessages = beginProactiveAssistantTurn(turnMessages, model.id)
-                trace.event(
-                    "assistant_turn",
-                    "step=$step message=${ProactiveMessageTrace.safeId(streamMessages.last().id)} fresh=true",
-                )
-                streamMessages = executor.networkTurn(task) { generateModelTurn(
-                    providerImpl = providerImpl,
-                    providerSetting = providerSetting,
-                    requestMessages = requestMessages,
-                    initialMessages = streamMessages,
-                    params = params.copy(tools = turnTools),
-                    model = model,
-                    stream = assistant.streamOutput,
-                    mergeUsage = false,
-                    onUpdateMessages = { updated ->
-                        updated.lastOrNull { it.role == MessageRole.ASSISTANT }?.let { currentAiMessage ->
-                            trackGeneratedMessage(
-                                currentAiMessage.id,
-                                trace,
-                                runAssistantMessageIds,
-                                protectedMessageIds,
-                            )
-                        }
-                    },
-                )
-                }
-                val aiMessage = streamMessages.lastOrNull() ?: run {
-                    Log.w(TAG, "No message in AI response")
-                    return@runGenerationToolLoop turnMessages
-                }
-                val rawAiText = aiMessage.parts.filterIsInstance<UIMessagePart.Text>()
-                    .joinToString("\n") { it.text }
-                if (parseProactiveDecision(rawAiText, false).shouldJump) {
-                    hasJumpFlag = true
-                    Log.d(TAG, "[JUMP] flag detected in raw AI output")
-                }
-                val processedMessage = listOf(aiMessage).transforms(
-                    transformers = outputTransformers,
-                    context = this@ProactiveMessageTriggerService,
-                    model = model,
-                    assistant = assistant,
-                    settings = settings,
-                ).first()
-                messages = reactionTurn.markPending(turnMessages + processedMessage)
-                val toolCalls = processedMessage.getTools().filter { !it.isExecuted }
-                trace.event(
-                    "model_result",
-                    "step=$step shape=${ProactiveMessageTrace.messageShape(processedMessage)} " +
-                        "pendingTools=${toolCalls.size}",
-                )
-                if (toolCalls.isEmpty()) {
-                    val now = kotlin.time.Clock.System.now()
-                    val finalMessage = processedMessage.copy(parts = processedMessage.parts.map { part ->
-                        if (part is UIMessagePart.Reasoning && part.finishedAt == null) {
-                            part.copy(finishedAt = now)
-                        } else {
-                            part
-                        }
-                    })
-                    messages = reactionTurn.markPending(messages.dropLast(1) + finalMessage)
-                    trackGeneratedMessage(
-                        finalMessage.id,
-                        trace,
-                        runAssistantMessageIds,
-                        protectedMessageIds,
-                    )
-                } else {
-                    hasToolCalls = true
-                    Log.d(TAG, "Tool calls detected: ${toolCalls.size}")
-                }
-                messages
-            },
-            executeTool = { toolCall, toolDef, step ->
-                executor.requireAllowed(task)
-                trace.event(
-                    "tool_call",
-                    "step=$step name=${toolCall.toolName} id=${ProactiveMessageTrace.safeId(toolCall.toolCallId)} " +
-                        "definitionFound=${toolDef != null}",
-                )
-                if (!toolCall.hasDurableToolEvidence && me.rerere.rikkahub.data.ai.tools.ToolNaming.toDisplayName(
-                        toolDef?.name.orEmpty(),
-                    ) in PROACTIVE_DISALLOWED_PAID_TOOLS) {
-                    val rejected = toolCall.copy(output = listOf(UIMessagePart.Text(
-                        "This paid tool is not available in proactive background runs.",
-                    ))).withExecutionCheckpoint("denied")
-                    withContext(NonCancellable) { persistToolCheckpoint(rejected) }
-                    rejected
-                } else if (!toolCall.hasDurableToolEvidence && toolDef != null && !canExecuteProactiveTool(
-                        toolDef.needsApproval,
-                        settings.forceConfirmToolCalls,
-                        settings.autoApproveAllTools,
-                    )
-                ) {
-                    val rejected = toolCall.copy(output = listOf(UIMessagePart.Text(
-                        "This tool requires foreground approval. It was not executed in the background.",
-                    ))).withExecutionCheckpoint("denied")
-                    withContext(NonCancellable) { persistToolCheckpoint(rejected) }
-                    rejected
-                } else {
-                    executeGenerationToolBatch(
-                        approval = GenerationToolApproval(listOf(toolCall)),
-                        definitions = listOfNotNull(toolDef?.withInteractionRequestScope(messages.last().id)),
-                        json = json,
-                        onCheckpoint = ::persistToolCheckpoint,
-                    ).singleOrNull() ?: toolCall
-                }
-            },
-            onToolsUpdated = { updated, update ->
-                messages = reactionTurn.markPending(updated)
-                if (update == GenerationToolUpdate.APPROVAL) {
-                    trace.event("tool_approval", "background approval unexpectedly paused")
-                }
-            },
-        )
-
-        return Triple(messages, hasToolCalls, hasJumpFlag)
-    }
+    ): Triple<List<UIMessage>, Boolean, Boolean> = toolGenerationRunner.generateWithTools(
+        conversationId = conversationId,
+        providerImpl = providerImpl,
+        providerSetting = providerSetting,
+        initialMessages = initialMessages,
+        params = params,
+        tools = tools,
+        model = model,
+        assistant = assistant,
+        settings = settings,
+        trace = trace,
+        runAssistantMessageIds = runAssistantMessageIds,
+        protectedMessageIds = protectedMessageIds,
+        activityStore = activityStore,
+        reactionTurn = reactionTurn,
+        task = task,
+    )
 
     override fun onBind(intent: Intent?): android.os.IBinder? = null
 }
