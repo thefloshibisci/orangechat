@@ -398,7 +398,7 @@ private fun ModelList(
                         if (providerSetting is ProviderSetting.Codex) {
                             Text("Codex 官方模型能力", style = MaterialTheme.typography.titleSmall)
                             Text(
-                                "打开此页会自动添加官方目录中的新模型，并更新自动识别的图片、工具和推理能力。原有或手动设置保留，可在模型编辑中开启自动识别；离线使用上次资料。",
+                                "点底部模型库可自由勾选或移除 Codex 官方模型；已添加且开启自动识别的模型会随刷新更新图片、工具和推理能力，原有或手动设置保留。",
                                 style = MaterialTheme.typography.bodySmall,
                             )
                             modelListError?.let { Text(it, style = MaterialTheme.typography.bodySmall) }

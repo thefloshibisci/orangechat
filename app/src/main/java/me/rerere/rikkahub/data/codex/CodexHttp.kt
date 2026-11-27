@@ -2,6 +2,7 @@ package me.rerere.rikkahub.data.codex
 
 import kotlinx.coroutines.CancellationException
 import me.rerere.ai.provider.providers.openai.CodexHttpFailure
+import me.rerere.ai.provider.providers.openai.CodexStreamFailure
 import okhttp3.HttpUrl
 import okhttp3.OkHttpClient
 import java.io.IOException
@@ -23,7 +24,8 @@ internal fun isCodexOfficialTarget(url: HttpUrl): Boolean =
 internal fun codexHttpClient(): OkHttpClient = OkHttpClient.Builder()
     .followRedirects(false)
     .followSslRedirects(false)
-    .retryOnConnectionFailure(false)
+    .retryOnConnectionFailure(true)
+    .pingInterval(15, TimeUnit.SECONDS)
     .connectTimeout(30, TimeUnit.SECONDS)
     .readTimeout(10, TimeUnit.MINUTES)
     .writeTimeout(120, TimeUnit.SECONDS)
@@ -38,6 +40,8 @@ internal suspend fun <T> codexSafe(block: suspend () -> T): T = try {
 } catch (error: CancellationException) {
     throw error
 } catch (error: CodexHttpFailure) {
+    throw error
+} catch (error: CodexStreamFailure) {
     throw error
 } catch (_: Exception) {
     // No raw HTTP body, JSON decoder input, token, URL query or nested cause escapes.

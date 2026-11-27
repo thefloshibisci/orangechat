@@ -136,4 +136,111 @@ class CodexResponseAPITest {
         assertNotNull(error)
         assertTrue(error?.message.orEmpty().contains("before completion"))
     }
+
+    @Test fun `null encrypted_content and null usage complete cleanly and only codex reasoning replays`() = runBlocking {
+        val events = listOf(
+            """{"type":"response.output_item.added","item":{"type":"reasoning","id":"rs_1","encrypted_content":null}}""",
+            """{"type":"response.reasoning_summary_text.delta","item_id":"rs_1","delta":"thinking"}""",
+            """{"type":"response.output_item.done","item":{"type":"reasoning","id":"rs_1","encrypted_content":null}}""",
+            """{"type":"response.output_text.delta","delta":"ok"}""",
+            """{"type":"response.completed","response":{"usage":null}}""",
+        ).joinToString("") { "data: $it\n\n" }
+        val client = OkHttpClient.Builder().addInterceptor { chain ->
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200).message("OK")
+                .body(events.toResponseBody("text/event-stream".toMediaType())).build()
+        }.build()
+        val result = CodexResponseAPI(client).generateText("token", "account", listOf(UIMessage.user("hi")), params)
+        val message = result.choices.single().message!!
+        assertEquals("ok", message.parts.filterIsInstance<UIMessagePart.Text>().filter { it.text.isNotEmpty() }.single().text)
+        val codexReasoning = message.parts.filterIsInstance<UIMessagePart.Reasoning>().single()
+        assertNull(codexReasoning.metadata?.get("encrypted_content"))
+        assertEquals("codex", codexReasoning.metadata?.get("reasoning_provider")?.jsonPrimitive?.content)
+
+        val foreignReasoning = UIMessagePart.Reasoning(
+            reasoning = "foreign",
+            createdAt = kotlin.time.Clock.System.now(),
+            finishedAt = null,
+            metadata = buildJsonObject { put("reasoning_id", "rs_foreign"); put("encrypted_content", "enc_foreign") },
+        )
+        val validCodexReasoning = UIMessagePart.Reasoning(
+            reasoning = "valid",
+            createdAt = kotlin.time.Clock.System.now(),
+            finishedAt = null,
+            metadata = buildJsonObject {
+                put("reasoning_provider", "codex")
+                put("reasoning_id", "rs_codex")
+                put("encrypted_content", "enc_codex")
+            },
+        )
+        val input = CodexResponseAPI(client).buildMessages(
+            listOf(
+                UIMessage.user("q"),
+                UIMessage(
+                    role = me.rerere.ai.core.MessageRole.ASSISTANT,
+                    parts = listOf(foreignReasoning, validCodexReasoning, UIMessagePart.Text("answer")),
+                ),
+            ),
+        )
+        val reasoningItems = input.map { it.jsonObject }.filter { it["type"]?.jsonPrimitive?.content == "reasoning" }
+        assertEquals(1, reasoningItems.size)
+        assertEquals("enc_codex", reasoningItems.single()["encrypted_content"]?.jsonPrimitive?.content)
+        val messageItems = input.map { it.jsonObject }.filter { it["type"]?.jsonPrimitive?.content == "message" }
+        assertEquals(2, messageItems.size)
+        assertEquals("input_text", messageItems[0]["content"]!!.jsonArray.single().jsonObject["type"]!!.jsonPrimitive.content)
+        assertEquals("output_text", messageItems[1]["content"]!!.jsonArray.single().jsonObject["type"]!!.jsonPrimitive.content)
+    }
+
+    @Test fun `null tool parameters fallback and duplicate tool names are deduplicated`() {
+        val noParamsTool = me.rerere.ai.core.Tool(name = "dup_tool", description = "first", parameters = { null }, execute = { emptyList() })
+        val secondDup = me.rerere.ai.core.Tool(name = "dup_tool", description = "second", parameters = { null }, execute = { emptyList() })
+        val body = CodexResponseAPI(OkHttpClient()).buildRequestBody(
+            listOf(UIMessage.user("hi")),
+            params.copy(tools = listOf(noParamsTool, secondDup)),
+        )
+        val tools = body["tools"]!!.jsonArray
+        assertEquals(1, tools.size)
+        assertEquals("first", tools.single().jsonObject["description"]?.jsonPrimitive?.content)
+        val schema = tools.single().jsonObject["parameters"]!!.jsonObject
+        assertEquals("object", schema["type"]?.jsonPrimitive?.content)
+        assertTrue(schema.containsKey("properties"))
+    }
+
+    @Test fun `structured http and sse errors surface sanitized details without leaking secrets or transport paths`() = runBlocking {
+        val httpErrorClient = OkHttpClient.Builder().addInterceptor { chain ->
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(400).message("Bad Request")
+                .body("""{"error":{"code":"invalid_schema","param":"tools[0]","message":"Bad Bearer secret-tok eyJhbGciOi.payload.sig at https://internal.example/v1"}}"""
+                    .toResponseBody("application/json".toMediaType()))
+                .build()
+        }.build()
+        val httpErr = runCatching {
+            CodexResponseAPI(httpErrorClient).streamText("token", "account", listOf(UIMessage.user("x")), params).toList()
+        }.exceptionOrNull()
+        assertTrue(httpErr is CodexHttpFailure)
+        val httpMsg = httpErr!!.message.orEmpty()
+        assertTrue(httpMsg, httpMsg.contains("HTTP 400") && httpMsg.contains("invalid_schema"))
+        assertFalse(httpMsg, httpMsg.contains("secret-tok") || httpMsg.contains("eyJhbGciOi") || httpMsg.contains("internal.example"))
+
+        val sseFailedBody = "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"context_length_exceeded\",\"message\":\"Too many tokens sk-abc123\"}}}\n\n"
+        val sseErrorClient = OkHttpClient.Builder().addInterceptor { chain ->
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200).message("OK")
+                .body(sseFailedBody.toResponseBody("text/event-stream".toMediaType())).build()
+        }.build()
+        val sseErr = runCatching {
+            CodexResponseAPI(sseErrorClient).streamText("token", "account", listOf(UIMessage.user("x")), params).toList()
+        }.exceptionOrNull()
+        assertTrue(sseErr is CodexStreamFailure)
+        assertTrue(sseErr!!.message.orEmpty().contains("context_length_exceeded"))
+        assertFalse(sseErr.message.orEmpty().contains("sk-abc123"))
+
+        val transportClient = OkHttpClient.Builder().addInterceptor { _ ->
+            throw java.net.SocketTimeoutException("failed to connect to chatgpt.com/198.51.100.2:443")
+        }.build()
+        val transportErr = runCatching {
+            CodexResponseAPI(transportClient).streamText("token", "account", listOf(UIMessage.user("x")), params).toList()
+        }.exceptionOrNull()
+        assertTrue(transportErr is CodexStreamFailure)
+        val tMsg = transportErr!!.message.orEmpty()
+        assertTrue(tMsg, tMsg.contains("SocketTimeoutException"))
+        assertFalse(tMsg, tMsg.contains("198.51.100.2") || tMsg.contains("chatgpt.com"))
+    }
 }

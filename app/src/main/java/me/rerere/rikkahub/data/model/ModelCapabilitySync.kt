@@ -107,7 +107,7 @@ class ModelCapabilitySync(
     suspend fun applyCodexMetadata(discovered: List<Model>, source: ProviderSetting.Codex) = withContext(Dispatchers.IO) {
         if (discovered.isEmpty()) return@withContext
         fun refresh(provider: ProviderSetting): ProviderSetting {
-            val models = mergeCodexModelMetadata(provider, discovered, addMissing = provider.id == source.id)
+            val models = mergeCodexModelMetadata(provider, discovered, addMissing = false)
             return if (models == provider.models) provider else provider.copyProvider(models = models)
         }
         val snapshot = settingsStore.settingsFlowRaw.first()

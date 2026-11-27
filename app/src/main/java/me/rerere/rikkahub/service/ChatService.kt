@@ -817,39 +817,65 @@ class ChatService(
     ): QueuedMessage? {
         if ((content.isEmptyInputMessage() && existingMessageId == null) || conversationId in deletedConversationIds) return null
         val session = getOrCreateSession(conversationId)
-        val queued = synchronized(session) {
-            if (session.isDeleted) return null
-            // A fresh send after stopping an empty queue is explicit intent to continue.
-            // A manually paused backlog remains paused until the user resumes it.
-            if (session.messageQueue.state.value.messages.isEmpty()) session.messageQueue.resume()
-            session.messageQueue.enqueue(
-                parts = content,
-                answer = answer,
-                interaction = interaction,
-                transientSystemPrompt = transientSystemPrompt,
-                transientSystemPromptWithoutImages = transientSystemPromptWithoutImages,
-                enableTools = enableTools,
-                existingMessageId = existingMessageId,
-                transientImageUrls = transientImageUrls,
-                transientImageScope = transientImageScope,
-                ownedImageUrls = ownedImageUrls,
-                requestToken = requestToken,
-                transientAudio = transientAudio,
-                newMessageId = newMessageId,
-            )
-        } ?: return null
+        val result = session.submitMessage(
+            enqueuePending = {
+                session.messageQueue.enqueue(
+                    parts = content,
+                    answer = answer,
+                    interaction = interaction,
+                    transientSystemPrompt = transientSystemPrompt,
+                    transientSystemPromptWithoutImages = transientSystemPromptWithoutImages,
+                    enableTools = enableTools,
+                    existingMessageId = existingMessageId,
+                    transientImageUrls = transientImageUrls,
+                    transientImageScope = transientImageScope,
+                    ownedImageUrls = ownedImageUrls,
+                    requestToken = requestToken,
+                    transientAudio = transientAudio,
+                    newMessageId = newMessageId,
+                )
+            },
+            enqueueInFlight = {
+                session.messageQueue.enqueueInFlight(
+                    parts = content,
+                    answer = answer,
+                    interaction = interaction,
+                    transientSystemPrompt = transientSystemPrompt,
+                    transientSystemPromptWithoutImages = transientSystemPromptWithoutImages,
+                    enableTools = enableTools,
+                    existingMessageId = existingMessageId,
+                    transientImageUrls = transientImageUrls,
+                    transientImageScope = transientImageScope,
+                    ownedImageUrls = ownedImageUrls,
+                    requestToken = requestToken,
+                    transientAudio = transientAudio,
+                    newMessageId = newMessageId,
+                )
+            },
+            createJob = { queued ->
+                createQueuedMessageJob(session, queued).also { job ->
+                    activeQueueGenerations[conversationId] = QueueGenerationOwner(queued, job)
+                }
+            },
+        ) ?: return null
+        val queued = result.message
         queued.completion.invokeOnCompletion { cause ->
             if (cause is CancellationException && !queued.reply.isCompleted) cancelQueuedMessage(conversationId, queued.id)
         }
-        appScope.launch {
-            try {
-                initializeConversation(conversationId, updateSelectedAssistant = false)
-                processMessageQueue(conversationId)
-            } catch (cancelled: CancellationException) { throw cancelled }
-            catch (error: Exception) {
-                session.messageQueue.pause()
-                session.messageQueue.failReplyWaiters("会话初始化失败")
-                addError(error, conversationId, title = context.getString(R.string.error_title_send_message))
+        val immediateJob = result.immediateJob
+        if (immediateJob != null) {
+            immediateJob.start()
+        } else {
+            appScope.launch {
+                try {
+                    initializeConversation(conversationId, updateSelectedAssistant = false)
+                    processMessageQueue(conversationId)
+                } catch (cancelled: CancellationException) { throw cancelled }
+                catch (error: Exception) {
+                    session.messageQueue.pause()
+                    session.messageQueue.failReplyWaiters("会话初始化失败")
+                    addError(error, conversationId, title = context.getString(R.string.error_title_send_message))
+                }
             }
         }
         return queued

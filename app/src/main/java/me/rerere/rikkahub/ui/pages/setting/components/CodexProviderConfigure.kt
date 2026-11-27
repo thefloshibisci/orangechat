@@ -7,13 +7,16 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import me.rerere.ai.provider.ProviderManager
 import me.rerere.ai.provider.ProviderSetting
+import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.codex.*
 import org.koin.compose.koinInject
 import java.time.Instant
@@ -40,8 +43,12 @@ fun CodexProviderConfigure(provider: ProviderSetting.Codex, onEdit: (ProviderSet
         val models = manager.getProviderByType(current).listModels(current)
         if (models.isEmpty()) { feedback = "官方未返回可用模型，请稍后重试"; return }
         val latest = latestProvider
-        latestEdit(latest.copy(models = mergeCodexModelMetadata(latest, models, addMissing = true)))
-        feedback = "已获取 ${models.size} 个模型"
+        latestEdit(latest.copy(models = mergeCodexModelMetadata(latest, models, addMissing = false)))
+        feedback = if (latest.models.isEmpty()) {
+            "已获取到 ${models.size} 个官方模型，请切换到「模型」页点击底部模型库自由勾选添加"
+        } else {
+            "已刷新 ${models.size} 个官方模型资料，可在「模型」页自由勾选或移除模型"
+        }
     }
 
     LaunchedEffect(status) {
@@ -56,7 +63,20 @@ fun CodexProviderConfigure(provider: ProviderSetting.Codex, onEdit: (ProviderSet
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text("ChatGPT 订阅 · OpenAI Codex", style = MaterialTheme.typography.titleMedium)
         Text("直接连接 OpenAI 官方服务。OAuth 凭据只保存在本机，不随配置或备份导出。", style = MaterialTheme.typography.bodySmall)
-        Text("自动识别模型在登录或刷新模型后跟随官方资料更新，保存配置后生效；打开模型列表时也会更新。手动设置保留，离线使用上次能力。", style = MaterialTheme.typography.bodySmall)
+        Text("登录或刷新后会获取官方模型目录；请在「模型」页自由勾选需要的模型，已添加且开启自动识别的模型会跟随官方资料更新，手动设置保留。", style = MaterialTheme.typography.bodySmall)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(stringResource(id = R.string.setting_provider_page_enable), modifier = Modifier.weight(1f))
+            Checkbox(
+                checked = provider.enabled,
+                onCheckedChange = { onEdit(provider.copy(enabled = it)) },
+            )
+        }
+        OutlinedTextField(
+            value = provider.name,
+            onValueChange = { onEdit(provider.copy(name = it.trim())) },
+            label = { Text(stringResource(id = R.string.setting_provider_page_name)) },
+            modifier = Modifier.fillMaxWidth(),
+        )
         Text("当前：${if (storageUnavailable) "本机凭据暂时无法读取" else if (accounts.isEmpty()) "未登录" else "已登录 ${accounts.size} 个账号"}")
         if (storageUnavailable) {
             Text("凭据仍保留在本机。请解锁设备后重试，无需立即重新登录。", style = MaterialTheme.typography.bodySmall)

@@ -94,24 +94,6 @@ internal class ChatQueuedGenerationRunner(
         // 这一轮仅本次请求可用的录音（视频通话手动录音，直传路线）。
         val transientAudio = queued.transientAudio
         val audioOwnership = transientAudio?.let { TransientAudioClip.RequestOwnership(it) }
-        // 用户一开口就立即撤销旧主动闹钟。新的休眠计时必须等本轮正常回复结束后再开始，
-        // 避免 AI 正在聊天时主动器到点，也避免长回复吃掉休眠间隔。
-        val currentProactiveSetting = settingsStore.settingsFlow.value.proactiveMessageSetting
-        if (currentProactiveSetting.enabled) {
-            ProactiveMessageService.resetConversationSlot(context, conversationId.toString())
-            if (currentProactiveSetting.assistantConfigs.orEmpty().any {
-                    it.enabled && it.conversationId != conversationId.toString()
-                } ||
-                (currentProactiveSetting.allowAiScheduledWakeup &&
-                    ProactiveWakeupStore(context).all().isNotEmpty())
-            ) {
-                // Other conversations keep their appointments while this one is chatting.
-                // A busy target retains its appointment and retries after ownership is released.
-                ProactiveMessageService.scheduleNext(context, currentProactiveSetting)
-            } else {
-                ProactiveMessageService.cancel(context)
-            }
-        }
 
         val trace = LoadingDiagnostics.begin(context, "chat.send", timeoutMillis = 0)
         // 本次新建的永久帧（手动夹帧/留影）的归属状态。
@@ -123,6 +105,24 @@ internal class ChatQueuedGenerationRunner(
         val job = appScope.launch(start = CoroutineStart.LAZY) {
             var failure: Throwable? = null
             try {
+                // 用户一开口就立即撤销旧主动闹钟。新的休眠计时必须等本轮正常回复结束后再开始，
+                // 避免 AI 正在聊天时主动器到点，也避免长回复吃掉休眠间隔。
+                val currentProactiveSetting = settingsStore.settingsFlow.value.proactiveMessageSetting
+                if (currentProactiveSetting.enabled) {
+                    ProactiveMessageService.resetConversationSlot(context, conversationId.toString())
+                    if (currentProactiveSetting.assistantConfigs.orEmpty().any {
+                            it.enabled && it.conversationId != conversationId.toString()
+                        } ||
+                        (currentProactiveSetting.allowAiScheduledWakeup &&
+                            ProactiveWakeupStore(context).all().isNotEmpty())
+                    ) {
+                        // Other conversations keep their appointments while this one is chatting.
+                        // A busy target retains its appointment and retries after ownership is released.
+                        ProactiveMessageService.scheduleNext(context, currentProactiveSetting)
+                    } else {
+                        ProactiveMessageService.cancel(context)
+                    }
+                }
                 // 录音的所有权先交给请求：在构造 provider payload 之前认领，
                 // 这样"重新派发队列/暂停/撤回"都不可能把正在序列化的文件删掉。
                 check(audioOwnership == null || audioOwnership.beginRequest()) {

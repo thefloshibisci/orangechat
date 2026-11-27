@@ -228,4 +228,80 @@ class ConversationQueueSessionTest {
             assertTrue(session.messageQueue.inFlightMessages.isEmpty())
         } finally { session.cleanup(); runCurrent() }
     }
+
+    @Test fun submitMessageOnIdleLoadedSessionDispatchesWithoutFlashingPendingQueue() = runTest {
+        val session = session(backgroundScope)
+        val emittedPendingCounts = mutableListOf<Int>()
+        val collector = launch(kotlinx.coroutines.Dispatchers.Unconfined) {
+            session.messageQueue.state.collect { emittedPendingCounts += it.messages.size }
+        }
+        try {
+            val result = session.submitMessage(
+                enqueuePending = { session.messageQueue.enqueue(text("hello")) },
+                enqueueInFlight = { session.messageQueue.enqueueInFlight(text("hello")) },
+                createJob = { backgroundScope.launch(start = CoroutineStart.LAZY) { awaitCancellation() } },
+            )
+            assertNotNull(result)
+            assertNotNull(result!!.immediateJob)
+            assertTrue(session.isGenerating)
+            assertEquals(1, session.messageQueue.inFlightMessages.size)
+            assertEquals(result.message.id, session.messageQueue.inFlightMessages.single().id)
+            assertTrue(session.messageQueue.state.value.messages.isEmpty())
+            assertTrue(emittedPendingCounts.all { it == 0 })
+        } finally {
+            collector.cancel()
+            session.cleanup()
+            runCurrent()
+        }
+    }
+
+    @Test fun submitMessageWhileBusyPausedOrUnloadedQueuesPendingItem() = runTest {
+        val busySession = session(backgroundScope)
+        val activeJob = backgroundScope.launch(start = CoroutineStart.LAZY) { awaitCancellation() }
+        try {
+            busySession.setJob(activeJob)
+            val queuedResult = busySession.submitMessage(
+                enqueuePending = { busySession.messageQueue.enqueue(text("queued while busy")) },
+                enqueueInFlight = { busySession.messageQueue.enqueueInFlight(text("queued while busy")) },
+                createJob = { error("Must not create immediate job while generating") },
+            )!!
+            assertNull(queuedResult.immediateJob)
+            assertEquals(1, busySession.messageQueue.state.value.messages.size)
+        } finally {
+            activeJob.cancel()
+            busySession.cleanup()
+            runCurrent()
+        }
+
+        val pausedSession = session(backgroundScope)
+        try {
+            pausedSession.messageQueue.enqueue(text("first pending"))
+            pausedSession.messageQueue.pause()
+            val queuedWhilePaused = pausedSession.submitMessage(
+                enqueuePending = { pausedSession.messageQueue.enqueue(text("second pending")) },
+                enqueueInFlight = { pausedSession.messageQueue.enqueueInFlight(text("second pending")) },
+                createJob = { error("Must not dispatch into paused queue") },
+            )!!
+            assertNull(queuedWhilePaused.immediateJob)
+            assertEquals(2, pausedSession.messageQueue.state.value.messages.size)
+        } finally {
+            pausedSession.cleanup()
+            runCurrent()
+        }
+
+        val unloadedSession = session(backgroundScope)
+        try {
+            unloadedSession.state.value = unloadedSession.state.value.copy(messageNodesLoaded = false)
+            val queuedWhileUnloaded = unloadedSession.submitMessage(
+                enqueuePending = { unloadedSession.messageQueue.enqueue(text("waiting for history")) },
+                enqueueInFlight = { unloadedSession.messageQueue.enqueueInFlight(text("waiting for history")) },
+                createJob = { error("Must not dispatch before history loads") },
+            )!!
+            assertNull(queuedWhileUnloaded.immediateJob)
+            assertEquals(1, unloadedSession.messageQueue.state.value.messages.size)
+        } finally {
+            unloadedSession.cleanup()
+            runCurrent()
+        }
+    }
 }

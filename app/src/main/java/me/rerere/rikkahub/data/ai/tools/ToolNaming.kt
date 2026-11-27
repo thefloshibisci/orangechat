@@ -26,6 +26,17 @@ object ToolNaming {
     private const val SHORT_KEY_LENGTH = 8
     // 前缀(4) + 短键(8) + 分隔符(1) = 13
     private const val HEADER_LENGTH = MCP_PREFIX.length + SHORT_KEY_LENGTH + 1
+    private const val MAX_TOOL_NAME_LENGTH = 64
+    private const val MAX_TOOL_SUFFIX_LENGTH = MAX_TOOL_NAME_LENGTH - HEADER_LENGTH
+    private val TOOL_NAME_INVALID_CHARS = Regex("[^a-zA-Z0-9_-]+")
+
+    private fun sanitizeToolSuffix(raw: String): String = raw
+        .trim()
+        .replace(TOOL_NAME_INVALID_CHARS, "_")
+        .trim('_')
+        .take(MAX_TOOL_SUFFIX_LENGTH)
+        .trimEnd('_')
+        .ifBlank { "tool" }
 
     /**
      * 构造 MCP 工具最终名字
@@ -37,7 +48,9 @@ object ToolNaming {
      */
     fun buildMcpToolName(serverId: Uuid, toolName: String): String {
         val shortKey = String.format("%08x", serverId.toString().hashCode())
-        return "$MCP_PREFIX${shortKey}_$toolName"
+        // Callers such as GongduToolResultPolicy pass "" to construct the server's prefix.
+        val suffix = if (toolName.isEmpty()) "" else sanitizeToolSuffix(toolName)
+        return "$MCP_PREFIX${shortKey}_$suffix"
     }
 
     /**
@@ -50,7 +63,7 @@ object ToolNaming {
      */
     fun buildPluginToolName(pluginId: String, toolName: String): String {
         val shortKey = String.format("%08x", pluginId.hashCode())
-        return "$PLUGIN_PREFIX${shortKey}_$toolName"
+        return "$PLUGIN_PREFIX${shortKey}_${sanitizeToolSuffix(toolName)}"
     }
 
     /**

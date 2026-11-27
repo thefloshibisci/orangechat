@@ -147,18 +147,20 @@ class MessageQueue internal constructor(
     ): QueuedMessage? {
         if (parts.isEmptyInputMessage() && existingMessageId == null) return null
         if (existingMessageId != null && (state.value.messages + inFlight.values).any { it.existingMessageId == existingMessageId }) return null
-        val message = QueuedMessage(
-            id = newMessageId ?: Uuid.random(),
-            parts = parts.toList(), answer = answer, interaction = interaction,
+        val message = buildQueuedMessage(
+            parts = parts,
+            answer = answer,
+            interaction = interaction,
             transientSystemPrompt = transientSystemPrompt,
             transientSystemPromptWithoutImages = transientSystemPromptWithoutImages,
             enableTools = enableTools,
             existingMessageId = existingMessageId,
-            transientImageUrls = transientImageUrls.toList(),
+            transientImageUrls = transientImageUrls,
             transientImageScope = transientImageScope,
-            ownedImageUrls = ownedImageUrls.toList(),
+            ownedImageUrls = ownedImageUrls,
             requestToken = requestToken,
             transientAudio = transientAudio,
+            newMessageId = newMessageId,
         )
         // Resolve a blocked caller before publishing the entry: no observer can attach under this monitor.
         // Content and completion remain available for an explicit user resume.
@@ -166,6 +168,77 @@ class MessageQueue internal constructor(
         publish(state.value.copy(messages = state.value.messages + message))
         return message
     }
+
+    /** Records an immediately dispatched item straight into [inFlight] without flashing [state]. */
+    @Synchronized
+    internal fun enqueueInFlight(
+        parts: List<UIMessagePart>,
+        answer: Boolean = true,
+        interaction: UIMessageAnnotation.AvatarInteraction? = null,
+        transientSystemPrompt: String? = null,
+        transientSystemPromptWithoutImages: String? = null,
+        enableTools: Boolean = true,
+        existingMessageId: Uuid? = null,
+        transientImageUrls: List<String> = emptyList(),
+        transientImageScope: me.rerere.rikkahub.data.video.VideoFrameRequestScope? = null,
+        ownedImageUrls: List<String> = emptyList(),
+        requestToken: String? = null,
+        transientAudio: me.rerere.rikkahub.data.video.TransientAudioClip? = null,
+        newMessageId: Uuid? = null,
+    ): QueuedMessage? {
+        val current = state.value
+        if (current.paused || current.messages.isNotEmpty()) return null
+        if (parts.isEmptyInputMessage() && existingMessageId == null) return null
+        if (existingMessageId != null && inFlight.values.any { it.existingMessageId == existingMessageId }) return null
+        val message = buildQueuedMessage(
+            parts = parts,
+            answer = answer,
+            interaction = interaction,
+            transientSystemPrompt = transientSystemPrompt,
+            transientSystemPromptWithoutImages = transientSystemPromptWithoutImages,
+            enableTools = enableTools,
+            existingMessageId = existingMessageId,
+            transientImageUrls = transientImageUrls,
+            transientImageScope = transientImageScope,
+            ownedImageUrls = ownedImageUrls,
+            requestToken = requestToken,
+            transientAudio = transientAudio,
+            newMessageId = newMessageId,
+        )
+        inFlight[message.id] = message
+        refreshPins(current.messages)
+        return message
+    }
+
+    private fun buildQueuedMessage(
+        parts: List<UIMessagePart>,
+        answer: Boolean,
+        interaction: UIMessageAnnotation.AvatarInteraction?,
+        transientSystemPrompt: String?,
+        transientSystemPromptWithoutImages: String?,
+        enableTools: Boolean,
+        existingMessageId: Uuid?,
+        transientImageUrls: List<String>,
+        transientImageScope: me.rerere.rikkahub.data.video.VideoFrameRequestScope?,
+        ownedImageUrls: List<String>,
+        requestToken: String?,
+        transientAudio: me.rerere.rikkahub.data.video.TransientAudioClip?,
+        newMessageId: Uuid?,
+    ): QueuedMessage = QueuedMessage(
+        id = newMessageId ?: Uuid.random(),
+        parts = parts.toList(),
+        answer = answer,
+        interaction = interaction,
+        transientSystemPrompt = transientSystemPrompt,
+        transientSystemPromptWithoutImages = transientSystemPromptWithoutImages,
+        enableTools = enableTools,
+        existingMessageId = existingMessageId,
+        transientImageUrls = transientImageUrls.toList(),
+        transientImageScope = transientImageScope,
+        ownedImageUrls = ownedImageUrls.toList(),
+        requestToken = requestToken,
+        transientAudio = transientAudio,
+    )
 
     @Synchronized
     fun takeNext(): QueuedMessage? {

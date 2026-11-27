@@ -163,7 +163,7 @@ class ModelCapabilitySyncTest {
             val overrideModels = providers.single { it.id == overrideProvider.id }.models
             assertEquals(listOf(ModelAbility.TOOL), nativeModels.first().abilities)
             assertEquals(manual, nativeModels[1])
-            assertEquals(listOf("next-model"), nativeModels.drop(2).map { it.modelId })
+            assertEquals(listOf(automatic.modelId, manual.modelId), nativeModels.map { it.modelId })
             assertEquals(listOf("high"), overrideModels.single().codexReasoningEfforts)
             assertEquals(override.id, overrideModels.single().id)
             assertEquals(unrelatedProviders, providers.filterNot { it.id in targetIds })

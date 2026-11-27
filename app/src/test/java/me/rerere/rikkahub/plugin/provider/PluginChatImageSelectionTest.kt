@@ -11,6 +11,7 @@ import kotlinx.serialization.json.*
 import me.rerere.ai.core.MessageRole
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
+import me.rerere.rikkahub.data.ai.tools.ToolNaming
 import me.rerere.rikkahub.plugin.model.PluginToolDefinition
 import me.rerere.rikkahub.plugin.model.PluginToolParameter
 import org.junit.Assert.*
@@ -153,5 +154,35 @@ class PluginChatImageSelectionTest {
         assertEquals(3, rows.size)
         assertFalse(rows.first().jsonObject["available"]!!.jsonPrimitive.boolean)
         assertTrue(rows.last().jsonObject["available"]!!.jsonPrimitive.boolean)
+    }
+
+    @Test fun pluginToolParametersNormalizesTypesAndToolNamingSanitizesSuffixes() {
+        val def = PluginToolDefinition(
+            name = "weird",
+            description = "weird",
+            parameters = listOf(
+                PluginToolParameter("count", "int"),
+                PluginToolParameter("ratio", "Float"),
+                PluginToolParameter("flag", "bool"),
+                PluginToolParameter("custom", "any"),
+                PluginToolParameter("payload", "object"),
+                PluginToolParameter("tags", "array"),
+            ),
+        )
+        val schema = pluginToolParameters(def)
+        assertEquals("integer", schema["count"]!!.jsonObject["type"]!!.jsonPrimitive.content)
+        assertEquals("number", schema["ratio"]!!.jsonObject["type"]!!.jsonPrimitive.content)
+        assertEquals("boolean", schema["flag"]!!.jsonObject["type"]!!.jsonPrimitive.content)
+        assertEquals("string", schema["custom"]!!.jsonObject["type"]!!.jsonPrimitive.content)
+        assertEquals("object", schema["payload"]!!.jsonObject["type"]!!.jsonPrimitive.content)
+        assertTrue(schema["payload"]!!.jsonObject.containsKey("properties"))
+        assertEquals("array", schema["tags"]!!.jsonObject["type"]!!.jsonPrimitive.content)
+        assertEquals("string", schema["tags"]!!.jsonObject["items"]!!.jsonObject["type"]!!.jsonPrimitive.content)
+
+        val pluginToolName = ToolNaming.buildPluginToolName("com.example.plugin", "bad.tool name/(very_long_" + "x".repeat(60) + ")")
+        assertTrue(pluginToolName.length <= 64)
+        assertTrue(Regex("^plg_[0-9a-f]{8}_[a-zA-Z0-9_-]+$").matches(pluginToolName))
+        val fallbackName = ToolNaming.buildPluginToolName("com.example.plugin", "???")
+        assertTrue(fallbackName.endsWith("_tool"))
     }
 }

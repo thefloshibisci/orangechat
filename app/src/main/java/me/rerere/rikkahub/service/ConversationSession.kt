@@ -294,14 +294,59 @@ class ConversationSession(
         queueBarrierState.first { it == 0 }
     }
 
+    internal data class SubmitResult(
+        val message: QueuedMessage,
+        val immediateJob: Job? = null,
+    )
+
+    private fun canDispatchNowLocked(): Boolean = !isDeleted && !cleanedUp && queueDispatchBarriers <= 0 &&
+        !isGenerating && state.value.messageNodesLoaded && state.value.currentMessages.none { message ->
+            message.getTools().any { it.isPending || it.canResumeExecution }
+        }
+
+    /** Dispatches directly to in-flight when idle and loaded so normal sends never flash the queue panel. */
+    internal fun submitMessage(
+        enqueuePending: () -> QueuedMessage?,
+        enqueueInFlight: () -> QueuedMessage?,
+        createJob: (QueuedMessage) -> Job,
+    ): SubmitResult? {
+        var failed: Pair<QueuedMessage, Throwable>? = null
+        var immediateRegistration: JobRegistration? = null
+        val queued = synchronized(this) {
+            if (isDeleted || cleanedUp) return@synchronized null
+            // A fresh send after stopping an empty queue is explicit intent to continue.
+            // A manually paused backlog remains paused until the user resumes it.
+            if (messageQueue.state.value.messages.isEmpty()) messageQueue.resume()
+            if (canDispatchNowLocked()) {
+                enqueueInFlight()?.let { direct ->
+                    try {
+                        immediateRegistration = registerJobLocked(createJob(direct), cancelPrevious = false)
+                    } catch (error: Throwable) {
+                        failed = direct to error
+                    }
+                    return@synchronized direct
+                }
+            }
+            enqueuePending()
+        }
+        failed?.let { (message, error) ->
+            messageQueue.pause()
+            messageQueue.complete(message.id, error = error)
+            throw error
+        }
+        queued ?: return null
+        immediateRegistration?.let { registration ->
+            finishJobRegistration(registration)
+            return SubmitResult(queued, registration.job)
+        }
+        return SubmitResult(queued, null)
+    }
+
     /** Atomically reserve the FIFO head and register an unstarted job before another producer can claim. */
     internal fun dispatchNextQueuedMessage(createJob: (QueuedMessage) -> Job): Job? {
         var failed: Pair<QueuedMessage, Throwable>? = null
         val registration = synchronized(this) {
-            if (isDeleted || cleanedUp || queueDispatchBarriers > 0 || isGenerating ||
-                !state.value.messageNodesLoaded || state.value.currentMessages.any { message ->
-                    message.getTools().any { it.isPending || it.canResumeExecution }
-                }) return@synchronized null
+            if (!canDispatchNowLocked()) return@synchronized null
             val queued = messageQueue.takeNext() ?: return@synchronized null
             try {
                 registerJobLocked(createJob(queued), cancelPrevious = false)

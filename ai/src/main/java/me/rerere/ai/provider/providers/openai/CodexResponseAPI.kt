@@ -21,12 +21,9 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.encodeToJsonElement
 import kotlinx.serialization.json.intOrNull
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import me.rerere.ai.core.MessageRole
-import me.rerere.ai.core.ReasoningLevel
 import me.rerere.ai.core.TokenUsage
 import me.rerere.ai.provider.ModelAbility
 import me.rerere.ai.provider.TextGenerationParams
@@ -51,12 +48,67 @@ import kotlin.time.Clock
 
 import java.io.IOException
 
-class CodexHttpFailure(code: Int) : IOException(when (code) {
-    401 -> "Codex 登录授权失败（HTTP 401）"
-    403 -> "Codex 拒绝访问（HTTP 403）"
-    429 -> "Codex 请求受限，请检查额度或稍后重试（HTTP 429）"
-    else -> "Codex 请求失败（HTTP $code）"
-})
+class CodexHttpFailure(val code: Int, val detail: String? = null) : IOException(
+    buildString {
+        append(
+            when (code) {
+                401 -> "Codex 登录授权失败（HTTP 401）"
+                403 -> "Codex 拒绝访问（HTTP 403）"
+                429 -> "Codex 请求受限，请检查额度或稍后重试（HTTP 429）"
+                else -> "Codex 请求失败（HTTP $code）"
+            }
+        )
+        if (!detail.isNullOrBlank()) append("：").append(detail)
+    }
+)
+
+class CodexStreamFailure(message: String) : IOException(message)
+
+private val CODEX_BEARER_REGEX = Regex("""Bearer\s+\S+""", RegexOption.IGNORE_CASE)
+private val CODEX_SK_KEY_REGEX = Regex("""sk-[A-Za-z0-9_-]+""")
+private val CODEX_JWT_REGEX = Regex("""eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)?""")
+private val CODEX_URL_REGEX = Regex("""https?://\S+""", RegexOption.IGNORE_CASE)
+private val CODEX_CONTROL_REGEX = Regex("""[\r\n\t\u0000-\u001F\u007F]+""")
+
+internal fun sanitizeCodexErrorDetail(raw: String?): String? {
+    if (raw.isNullOrBlank()) return null
+    val cleaned = raw
+        .replace(CODEX_BEARER_REGEX, "[redacted]")
+        .replace(CODEX_SK_KEY_REGEX, "[redacted]")
+        .replace(CODEX_JWT_REGEX, "[redacted]")
+        .replace(CODEX_URL_REGEX, "[url]")
+        .replace(CODEX_CONTROL_REGEX, " ")
+        .replace(Regex("""\s{2,}"""), " ")
+        .trim()
+        .take(160)
+        .trim()
+    return cleaned.takeIf { it.isNotBlank() }
+}
+
+internal fun extractCodexStructuredError(obj: JsonObject): String? {
+    fun formatErrorObj(err: JsonObject): String? {
+        val message = err["message"]?.jsonPrimitiveOrNull?.contentOrNull
+        val code = err["code"]?.jsonPrimitiveOrNull?.contentOrNull
+        val param = err["param"]?.jsonPrimitiveOrNull?.contentOrNull
+        val type = err["type"]?.jsonPrimitiveOrNull?.contentOrNull
+        val head = listOfNotNull(
+            code?.takeIf { it.isNotBlank() },
+            param?.takeIf { it.isNotBlank() }?.let { "param=$it" },
+        ).joinToString(", ")
+        return buildList {
+            if (head.isNotBlank()) add("[$head]")
+            else if (!type.isNullOrBlank()) add("[$type]")
+            if (!message.isNullOrBlank()) add(message)
+        }.joinToString(" ").takeIf { it.isNotBlank() }
+    }
+    val errorObj = obj["error"]?.jsonObjectOrNull
+        ?: obj["response"]?.jsonObjectOrNull?.get("error")?.jsonObjectOrNull
+    val candidate = errorObj?.let(::formatErrorObj)
+        ?: obj["response"]?.jsonObjectOrNull?.get("incomplete_details")?.jsonObjectOrNull
+            ?.get("reason")?.jsonPrimitiveOrNull?.contentOrNull
+        ?: obj["detail"]?.jsonPrimitiveOrNull?.contentOrNull
+    return sanitizeCodexErrorDetail(candidate)
+}
 
 /** Independent Codex transport; standard OpenAI ResponseAPI remains unchanged. */
 class CodexResponseAPI(private val client: OkHttpClient) {
@@ -87,25 +139,35 @@ class CodexResponseAPI(private val client: OkHttpClient) {
             override fun onEvent(eventSource: EventSource, id: String?, type: String?, data: String) {
                 if (data == "[DONE]") { if (completed) close() else close(IOException("Codex stream ended before completion")); return }
                 try {
-                    val raw = json.parseToJsonElement(data).jsonObject
-                    val eventType = raw["type"]?.jsonPrimitive?.contentOrNull ?: type
-                    if (eventType in listOf("error", "response.failed", "response.incomplete")) {
-                        close(IOException("Codex response failed or was incomplete")); return
+                    val raw = json.parseToJsonElement(data).jsonObjectOrNull
+                    if (raw == null) {
+                        close(IOException("Invalid Codex stream event"))
+                        return
                     }
-                    val item = raw["item"] as? JsonObject
+                    val eventType = raw["type"]?.jsonPrimitiveOrNull?.contentOrNull ?: type
+                    if (eventType in listOf("error", "response.failed", "response.incomplete")) {
+                        val detail = extractCodexStructuredError(raw)
+                        close(CodexStreamFailure(detail?.let { "Codex 返回错误：$it" } ?: "Codex response failed or was incomplete"))
+                        return
+                    }
+                    val item = raw["item"]?.jsonObjectOrNull
                     var event = raw
-                    if (eventType == "response.output_item.added" && item?.get("type")?.jsonPrimitive?.contentOrNull == "function_call") {
-                        val itemId = item.getValue("id").jsonPrimitive.content
-                        val callId = item.getValue("call_id").jsonPrimitive.content
-                        callIds[itemId] = callId
-                        // The done event carries the complete arguments. Do not append an
-                        // initial snapshot twice through UIMessagePart.Tool.merge().
-                        event = JsonObject(raw + ("item" to JsonObject(item + mapOf(
-                            "id" to JsonPrimitive(callId), "arguments" to JsonPrimitive(""),
-                        ))))
+                    if (eventType == "response.output_item.added" && item?.get("type")?.jsonPrimitiveOrNull?.contentOrNull == "function_call") {
+                        val itemId = item["id"]?.jsonPrimitiveOrNull?.contentOrNull
+                        val callId = item["call_id"]?.jsonPrimitiveOrNull?.contentOrNull
+                        if (itemId != null && callId != null) {
+                            callIds[itemId] = callId
+                            // The done event carries the complete arguments. Do not append an
+                            // initial snapshot twice through UIMessagePart.Tool.merge().
+                            event = JsonObject(raw + ("item" to JsonObject(item + mapOf(
+                                "id" to JsonPrimitive(callId), "arguments" to JsonPrimitive(""),
+                            ))))
+                        }
                     } else if (eventType == "response.function_call_arguments.done") {
-                        val itemId = raw.getValue("item_id").jsonPrimitive.content
-                        event = JsonObject(raw + ("item_id" to JsonPrimitive(callIds[itemId] ?: itemId)))
+                        val itemId = raw["item_id"]?.jsonPrimitiveOrNull?.contentOrNull
+                        if (itemId != null) {
+                            event = JsonObject(raw + ("item_id" to JsonPrimitive(callIds[itemId] ?: itemId)))
+                        }
                     }
                     parseResponseDelta(event)?.let { trySend(it) }
                     if (eventType == "response.completed") { completed = true; close() }
@@ -114,8 +176,24 @@ class CodexResponseAPI(private val client: OkHttpClient) {
                 }
             }
             override fun onFailure(eventSource: EventSource, t: Throwable?, response: Response?) {
-                response?.close()
-                close(if (response != null && !response.isSuccessful) CodexHttpFailure(response.code) else IOException("Codex stream request failed"))
+                val failure = if (response != null && !response.isSuccessful) {
+                    val detail = runCatching {
+                        val bodyText = response.peekBody(4096L).string()
+                        val parsed = json.parseToJsonElement(bodyText) as? JsonObject
+                        parsed?.let(::extractCodexStructuredError)
+                    }.getOrNull()
+                    val code = response.code
+                    response.close()
+                    CodexHttpFailure(code, detail)
+                } else {
+                    response?.close()
+                    val errName = t?.javaClass?.simpleName?.takeIf { it.isNotBlank() }
+                    CodexStreamFailure(
+                        errName?.let { "Codex 网络连接失败（$it）；请检查代理/VPN 或网络状态" }
+                            ?: "Codex 网络连接失败；请检查代理/VPN 或网络状态"
+                    )
+                }
+                close(failure)
             }
             override fun onClosed(eventSource: EventSource) {
                 if (completed) close() else close(IOException("Codex stream closed before completion"))
@@ -142,10 +220,22 @@ class CodexResponseAPI(private val client: OkHttpClient) {
         }
         if (params.tools.isNotEmpty()) {
             putJsonArray("tools") {
-                params.tools.sortedBy { it.name }.forEach { tool -> add(buildJsonObject {
-                    put("type", "function"); put("name", tool.name); put("description", tool.description)
-                    put("parameters", json.encodeToJsonElement(tool.parameters()))
-                }) }
+                params.tools.distinctBy { it.name }.sortedBy { it.name }.forEach { tool ->
+                    add(buildJsonObject {
+                        put("type", "function")
+                        put("name", tool.name)
+                        put("description", tool.description)
+                        val schema = tool.parameters()
+                        put(
+                            "parameters",
+                            if (schema != null) json.encodeToJsonElement(schema)
+                            else buildJsonObject {
+                                put("type", "object")
+                                put("properties", buildJsonObject {})
+                            },
+                        )
+                    })
+                }
             }
             put("parallel_tool_calls", true)
         }
@@ -181,7 +271,10 @@ class CodexResponseAPI(private val client: OkHttpClient) {
                     group.parts.forEach { part ->
                         when (part) {
                             is UIMessagePart.Reasoning -> {
-                                if (part.metadata?.get("encrypted_content")?.jsonPrimitiveOrNull?.contentOrNull.isNullOrBlank()) return@forEach
+                                val encrypted = part.metadata?.get("encrypted_content")?.jsonPrimitiveOrNull?.contentOrNull
+                                    ?.takeIf { it.isNotBlank() && it != "null" }
+                                val providerTag = part.metadata?.get("reasoning_provider")?.jsonPrimitiveOrNull?.contentOrNull
+                                if (encrypted == null || providerTag != "codex") return@forEach
                                 // 先输出累积的文本/图片内容
                                 if (contentBuffer.isNotEmpty()) {
                                     addContentItem(MessageRole.ASSISTANT, contentBuffer)
@@ -194,22 +287,19 @@ class CodexResponseAPI(private val client: OkHttpClient) {
                                         put("id", it)
                                     }
                                     put("summary", buildJsonArray {
-                                        add(buildJsonObject {
-                                            put("type", "summary_text")
-                                            put("text", part.reasoning)
-                                        })
+                                        if (part.reasoning.isNotBlank()) {
+                                            add(buildJsonObject {
+                                                put("type", "summary_text")
+                                                put("text", part.reasoning)
+                                            })
+                                        }
                                     })
-                                    part.metadata?.get("encrypted_content")?.jsonPrimitiveOrNull?.contentOrNull?.let {
-                                        put(
-                                            "encrypted_content",
-                                            part.metadata?.get("encrypted_content")?.jsonPrimitive?.contentOrNull ?: ""
-                                        )
-                                    }
+                                    put("encrypted_content", encrypted)
                                 })
                             }
 
                             is UIMessagePart.Image -> {
-                                val callId = part.metadata?.get("openai_image_call_id")?.jsonPrimitive?.contentOrNull
+                                val callId = part.metadata?.get("openai_image_call_id")?.jsonPrimitiveOrNull?.contentOrNull
                                 if (callId != null) {
                                     if (contentBuffer.isNotEmpty()) {
                                         addContentItem(MessageRole.ASSISTANT, contentBuffer)
@@ -248,8 +338,16 @@ class CodexResponseAPI(private val client: OkHttpClient) {
                             put("name", tool.toolName)
                             put("arguments", tool.input.ifBlank { "{}" }) // no-arg calls stream "", which strict proxies reject
                         })
-                        val textOutput = tool.output.filterIsInstance<UIMessagePart.Text>().joinToString("\n") { it.text }
                         val imageOutput = tool.output.filterIsInstance<UIMessagePart.Image>()
+                        val textOutput = tool.output.filterIsInstance<UIMessagePart.Text>()
+                            .joinToString("\n") { it.text }
+                            .ifBlank {
+                                if (imageOutput.isNotEmpty()) {
+                                    "[Tool returned an image; see the following attachment.]"
+                                } else {
+                                    "[Tool completed with no text output.]"
+                                }
+                            }
 
                         add(buildJsonObject {
                             put("type", "function_call_output")
@@ -299,38 +397,41 @@ class CodexResponseAPI(private val client: OkHttpClient) {
     }
 
     private fun JsonArrayBuilder.addContentItem(role: MessageRole, parts: List<UIMessagePart>) {
-        if (parts.isEmpty()) return
+        val usableParts = parts.filter { part ->
+            when (part) {
+                is UIMessagePart.Text -> part.text.isNotBlank()
+                is UIMessagePart.Image -> part.url.isNotBlank()
+                else -> false
+            }
+        }
+        if (usableParts.isEmpty()) return
 
         add(buildJsonObject {
+            put("type", "message")
             put("role", JsonPrimitive(role.name.lowercase()))
-
-            if (parts.isOnlyTextPart()) {
-                put("content", (parts.first() as UIMessagePart.Text).text)
-            } else {
-                putJsonArray("content") {
-                    parts.forEach { part ->
-                        when (part) {
-                            is UIMessagePart.Text -> {
-                                add(buildJsonObject {
-                                    put("type", if (role == MessageRole.USER) "input_text" else "output_text")
-                                    put("text", part.text)
-                                })
-                            }
-
-                            is UIMessagePart.Image -> {
-                                add(buildJsonObject {
-                                    part.encodeBase64().onSuccess { encodedImage ->
-                                        put("type", if (role == MessageRole.USER) "input_image" else "output_image")
-                                        put("image_url", encodedImage.base64)
-                                    }.onFailure {
-                                        put("type", if (role == MessageRole.USER) "input_text" else "output_text")
-                                        put("text", "[Image unavailable: the attachment could not be read. Do not infer its contents.]")
-                                    }
-                                })
-                            }
-
-                            else -> {}
+            putJsonArray("content") {
+                usableParts.forEach { part ->
+                    when (part) {
+                        is UIMessagePart.Text -> {
+                            add(buildJsonObject {
+                                put("type", if (role == MessageRole.USER) "input_text" else "output_text")
+                                put("text", part.text)
+                            })
                         }
+
+                        is UIMessagePart.Image -> {
+                            add(buildJsonObject {
+                                part.encodeBase64().onSuccess { encodedImage ->
+                                    put("type", if (role == MessageRole.USER) "input_image" else "output_image")
+                                    put("image_url", encodedImage.base64)
+                                }.onFailure {
+                                    put("type", if (role == MessageRole.USER) "input_text" else "output_text")
+                                    put("text", "[Image unavailable: the attachment could not be read. Do not infer its contents.]")
+                                }
+                            })
+                        }
+
+                        else -> {}
                     }
                 }
             }
@@ -338,18 +439,18 @@ class CodexResponseAPI(private val client: OkHttpClient) {
     }
 
     private fun parseResponseDelta(jsonObject: JsonObject): MessageChunk? {
-        val chunkType = jsonObject["type"]?.jsonPrimitive?.content ?: error("chunk type not found")
+        val chunkType = jsonObject["type"]?.jsonPrimitiveOrNull?.contentOrNull ?: return null
 
         when (chunkType) {
             "response.output_text.delta" -> {
                 return MessageChunk(
-                    id = jsonObject["item_id"]?.jsonPrimitive?.contentOrNull ?: "",
+                    id = jsonObject["item_id"]?.jsonPrimitiveOrNull?.contentOrNull ?: "",
                     model = "",
                     choices = listOf(
                         UIMessageChoice(
                             index = 0,
                             delta = UIMessage.assistant(
-                                jsonObject["delta"]?.jsonPrimitive?.contentOrNull ?: ""
+                                jsonObject["delta"]?.jsonPrimitiveOrNull?.contentOrNull ?: ""
                             ),
                             message = null,
                             finishReason = null
@@ -360,7 +461,7 @@ class CodexResponseAPI(private val client: OkHttpClient) {
 
             "response.reasoning_summary_text.delta", "response.reasoning_text.delta" -> {
                 return MessageChunk(
-                    id = jsonObject["item_id"]?.jsonPrimitive?.contentOrNull ?: "",
+                    id = jsonObject["item_id"]?.jsonPrimitiveOrNull?.contentOrNull ?: "",
                     model = "",
                     choices = listOf(
                         UIMessageChoice(
@@ -369,7 +470,7 @@ class CodexResponseAPI(private val client: OkHttpClient) {
                                 role = MessageRole.ASSISTANT,
                                 parts = listOf(
                                     UIMessagePart.Reasoning(
-                                        reasoning = jsonObject["delta"]?.jsonPrimitive?.contentOrNull
+                                        reasoning = jsonObject["delta"]?.jsonPrimitiveOrNull?.contentOrNull
                                             ?: "",
                                         createdAt = Clock.System.now(),
                                         finishedAt = null
@@ -384,9 +485,9 @@ class CodexResponseAPI(private val client: OkHttpClient) {
             }
 
             "response.output_item.added" -> {
-                val item = jsonObject["item"]?.jsonObject ?: error("chunk item not found")
-                val type = item["type"]?.jsonPrimitive?.content ?: error("chunk type not found")
-                val id = item["id"]?.jsonPrimitive?.content ?: error("chunk id not found")
+                val item = jsonObject["item"]?.jsonObjectOrNull ?: return null
+                val type = item["type"]?.jsonPrimitiveOrNull?.contentOrNull ?: return null
+                val id = item["id"]?.jsonPrimitiveOrNull?.contentOrNull ?: return null
                 if (type == "function_call") {
                     return MessageChunk(
                         id = id,
@@ -400,8 +501,8 @@ class CodexResponseAPI(private val client: OkHttpClient) {
                                     parts = listOf(
                                         UIMessagePart.Tool(
                                             toolCallId = id,
-                                            toolName = item["name"]?.jsonPrimitive?.content ?: "",
-                                            input = item["arguments"]?.jsonPrimitive?.content
+                                            toolName = item["name"]?.jsonPrimitiveOrNull?.contentOrNull ?: "",
+                                            input = item["arguments"]?.jsonPrimitiveOrNull?.contentOrNull
                                                 ?: "",
                                             output = emptyList()
                                         )
@@ -412,7 +513,8 @@ class CodexResponseAPI(private val client: OkHttpClient) {
                         )
                     )
                 } else if (type == "reasoning") {
-                    val encryptedContent = item["encrypted_content"]?.jsonPrimitive?.content
+                    val encryptedContent = item["encrypted_content"]?.jsonPrimitiveOrNull?.contentOrNull
+                        ?.takeIf { it.isNotBlank() && it != "null" }
                     return MessageChunk(
                         id = id,
                         model = "",
@@ -428,8 +530,11 @@ class CodexResponseAPI(private val client: OkHttpClient) {
                                             createdAt = Clock.System.now(),
                                             finishedAt = null,
                                             metadata = buildJsonObject {
-                                                put("encrypted_content", encryptedContent)
+                                                put("reasoning_provider", "codex")
                                                 put("reasoning_id", id)
+                                                if (encryptedContent != null) {
+                                                    put("encrypted_content", encryptedContent)
+                                                }
                                             }
                                         )
                                     )
@@ -439,9 +544,8 @@ class CodexResponseAPI(private val client: OkHttpClient) {
                         )
                     )
                 } else if (type == "image_generation_call") {
-                    val callId = item["id"]?.jsonPrimitive?.content ?: error("call_id not found")
                     return MessageChunk(
-                        id = callId,
+                        id = id,
                         model = "",
                         choices = listOf(
                             UIMessageChoice(
@@ -452,7 +556,7 @@ class CodexResponseAPI(private val client: OkHttpClient) {
                                         UIMessagePart.Image(
                                             url = "",
                                             metadata = buildJsonObject {
-                                                put("openai_image_call_id", callId)
+                                                put("openai_image_call_id", id)
                                             }
                                         )
                                     )
@@ -466,11 +570,12 @@ class CodexResponseAPI(private val client: OkHttpClient) {
             }
 
             "response.output_item.done" -> {
-                val item = jsonObject["item"]?.jsonObject ?: error("chunk item not found")
-                val type = item["type"]?.jsonPrimitive?.content ?: error("chunk type not found")
-                val id = item["id"]?.jsonPrimitive?.content ?: error("chunk id not found")
+                val item = jsonObject["item"]?.jsonObjectOrNull ?: return null
+                val type = item["type"]?.jsonPrimitiveOrNull?.contentOrNull ?: return null
+                val id = item["id"]?.jsonPrimitiveOrNull?.contentOrNull ?: return null
                 if (type == "reasoning") {
-                    val encryptedContent = item["encrypted_content"]?.jsonPrimitive?.content
+                    val encryptedContent = item["encrypted_content"]?.jsonPrimitiveOrNull?.contentOrNull
+                        ?.takeIf { it.isNotBlank() && it != "null" }
                     return MessageChunk(
                         id = id,
                         model = "",
@@ -486,8 +591,11 @@ class CodexResponseAPI(private val client: OkHttpClient) {
                                             createdAt = Clock.System.now(),
                                             finishedAt = null,
                                             metadata = buildJsonObject {
-                                                put("encrypted_content", encryptedContent)
+                                                put("reasoning_provider", "codex")
                                                 put("reasoning_id", id)
+                                                if (encryptedContent != null) {
+                                                    put("encrypted_content", encryptedContent)
+                                                }
                                             }
                                         )
                                     )
@@ -497,9 +605,9 @@ class CodexResponseAPI(private val client: OkHttpClient) {
                         )
                     )
                 } else if (type == "image_generation_call") {
-                    val result = item["result"]?.jsonPrimitive?.content ?: error("result not found")
+                    val result = item["result"]?.jsonPrimitiveOrNull?.contentOrNull ?: return null
                     return MessageChunk(
-                        id = item["id"]?.jsonPrimitive?.content ?: error("item_id not found"),
+                        id = id,
                         model = "",
                         choices = listOf(
                             UIMessageChoice(
@@ -510,7 +618,7 @@ class CodexResponseAPI(private val client: OkHttpClient) {
                                         UIMessagePart.Image(
                                             url = result,
                                             metadata = buildJsonObject {
-                                                put("openai_image_call_id", item["id"]?.jsonPrimitive?.content ?: "")
+                                                put("openai_image_call_id", id)
                                             }
                                         )
                                     )
@@ -525,9 +633,9 @@ class CodexResponseAPI(private val client: OkHttpClient) {
 
             "response.function_call_arguments.done" -> {
                 val toolCallId =
-                    jsonObject["item_id"]?.jsonPrimitive?.content ?: error("item_id not found")
+                    jsonObject["item_id"]?.jsonPrimitiveOrNull?.contentOrNull ?: return null
                 val arguments =
-                    jsonObject["arguments"]?.jsonPrimitive?.content ?: error("arguments not found")
+                    jsonObject["arguments"]?.jsonPrimitiveOrNull?.contentOrNull ?: ""
                 return MessageChunk(
                     id = toolCallId,
                     model = "",
@@ -554,10 +662,10 @@ class CodexResponseAPI(private val client: OkHttpClient) {
 
             "response.completed" -> {
                 return MessageChunk(
-                    id = jsonObject["item_id"]?.jsonPrimitive?.contentOrNull ?: "",
+                    id = jsonObject["item_id"]?.jsonPrimitiveOrNull?.contentOrNull ?: "",
                     model = "",
                     choices = emptyList(),
-                    usage = parseTokenUsage(jsonObject["response"]?.jsonObject?.get("usage")?.jsonObject)
+                    usage = parseTokenUsage(jsonObject["response"]?.jsonObjectOrNull?.get("usage")?.jsonObjectOrNull)
                 )
             }
         }
@@ -568,17 +676,11 @@ class CodexResponseAPI(private val client: OkHttpClient) {
     private fun parseTokenUsage(jsonObject: JsonObject?): TokenUsage? {
         if (jsonObject == null) return null
         return TokenUsage(
-            promptTokens = jsonObject["input_tokens"]?.jsonPrimitive?.intOrNull ?: 0,
-            completionTokens = jsonObject["output_tokens"]?.jsonPrimitive?.intOrNull ?: 0,
-            totalTokens = jsonObject["total_tokens"]?.jsonPrimitive?.intOrNull ?: 0,
-            cachedTokens = jsonObject["input_tokens_details"]?.jsonObjectOrNull?.get("cached_tokens")?.jsonPrimitive?.intOrNull
+            promptTokens = jsonObject["input_tokens"]?.jsonPrimitiveOrNull?.intOrNull ?: 0,
+            completionTokens = jsonObject["output_tokens"]?.jsonPrimitiveOrNull?.intOrNull ?: 0,
+            totalTokens = jsonObject["total_tokens"]?.jsonPrimitiveOrNull?.intOrNull ?: 0,
+            cachedTokens = jsonObject["input_tokens_details"]?.jsonObjectOrNull?.get("cached_tokens")?.jsonPrimitiveOrNull?.intOrNull
                 ?: 0
         )
     }
-}
-
-private fun List<UIMessagePart>.isOnlyTextPart(): Boolean {
-    val gonnaSend = filter { it is UIMessagePart.Text || it is UIMessagePart.Image }.size
-    val texts = filter { it is UIMessagePart.Text }.size
-    return gonnaSend == texts && texts == 1
 }

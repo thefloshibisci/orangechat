@@ -18,6 +18,7 @@ import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.CancellationException
 import me.rerere.ai.provider.providers.openai.CodexHttpFailure
 import me.rerere.ai.provider.providers.openai.CodexResponseAPI
+import me.rerere.ai.provider.providers.openai.CodexStreamFailure
 import me.rerere.ai.ui.UIMessage
 import me.rerere.common.http.await
 import me.rerere.rikkahub.AppScope
@@ -58,7 +59,7 @@ class CodexProvider(
     override suspend fun streamText(providerSetting: ProviderSetting.Codex, messages: List<UIMessage>, params: TextGenerationParams): Flow<MessageChunk> = codexSafe {
         val account = repository.acquireAccount(params.conversationId)
         responseApiFor(account).streamText(account.accessToken, account.chatgptAccountId, messages, params).catch { error ->
-            if (error is CancellationException || error is CodexHttpFailure) throw error
+            if (error is CancellationException || error is CodexHttpFailure || error is CodexStreamFailure) throw error
             throw IllegalStateException("Codex 回复中断；请检查网络、登录状态和订阅额度")
         }
     }
