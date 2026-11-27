@@ -44,6 +44,7 @@ include(":web")
 include(":workspace")
 include(":material3")
 include(":plugin-localdata")
+include(":plugin-localtasks")
 include(":video")
 include(":reading")
 

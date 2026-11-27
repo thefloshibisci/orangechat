@@ -15,7 +15,7 @@ package me.rerere.rikkahub.plugin.localtasks
  * image model/provider. Any missing condition means the model is not even offered the `image`
  * field.
  */
-internal object LocalTaskImagePolicy {
+object LocalTaskImagePolicy {
     fun allows(
         settings: LocalTaskSettings,
         mediaGranted: Boolean,

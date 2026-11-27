@@ -19,6 +19,7 @@ import kotlinx.coroutines.CancellationException
 import me.rerere.ai.provider.providers.openai.CodexHttpFailure
 import me.rerere.ai.provider.providers.openai.CodexResponseAPI
 import me.rerere.ai.provider.providers.openai.CodexStreamFailure
+import me.rerere.ai.provider.providers.openai.extractCodexHttpErrorDetail
 import me.rerere.ai.ui.UIMessage
 import me.rerere.common.http.await
 import me.rerere.rikkahub.AppScope
@@ -45,8 +46,16 @@ class CodexProvider(
             val response = client.newBuilder().authenticator(CodexAuthenticator(repository, account.id))
                 .build().newCall(request).await()
             if (!response.isSuccessful) {
+                val detail = runCatching {
+                    extractCodexHttpErrorDetail(
+                        response.header("cf-mitigated"),
+                        response.header("Content-Type"),
+                        response.peekBody(4096L).string(),
+                    )
+                }.getOrNull()
+                val code = response.code
                 response.close()
-                throw CodexHttpFailure(response.code)
+                throw CodexHttpFailure(code, detail)
             }
             parseCodexModels(json.parseToJsonElement(response.body.string()))
         }}

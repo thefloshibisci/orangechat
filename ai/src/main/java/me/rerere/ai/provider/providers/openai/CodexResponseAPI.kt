@@ -69,6 +69,7 @@ private val CODEX_SK_KEY_REGEX = Regex("""sk-[A-Za-z0-9_-]+""")
 private val CODEX_JWT_REGEX = Regex("""eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)?""")
 private val CODEX_URL_REGEX = Regex("""https?://\S+""", RegexOption.IGNORE_CASE)
 private val CODEX_CONTROL_REGEX = Regex("""[\r\n\t\u0000-\u001F\u007F]+""")
+private val HTML_TITLE_REGEX = Regex("""<title[^>]*>(.*?)</title>""", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
 
 internal fun sanitizeCodexErrorDetail(raw: String?): String? {
     if (raw.isNullOrBlank()) return null
@@ -83,6 +84,39 @@ internal fun sanitizeCodexErrorDetail(raw: String?): String? {
         .take(160)
         .trim()
     return cleaned.takeIf { it.isNotBlank() }
+}
+
+fun extractCodexHttpErrorDetail(
+    cfMitigated: String?,
+    contentType: String?,
+    bodyText: String?,
+): String? {
+    if (!bodyText.isNullOrBlank()) {
+        val structured = runCatching {
+            (json.parseToJsonElement(bodyText) as? JsonObject)?.let(::extractCodexStructuredError)
+        }.getOrNull()
+        if (structured != null) return structured
+    }
+    val trimmed = bodyText?.trim().orEmpty()
+    val looksLikeHtml = contentType?.contains("text/html", ignoreCase = true) == true ||
+        trimmed.startsWith("<!doctype html", ignoreCase = true) ||
+        trimmed.startsWith("<html", ignoreCase = true)
+    val hasCloudflareMarker = trimmed.contains("cloudflare", ignoreCase = true) ||
+        trimmed.contains("just a moment", ignoreCase = true) ||
+        trimmed.contains("attention required", ignoreCase = true) ||
+        trimmed.contains("cf-ray", ignoreCase = true)
+    if (!cfMitigated.isNullOrBlank() || (looksLikeHtml && hasCloudflareMarker) ||
+        trimmed.contains("cf-ray", ignoreCase = true) ||
+        trimmed.contains("cloudflare", ignoreCase = true)
+    ) {
+        return "疑似被 Cloudflare/代理风控拦截，请切换节点重试"
+    }
+    if (looksLikeHtml) {
+        val title = HTML_TITLE_REGEX.find(trimmed)?.groupValues?.getOrNull(1)
+            ?.let(::sanitizeCodexErrorDetail)
+        return if (title != null) "HTML 错误页（$title）" else "服务端返回 HTML 错误页"
+    }
+    return sanitizeCodexErrorDetail(bodyText)
 }
 
 internal fun extractCodexStructuredError(obj: JsonObject): String? {
@@ -137,14 +171,20 @@ class CodexResponseAPI(private val client: OkHttpClient) {
         val callIds = mutableMapOf<String, String>()
         val listener = object : EventSourceListener() {
             override fun onEvent(eventSource: EventSource, id: String?, type: String?, data: String) {
-                if (data == "[DONE]") { if (completed) close() else close(IOException("Codex stream ended before completion")); return }
+                if (data == "[DONE]") {
+                    if (completed) close()
+                    else close(CodexStreamFailure("Codex 流提前结束（收到 [DONE] 但未完成）"))
+                    return
+                }
+                var parsedEventType: String? = type
                 try {
                     val raw = json.parseToJsonElement(data).jsonObjectOrNull
                     if (raw == null) {
-                        close(IOException("Invalid Codex stream event"))
+                        close(CodexStreamFailure("Codex 流返回了非 JSON 事件"))
                         return
                     }
                     val eventType = raw["type"]?.jsonPrimitiveOrNull?.contentOrNull ?: type
+                    parsedEventType = eventType
                     if (eventType in listOf("error", "response.failed", "response.incomplete")) {
                         val detail = extractCodexStructuredError(raw)
                         close(CodexStreamFailure(detail?.let { "Codex 返回错误：$it" } ?: "Codex response failed or was incomplete"))
@@ -171,16 +211,21 @@ class CodexResponseAPI(private val client: OkHttpClient) {
                     }
                     parseResponseDelta(event)?.let { trySend(it) }
                     if (eventType == "response.completed") { completed = true; close() }
-                } catch (_: Exception) {
-                    close(IOException("Invalid Codex stream event"))
+                } catch (e: Exception) {
+                    val tag = sanitizeCodexErrorDetail(parsedEventType) ?: "unknown"
+                    val errName = e.javaClass.simpleName.takeIf { it.isNotBlank() } ?: "Exception"
+                    close(CodexStreamFailure("Codex 流事件解析失败（$tag：$errName）"))
                 }
             }
             override fun onFailure(eventSource: EventSource, t: Throwable?, response: Response?) {
                 val failure = if (response != null && !response.isSuccessful) {
                     val detail = runCatching {
                         val bodyText = response.peekBody(4096L).string()
-                        val parsed = json.parseToJsonElement(bodyText) as? JsonObject
-                        parsed?.let(::extractCodexStructuredError)
+                        extractCodexHttpErrorDetail(
+                            response.header("cf-mitigated"),
+                            response.header("Content-Type"),
+                            bodyText,
+                        )
                     }.getOrNull()
                     val code = response.code
                     response.close()
@@ -196,7 +241,7 @@ class CodexResponseAPI(private val client: OkHttpClient) {
                 close(failure)
             }
             override fun onClosed(eventSource: EventSource) {
-                if (completed) close() else close(IOException("Codex stream closed before completion"))
+                if (completed) close() else close(CodexStreamFailure("Codex 连接提前关闭（未收到完成事件）"))
             }
         }
         val source = EventSources.createFactory(client).newEventSource(request, listener)

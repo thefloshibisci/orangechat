@@ -373,6 +373,7 @@ dependencies {
     implementation(project(":workspace"))
     implementation(project(":material3"))
     implementation(project(":plugin-localdata"))
+    implementation(project(":plugin-localtasks"))
     implementation(project(":video"))
     implementation(project(":reading"))
     implementation(fileTree(mapOf("dir" to "libs", "include" to listOf("*.jar", "*.aar"))))
@@ -383,6 +384,7 @@ dependencies {
 
     // tests
     testImplementation(testFixtures(project(":plugin-localdata")))
+    testImplementation(testFixtures(project(":plugin-localtasks")))
     testImplementation(libs.junit)
     testImplementation(libs.androidx.ui.test.junit4)
     testImplementation("androidx.test:core:1.7.0")

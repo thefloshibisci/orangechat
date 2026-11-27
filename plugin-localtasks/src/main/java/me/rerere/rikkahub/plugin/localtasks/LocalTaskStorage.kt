@@ -38,14 +38,14 @@ class SharedPreferencesLocalTaskStore internal constructor(
         preferences.getString(key, null)
     }
 
-    internal fun readValues(keys: Set<String>): Map<String, String?> = synchronized(lock) {
+    fun readValues(keys: Set<String>): Map<String, String?> = synchronized(lock) {
         checkAvailable()
         keys.associateWith { preferences.getString(it, null) }
     }
 
     override fun write(key: String, value: String) = writeValues(mapOf(key to value))
 
-    internal fun writeValues(values: Map<String, String?>) = synchronized(lock) {
+    fun writeValues(values: Map<String, String?>) = synchronized(lock) {
         checkAvailable()
         try {
             val editor = preferences.edit()
@@ -102,7 +102,7 @@ class LocalTaskSettingsStore(
     }
 }
 
-internal object LocalTaskIds {
+object LocalTaskIds {
     fun newTaskId(): String = LocalTasksApi.TASK_ID_PREFIX + randomHex(24)
 
     fun newReviewId(): String = LocalTasksApi.REVIEW_ID_PREFIX + randomHex(20)
@@ -124,7 +124,7 @@ internal object LocalTaskIds {
         UUID.randomUUID().toString().replace("-", "").take(length)
 }
 
-internal fun sha256Hex(value: String): String {
+fun sha256Hex(value: String): String {
     val digest = MessageDigest.getInstance("SHA-256").digest(value.toByteArray(Charsets.UTF_8))
     return digest.joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
 }

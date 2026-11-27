@@ -88,6 +88,35 @@ object LocalTaskBridgeRequestParser {
     private fun invalid(message: String) = LocalTaskException(LocalTaskErrorCode.INVALID_REQUEST, message)
 }
 
+/** Narrow host contract consumed by [LocalTaskBridge]; implemented by `LocalTaskService` in `:app`. */
+interface LocalTaskBridgeService {
+    fun startInteraction(
+        postId: String,
+        assistantId: String? = null,
+        clientKey: String? = null,
+    ): LocalTaskSubmitResult
+
+    fun status(taskId: String): LocalTaskStatusDto?
+
+    fun statusesForPost(postId: String): List<LocalTaskStatusDto>
+
+    fun activeStatuses(): List<LocalTaskStatusDto>
+
+    fun cancel(taskId: String): Boolean
+
+    fun stopAll(): Int
+
+    fun settings(): LocalTaskSettings
+
+    fun pendingReviews(): List<LocalTaskPendingActionDto>
+
+    suspend fun resolveReview(
+        reviewId: String,
+        approve: Boolean,
+        editedBody: String? = null,
+    ): LocalTaskReviewResolveDto
+}
+
 /**
  * JSON bridge that the WebView/plugin-bridge can expose as `localDataTask(requestJson)`.
  * `task.settings` is read-only: there is no method that can widen publishing, image or budget rights.
@@ -97,7 +126,7 @@ object LocalTaskBridgeRequestParser {
  * confirmation dialog before dispatch; any other native caller must add the same gate.
  */
 class LocalTaskBridge(
-    private val service: LocalTaskService,
+    private val service: LocalTaskBridgeService,
 ) {
     suspend fun dispatch(requestJson: String): String {
         val envelope = try {

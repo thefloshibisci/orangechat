@@ -61,7 +61,7 @@ jobs:
       - name: Run Android unit tests
         run: |
           chmod +x gradlew
-          ./gradlew -I .github/gradle/robolectric-ci.gradle :plugin-localdata:testDebugUnitTest :video:testDebugUnitTest :reading:testDebugUnitTest :app:testDebugUnitTest :ai:testDebugUnitTest :search:testDebugUnitTest :speech:testDebugUnitTest :workspace:testDebugUnitTest :terminal:testDebugUnitTest
+          ./gradlew -I .github/gradle/robolectric-ci.gradle :plugin-localdata:testDebugUnitTest :plugin-localtasks:testDebugUnitTest :video:testDebugUnitTest :reading:testDebugUnitTest :app:testDebugUnitTest :ai:testDebugUnitTest :search:testDebugUnitTest :speech:testDebugUnitTest :workspace:testDebugUnitTest :terminal:testDebugUnitTest
 
       - name: Prepare build files
         env:

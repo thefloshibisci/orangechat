@@ -12,7 +12,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CancellationException
 
-internal class MemoryLocalTaskStore : LocalTaskKeyValueStore {
+class MemoryLocalTaskStore : LocalTaskKeyValueStore {
     private val values = LinkedHashMap<String, String>()
 
     override fun read(key: String): String? = values[key]
@@ -24,19 +24,19 @@ internal class MemoryLocalTaskStore : LocalTaskKeyValueStore {
     fun raw(key: String): String? = values[key]
 }
 
-internal val ASSISTANT_A = LocalTaskParticipant(
+val ASSISTANT_A = LocalTaskParticipant(
     id = "11111111-1111-1111-1111-111111111111",
     name = "Alice",
     policy = LocalAssistantPolicy.DRAFT_ONLY,
 )
 
-internal val ASSISTANT_B = LocalTaskParticipant(
+val ASSISTANT_B = LocalTaskParticipant(
     id = "22222222-2222-2222-2222-222222222222",
     name = "Bob",
     policy = LocalAssistantPolicy.DRAFT_ONLY,
 )
 
-internal fun testSettings(
+fun testSettings(
     vararg participants: LocalTaskParticipant = arrayOf(ASSISTANT_A),
     maxRounds: Int = 2,
     maxReplies: Int = 5,
@@ -54,7 +54,7 @@ internal fun testSettings(
     intervalMs = intervalMs,
 )
 
-internal class RecordingRunner(
+class RecordingRunner(
     private val outcomes: MutableList<LocalTaskTurnOutcome> = mutableListOf(),
 ) : LocalTaskTurnRunner {
     val calls = mutableListOf<LocalTaskTurnRequest>()
@@ -73,7 +73,7 @@ internal class RecordingRunner(
     }
 }
 
-internal class ConstantRunner(
+class ConstantRunner(
     private val outcome: LocalTaskTurnOutcome,
 ) : LocalTaskTurnRunner {
     val calls = mutableListOf<LocalTaskTurnRequest>()
@@ -85,7 +85,7 @@ internal class ConstantRunner(
 }
 
 /** A runner that blocks inside the model call until the scheduler cancels it. */
-internal class GatedRunner : LocalTaskTurnRunner {
+class GatedRunner : LocalTaskTurnRunner {
     val started = CompletableDeferred<Unit>()
     val gate = CompletableDeferred<Unit>()
     var observedCancellation = false
@@ -115,7 +115,7 @@ internal class GatedRunner : LocalTaskTurnRunner {
  * [blockInsideCommit] = true blocks *inside* the guarded critical section (write-first race).
  * [blockInsideCommit] = false blocks *before* entering it (cancel-first race).
  */
-internal class BlockingCommitRunner(
+class BlockingCommitRunner(
     private val blockInsideCommit: Boolean,
     private val outcome: LocalTaskTurnOutcome = LocalTaskTurnOutcome.Replied(7, liked = false),
 ) : LocalTaskTurnRunner {
@@ -146,7 +146,7 @@ internal class BlockingCommitRunner(
  * recorded, then the runner blocks so the test can cancel the job while the turn has not returned.
  * [LocalTaskScheduler.runGuarded] must still keep the recorded committed result.
  */
-internal class CommitThenBlockRunner(
+class CommitThenBlockRunner(
     private val outcome: LocalTaskTurnOutcome = LocalTaskTurnOutcome.Replied(7, liked = false),
 ) : LocalTaskTurnRunner {
     val committed = CountDownLatch(1)
@@ -163,7 +163,7 @@ internal class CommitThenBlockRunner(
     }
 }
 
-internal class SchedulerHarness(
+class SchedulerHarness(
     initialSettings: LocalTaskSettings = testSettings(),
     val participants: List<LocalTaskParticipant> = listOf(ASSISTANT_A),
     val runner: LocalTaskTurnRunner,
@@ -204,7 +204,7 @@ internal class SchedulerHarness(
     )
 }
 
-internal fun LocalTaskSubmitResult.taskIdOrFail(): String {
+fun LocalTaskSubmitResult.taskIdOrFail(): String {
     check(this is LocalTaskSubmitResult.Accepted) { "Expected an accepted task, got $this" }
     return taskId
 }

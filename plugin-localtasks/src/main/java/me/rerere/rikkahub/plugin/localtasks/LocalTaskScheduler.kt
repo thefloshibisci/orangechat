@@ -142,7 +142,7 @@ class LocalTaskCancellationGate {
  * [commitIfActive] use the same gate lock, so a durable write can never be committed after a
  * successful cancel, and a write that started first is never lost to a concurrent cancel.
  */
-class LocalTaskCancellationToken internal constructor(
+class LocalTaskCancellationToken constructor(
     private val gate: LocalTaskCancellationGate = LocalTaskCancellationGate(),
 ) {
     internal var cancelled: Boolean = false
@@ -156,7 +156,7 @@ class LocalTaskCancellationToken internal constructor(
 
     val isCancelled: Boolean get() = gate.isCancelled(this)
 
-    internal fun cancel() {
+    fun cancel() {
         gate.markCancelled(this)
         wake()
     }
@@ -165,7 +165,7 @@ class LocalTaskCancellationToken internal constructor(
         signal.complete(Unit)
     }
 
-    internal suspend fun awaitCancellation() {
+    suspend fun awaitCancellation() {
         if (isCancelled) return
         signal.await()
     }
@@ -183,7 +183,7 @@ class LocalTaskCancellationToken internal constructor(
      * just after the gate released but before the turn coroutine resumes; [runGuarded] then reads
      * this so the committed result is still counted instead of being reported as a late write.
      */
-    internal fun recordCommitted(outcome: LocalTaskTurnOutcome) {
+    fun recordCommitted(outcome: LocalTaskTurnOutcome) {
         if (!outcome.committed) return
         committedOutcome.compareAndSet(null, outcome)
     }

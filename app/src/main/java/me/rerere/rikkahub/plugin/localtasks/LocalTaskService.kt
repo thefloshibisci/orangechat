@@ -47,7 +47,7 @@ class LocalTaskService(
     private val clock: () -> Long = System::currentTimeMillis,
     private val imageSource: LocalTaskImageSource = LocalTaskImageSource.unsupported(),
     private val ownsSession: Boolean = false,
-) : Closeable {
+) : Closeable, LocalTaskBridgeService {
     /** Capability names of the session this host was built with; used to recreate on re-consent. */
     val grantNames: Set<String> = session.grant.declaredNames()
 
@@ -98,10 +98,10 @@ class LocalTaskService(
         }
     }
 
-    fun startInteraction(
+    override fun startInteraction(
         postId: String,
-        assistantId: String? = null,
-        clientKey: String? = null,
+        assistantId: String?,
+        clientKey: String?,
     ): LocalTaskSubmitResult {
         val result = scheduler.submit(
             LocalTaskStartRequest(
@@ -150,20 +150,20 @@ class LocalTaskService(
         return result
     }
 
-    fun status(taskId: String): LocalTaskStatusDto? = scheduler.status(taskId)
+    override fun status(taskId: String): LocalTaskStatusDto? = scheduler.status(taskId)
 
-    fun statusesForPost(postId: String): List<LocalTaskStatusDto> = ledger.snapshot().tasks.values
+    override fun statusesForPost(postId: String): List<LocalTaskStatusDto> = ledger.snapshot().tasks.values
         .filter { it.postId == postId }
         .sortedByDescending { it.createdAt }
         .map { it.toStatus() }
 
-    fun activeStatuses(): List<LocalTaskStatusDto> = ledger.activeTasks().map { it.toStatus() }
+    override fun activeStatuses(): List<LocalTaskStatusDto> = ledger.activeTasks().map { it.toStatus() }
 
-    fun cancel(taskId: String): Boolean = scheduler.cancel(taskId)
+    override fun cancel(taskId: String): Boolean = scheduler.cancel(taskId)
 
-    fun stopAll(): Int = scheduler.stopAll()
+    override fun stopAll(): Int = scheduler.stopAll()
 
-    fun settings(): LocalTaskSettings = settingsStoreLocal.get()
+    override fun settings(): LocalTaskSettings = settingsStoreLocal.get()
 
     /** Native settings UI only. A page can read [settings] but has no method to change them. */
     fun updateSettings(settings: LocalTaskSettings): LocalTaskSettings {
@@ -188,12 +188,12 @@ class LocalTaskService(
         return saved
     }
 
-    fun pendingReviews(): List<LocalTaskPendingActionDto> = ledger.pendingReviews()
+    override fun pendingReviews(): List<LocalTaskPendingActionDto> = ledger.pendingReviews()
 
-    suspend fun resolveReview(
+    override suspend fun resolveReview(
         reviewId: String,
         approve: Boolean,
-        editedBody: String? = null,
+        editedBody: String?,
     ): LocalTaskReviewResolveDto = reviewLock.withLock {
         val found = ledger.findReview(reviewId)
             ?: return@withLock LocalTaskReviewResolveDto(
@@ -244,10 +244,11 @@ class LocalTaskService(
             )
         try {
             val currentSettings = settingsStoreLocal.get()
+            val postId = action.postId
             // A review can sit for a long time; the per-post reply cap may have been consumed by
             // another task/assistant in the meantime. Re-check it before applying the held reply.
-            if (action.kind == LocalTaskActionKinds.REPLY && action.postId != null &&
-                !ledger.canReply(action.postId, action.assistantId, currentSettings)
+            if (action.kind == LocalTaskActionKinds.REPLY && postId != null &&
+                !ledger.canReply(postId, action.assistantId, currentSettings)
             ) {
                 return@withLock LocalTaskReviewResolveDto(
                     reviewId = reviewId,
@@ -258,7 +259,6 @@ class LocalTaskService(
                 )
             }
             val outcome = executor.applyPending(toApply, currentSettings, lease.token)
-            val postId = action.postId
             val applied = when (outcome) {
                 is LocalTaskTurnOutcome.Replied -> {
                     if (postId != null && action.kind == LocalTaskActionKinds.REPLY) {

@@ -133,8 +133,8 @@ class CodexResponseAPITest {
                 .body("data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n".toResponseBody("text/event-stream".toMediaType())).build()
         }.build()
         val error = runCatching { CodexResponseAPI(client).generateText("token", "account", listOf(UIMessage.user("x")), params) }.exceptionOrNull()
-        assertNotNull(error)
-        assertTrue(error?.message.orEmpty().contains("before completion"))
+        assertTrue(error is CodexStreamFailure)
+        assertTrue(error?.message.orEmpty().contains("未收到完成事件"))
     }
 
     @Test fun `null encrypted_content and null usage complete cleanly and only codex reasoning replays`() = runBlocking {
@@ -242,5 +242,68 @@ class CodexResponseAPITest {
         val tMsg = transportErr!!.message.orEmpty()
         assertTrue(tMsg, tMsg.contains("SocketTimeoutException"))
         assertFalse(tMsg, tMsg.contains("198.51.100.2") || tMsg.contains("chatgpt.com"))
+    }
+
+    @Test fun `cloudflare html, plain text gateway errors, early stream end, and malformed sse events surface structured failures`() = runBlocking {
+        val cfClient = OkHttpClient.Builder().addInterceptor { chain ->
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(403).message("Forbidden")
+                .header("cf-mitigated", "challenge")
+                .body("<!DOCTYPE html><html><head><title>Just a moment...</title></head><body>Cloudflare Bearer secret-html</body></html>"
+                    .toResponseBody("text/html".toMediaType()))
+                .build()
+        }.build()
+        val cfErr = runCatching {
+            CodexResponseAPI(cfClient).streamText("token", "account", listOf(UIMessage.user("x")), params).toList()
+        }.exceptionOrNull()
+        assertTrue(cfErr is CodexHttpFailure)
+        val cfMsg = cfErr!!.message.orEmpty()
+        assertTrue(cfMsg, cfMsg.contains("403") && cfMsg.contains("Cloudflare"))
+        assertFalse(cfMsg, cfMsg.contains("secret-html") || cfMsg.contains("<!DOCTYPE"))
+
+        val gatewayClient = OkHttpClient.Builder().addInterceptor { chain ->
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(502).message("Bad Gateway")
+                .body("upstream timeout Bearer tok-gw sk-secret123".toResponseBody("text/plain".toMediaType()))
+                .build()
+        }.build()
+        val gwErr = runCatching {
+            CodexResponseAPI(gatewayClient).streamText("token", "account", listOf(UIMessage.user("x")), params).toList()
+        }.exceptionOrNull()
+        assertTrue(gwErr is CodexHttpFailure)
+        val gwMsg = gwErr!!.message.orEmpty()
+        assertTrue(gwMsg, gwMsg.contains("502") && gwMsg.contains("upstream timeout"))
+        assertFalse(gwMsg, gwMsg.contains("tok-gw") || gwMsg.contains("sk-secret123"))
+
+        val earlyDoneClient = OkHttpClient.Builder().addInterceptor { chain ->
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200).message("OK")
+                .body("data: [DONE]\n\n".toResponseBody("text/event-stream".toMediaType()))
+                .build()
+        }.build()
+        val earlyDoneErr = runCatching {
+            CodexResponseAPI(earlyDoneClient).streamText("token", "account", listOf(UIMessage.user("x")), params).toList()
+        }.exceptionOrNull()
+        assertTrue(earlyDoneErr is CodexStreamFailure)
+        assertTrue(earlyDoneErr!!.message.orEmpty().contains("[DONE]"))
+
+        val prematureCloseClient = OkHttpClient.Builder().addInterceptor { chain ->
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200).message("OK")
+                .body("data: {\"type\":\"response.output_text.delta\",\"item_id\":\"i1\",\"delta\":\"hi\"}\n\n"
+                    .toResponseBody("text/event-stream".toMediaType()))
+                .build()
+        }.build()
+        val closeErr = runCatching {
+            CodexResponseAPI(prematureCloseClient).streamText("token", "account", listOf(UIMessage.user("x")), params).toList()
+        }.exceptionOrNull()
+        assertTrue(closeErr is CodexStreamFailure)
+
+        val nonJsonSseClient = OkHttpClient.Builder().addInterceptor { chain ->
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200).message("OK")
+                .body("data: \"Bearer secret-non-json sk-secret456\"\n\n".toResponseBody("text/event-stream".toMediaType()))
+                .build()
+        }.build()
+        val nonJsonErr = runCatching {
+            CodexResponseAPI(nonJsonSseClient).streamText("token", "account", listOf(UIMessage.user("x")), params).toList()
+        }.exceptionOrNull()
+        assertTrue(nonJsonErr is CodexStreamFailure)
+        assertFalse(nonJsonErr!!.message.orEmpty().contains("secret-non-json") || nonJsonErr.message.orEmpty().contains("sk-secret456"))
     }
 }
