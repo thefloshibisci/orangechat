@@ -6,20 +6,13 @@
 
 package me.rerere.rikkahub.service
 
-import kotlinx.coroutines.async
-
 import me.rerere.rikkahub.data.files.attachmentReferenceGuard
 
-import me.rerere.rikkahub.diagnostics.LoadingDiagnostics
 import me.rerere.rikkahub.diagnostics.TaskWatchdog
-import kotlinx.coroutines.flow.onStart
 
 import me.rerere.rikkahub.data.repository.ConversationNodeChanges
 
-import me.rerere.rikkahub.data.serein.isSereinCompletedReply
-import me.rerere.rikkahub.data.serein.sereinSuccessfulRequestStatus
 import android.app.Application
-import android.content.Intent
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -46,19 +39,12 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.flow.onCompletion
 import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.Mutex
-import kotlinx.datetime.TimeZone
-import kotlinx.datetime.toInstant
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
 import me.rerere.ai.core.MessageRole
 import me.rerere.ai.core.Tool
-import me.rerere.ai.provider.ModelAbility
 import me.rerere.ai.provider.ProviderManager
 import me.rerere.ai.ui.ToolApprovalState
 import me.rerere.ai.ui.UIMessage
@@ -74,11 +60,8 @@ import me.rerere.rikkahub.utils.JsonInstant
 import me.rerere.ai.ui.finishPendingTools
 import me.rerere.ai.ui.finishReasoning
 import me.rerere.ai.ui.isEmptyInputMessage
-import me.rerere.common.android.Logging
 import me.rerere.rikkahub.AppScope
 import me.rerere.rikkahub.R
-import me.rerere.rikkahub.RouteActivity
-import me.rerere.rikkahub.data.ai.GenerationChunk
 import me.rerere.rikkahub.data.ai.GenerationHandler
 import me.rerere.rikkahub.data.ai.mcp.McpManager
 import me.rerere.rikkahub.data.ai.tools.LocalTools
@@ -92,7 +75,6 @@ import me.rerere.rikkahub.data.ai.transformers.Base64ImageToLocalFileTransformer
 import me.rerere.rikkahub.data.ai.transformers.DocumentAsPromptTransformer
 import me.rerere.rikkahub.data.ai.transformers.ExtraInfoInjectionCollector
 import me.rerere.rikkahub.data.ai.transformers.ExtraInfoRequestCache
-import me.rerere.rikkahub.data.ai.transformers.ExtraInfoRequestTransformer
 import me.rerere.rikkahub.data.ai.transformers.extraInfoSnapshotDir
 import me.rerere.rikkahub.data.ai.transformers.OcrTransformer
 import me.rerere.rikkahub.data.ai.transformers.PlaceholderTransformer
@@ -106,31 +88,23 @@ import me.rerere.rikkahub.data.ai.transformers.WorkspaceReminderTransformer
 import me.rerere.rikkahub.data.repository.WorkspaceRepository
 import me.rerere.rikkahub.data.video.withoutHistoricalCameraImages
 import me.rerere.rikkahub.data.datastore.SettingsStore
-import me.rerere.rikkahub.data.datastore.buildAnniversaryPrompt
-import me.rerere.rikkahub.data.datastore.findProvider
 import me.rerere.rikkahub.data.datastore.getAssistantById
 import me.rerere.rikkahub.data.datastore.getCurrentAssistant
-import me.rerere.rikkahub.data.files.FilesManager
-import me.rerere.rikkahub.data.video.FrameFileOwnership
 import me.rerere.rikkahub.data.video.VideoCallRuntime
 import me.rerere.rikkahub.data.video.VideoFrameStore
+import me.rerere.rikkahub.data.files.FilesManager
+import me.rerere.rikkahub.data.video.FrameFileOwnership
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.ConversationConfig
 import me.rerere.rikkahub.data.model.bindConfig
-import me.rerere.rikkahub.data.model.getAssistantOf
 import me.rerere.rikkahub.data.model.getChatModelOf
-import me.rerere.rikkahub.data.model.withConversationConfig
 import me.rerere.rikkahub.data.model.AssistantAffectScope
 import me.rerere.rikkahub.data.model.replaceRegexes
-import me.rerere.rikkahub.data.model.toMessageNode
 import me.rerere.rikkahub.data.repository.ConversationRepository
 import me.rerere.rikkahub.data.repository.FolderRepository
 import me.rerere.rikkahub.data.repository.MemoryRepository
 import me.rerere.rikkahub.data.interaction.ChatInteractionRepository
-import me.rerere.rikkahub.data.interaction.withoutJumpControl
-import me.rerere.rikkahub.data.interaction.ReactionContextTurn
-import java.time.Instant
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.uuid.Uuid
@@ -318,6 +292,95 @@ class ChatService(
             isForeground = isForeground,
             sendGenerationDoneNotification = ::sendGenerationDoneNotification,
             addError = { error, cid, title, solution -> addError(error, cid, title, solution) },
+        )
+    }
+    private val completionRunner by lazy {
+        ChatMessageCompletionRunner(
+            context = context,
+            appScope = appScope,
+            settingsStore = settingsStore,
+            conversationRepo = conversationRepo,
+            memoryRepository = memoryRepository,
+            mcpManager = mcpManager,
+            pluginToolProvider = pluginToolProvider,
+            pluginLoader = pluginLoader,
+            generationHandler = generationHandler,
+            extraInfoInjectionCollector = extraInfoInjectionCollector,
+            extraInfoRequestCache = extraInfoRequestCache,
+            sereinHookRepository = sereinHookRepository,
+            inputTransformers = inputTransformers,
+            outputTransformers = outputTransformers,
+            templateTransformer = templateTransformer,
+            workspaceReminderTransformer = workspaceReminderTransformer,
+            isForeground = isForeground,
+            bindConversationConfig = ::bindConversationConfig,
+            getOrCreateSession = ::getOrCreateSession,
+            getConversationFlow = ::getConversationFlow,
+            updateConversation = ::updateConversation,
+            checkInvalidMessages = ::checkInvalidMessages,
+            buildAvailableTools = { settings, assistant, cid, conversation, anchorId ->
+                buildAvailableTools(
+                    settings = settings,
+                    assistant = assistant,
+                    conversationId = cid,
+                    conversation = conversation,
+                    allowAppUsage = true,
+                    momentsTurnAnchorUserId = anchorId,
+                )
+            },
+            applyMessageMutationLocked = ::applyMessageMutationLocked,
+            saveConversationLocked = ::saveConversationLocked,
+            cancelLiveUpdateNotification = ::cancelLiveUpdateNotification,
+            sendGenerationDoneNotification = ::sendGenerationDoneNotification,
+            sendLiveUpdateNotification = ::sendLiveUpdateNotification,
+            launchNeteaseCloudMusic = ::launchNeteaseCloudMusic,
+            launchWithConversationReference = ::launchWithConversationReference,
+            generateTitle = { cid, conversation -> generateTitle(cid, conversation) },
+            generateSuggestion = { cid, conversation -> generateSuggestion(cid, conversation) },
+            addError = { error, cid, title -> addError(error, cid, title) },
+        )
+    }
+    private val queuedGenerationRunner by lazy {
+        ChatQueuedGenerationRunner(
+            context = context,
+            appScope = appScope,
+            settingsStore = settingsStore,
+            pluginLoader = pluginLoader,
+            initializeConversation = { cid -> initializeConversation(cid, updateSelectedAssistant = false) },
+            preprocessUserInputParts = ::preprocessUserInputParts,
+            saveConversationWithOwnership = ::saveConversationWithOwnership,
+            handleMessageComplete = { cid, prompt, toolsEnabled, trace, transientImgs, imageScope, anchorId, token, vcUserId, audioUrl, audioAnchorId ->
+                handleMessageComplete(
+                    conversationId = cid,
+                    transientSystemPrompt = prompt,
+                    enableTools = toolsEnabled,
+                    diagnosticTrace = trace,
+                    transientImageUrls = transientImgs,
+                    transientImageScope = imageScope,
+                    transientImageAnchorMessageId = anchorId,
+                    requestToken = token,
+                    videoCallUserMessageId = vcUserId,
+                    transientAudioUrl = audioUrl,
+                    transientAudioAnchorMessageId = audioAnchorId,
+                )
+            },
+            clearQueueOwner = { cid, queuedId ->
+                activeQueueGenerations.computeIfPresent(cid) { _, owner ->
+                    owner.takeUnless { it.message.id == queuedId }
+                }
+            },
+            emitGenerationDone = { cid -> _generationDoneFlow.emit(cid) },
+            addError = { error, cid, title -> addError(error, cid, title) },
+        )
+    }
+    private val proactivePublisher by lazy {
+        ChatProactivePublisher(
+            conversationRepo = conversationRepo,
+            launchWithConversationReference = ::launchWithConversationReference,
+            getOrCreateSession = ::getOrCreateSession,
+            isConversationDeleted = { cid -> cid in deletedConversationIds },
+            updateConversation = ::updateConversation,
+            saveConversationLocked = ::saveConversationLocked,
         )
     }
     private data class QueueGenerationOwner(val message: QueuedMessage, val job: Job)
@@ -825,245 +888,8 @@ class ChatService(
         }?.start()
     }
 
-    private fun createQueuedMessageJob(session: ConversationSession, queued: QueuedMessage): Job {
-        val conversationId = session.id
-        val content = queued.parts
-        val answer = queued.answer
-        val transientSystemPrompt = queued.transientSystemPrompt
-        val enableTools = queued.enableTools
-        val interaction = queued.interaction
-        // 本次请求专用的临时图片（视频通话自动抓帧）：请求结束（含失败/取消）后删除。
-        val transientImageUrls = queued.transientImageUrls
-        val transientImageScope = queued.transientImageScope
-        // 本次新建、还没被历史引用的永久帧（手动夹帧）：**只有没落库**才允许删。
-        val ownedImageUrls = queued.ownedImageUrls
-        // 临时图的锚点：就是这条用户消息自己的 ID；工具多步插进来的消息不会把它顶掉。
-        val transientImageAnchorMessageId = (queued.existingMessageId ?: queued.id).toString()
-        // 这一轮的授权 token（视频通话）；非通话请求为 null。
-        val requestToken = queued.requestToken
-        // 这一轮仅本次请求可用的录音（视频通话手动录音，直传路线）。
-        val transientAudio = queued.transientAudio
-        val audioOwnership = transientAudio?.let {
-            me.rerere.rikkahub.data.video.TransientAudioClip.RequestOwnership(it)
-        }
-        // 用户一开口就立即撤销旧主动闹钟。新的休眠计时必须等本轮正常回复结束后再开始，
-        // 避免 AI 正在聊天时主动器到点，也避免长回复吃掉休眠间隔。
-        val currentProactiveSetting = settingsStore.settingsFlow.value.proactiveMessageSetting
-        if (currentProactiveSetting.enabled) {
-            me.rerere.rikkahub.data.service.ProactiveMessageService.resetConversationSlot(context, conversationId.toString())
-            if (currentProactiveSetting.assistantConfigs.orEmpty().any {
-                    it.enabled && it.conversationId != conversationId.toString()
-                } || currentProactiveSetting.allowAiScheduledWakeup &&
-                me.rerere.rikkahub.data.service.ProactiveWakeupStore(context).all().isNotEmpty()
-            ) {
-                // Other conversations keep their appointments while this one is chatting.
-                // A busy target retains its appointment and retries after ownership is released.
-                me.rerere.rikkahub.data.service.ProactiveMessageService.scheduleNext(context, currentProactiveSetting)
-            } else {
-                me.rerere.rikkahub.data.service.ProactiveMessageService.cancel(context)
-            }
-        }
-
-        val trace = LoadingDiagnostics.begin(context, "chat.send", timeoutMillis = 0)
-        // 本次新建的永久帧（手动夹帧/留影）的归属状态。
-        // 必须在协程外面创建：`invokeOnCompletion` 的兜底和协程体的 finally 必须看**同一份**状态
-        // （旧实现把 Boolean 声明在 launch 里，兜底根本引用不到，编译就过不去；即使能引用，
-        // 一个布尔也区分不了"取消时事务可能已提交"这种真正危险的中间态）。
-        // 礼物/转账这种已有持久消息的请求从一开始就是 PUBLISHED：文件归历史所有，永不删除。
-        val frameOwnership = FrameFileOwnership(alreadyDurable = queued.existingMessageId != null)
-        val job = appScope.launch(start = CoroutineStart.LAZY) {
-            var failure: Throwable? = null
-            try {
-                // 录音的所有权先交给请求：在构造 provider payload 之前认领，
-                // 这样"重新派发队列/暂停/撤回"都不可能把正在序列化的文件删掉。
-                check(audioOwnership == null || audioOwnership.beginRequest()) {
-                    "本轮录音已释放或正被其他请求使用，已停止发送"
-                }
-                trace.stage("initializing conversation")
-                initializeConversation(conversationId, updateSelectedAssistant = false)
-                val settings = settingsStore.settingsFlow.first()
-
-                // A gift is already a durable user message. Reply through the normal queue
-                // without appending a fabricated sentence or duplicating user event hooks.
-                if (queued.existingMessageId == null) {
-                // 读取最新状态 -> 追加用户消息 -> 落库，整体加锁。
-                // 防止跟同一时刻可能在跑的标题生成/建议生成/语音通话挂断反馈互相覆盖对方刚写入的消息。
-                trace.stage("waiting for conversation state lock")
-                val (assistant, processedContent) = session.withStateLock {
-                    val latestConversation = session.state.value
-                    val assistant = settings.getAssistantOf(latestConversation)
-                    val processedContent = if (interaction == null) {
-                        preprocessUserInputParts(content, assistant)
-                    } else {
-                        content
-                    }
-
-                    val newConversation = latestConversation.copy(
-                        messageNodes = latestConversation.messageNodes + UIMessage(
-                            id = queued.id,
-                            role = MessageRole.USER,
-                            parts = processedContent,
-                            annotations = listOfNotNull(interaction),
-                        ).toMessageNode(),
-                    )
-                    trace.stage("saving user message")
-                    // 归属交接就在这一句里：发布之前先标记"可能已发布"，成功之后才确认 PUBLISHED。
-                    // 取消落在 Room 的挂起提交中间时状态停在 PUBLISHING —— 两条兜底路径都不会删文件。
-                    saveConversationWithOwnership(
-                        session = session,
-                        conversationId = conversationId,
-                        conversation = newConversation,
-                        ownership = frameOwnership,
-                        publishedMessageId = queued.id,
-                    )
-                    assistant to processedContent
-                }
-
-                // 触发 message_sent 事件钩子
-                // 关键: 这里用 appScope.launch 提交独立协程, 而不是直接 await callEvent。
-                // 原因: callEvent 内部对订阅插件的 handler 在单线程 pluginDispatcher 上串行执行,
-                // supabase_memory 等插件会同步 fetch 网络请求 (最长 15s 超时)。若直接 await,
-                // 用户点发送后会卡在这里直到所有插件 handler 跑完才继续走 sendMessage 后续逻辑。
-                // 改为 fire-and-forget 提交到 AppScope (SupervisorJob) 上, 不挂在当前 sendMessage
-                // 的 job 下 —— 这样用户连续发消息触发 session.getJob()?.cancel() 取消上一条消息 job 时,
-                // 不会把这次插件同步也连累取消掉 (Supabase 记录保持完整)。
-                runCatching {
-                    val eventData = JsonObject(
-                        mapOf(
-                            "assistant_id" to JsonPrimitive(assistant.id.toString()),
-                            "conversation_id" to JsonPrimitive(conversationId.toString()),
-                            "message" to JsonPrimitive(processedContent.mapNotNull { part ->
-                                if (part is UIMessagePart.Text) part.text else null
-                            }.joinToString("\n")),
-                            "role" to JsonPrimitive("user"),
-                            "timestamp" to JsonPrimitive(System.currentTimeMillis())
-                        )
-                    )
-                    appScope.launch {
-                        try {
-                            pluginLoader.callEvent("message_sent", eventData)
-                        } catch (e: Exception) {
-                            Log.w(TAG, "Failed to trigger message_sent event", e)
-                        }
-                    }
-                }.onFailure { e ->
-                    Log.w(TAG, "Failed to trigger message_sent event", e)
-                }
-
-                } else {
-                    session.withStateLock {
-                        check(session.state.value.currentMessages.any { it.id == queued.existingMessageId && it.role == MessageRole.USER }) {
-                            "红包或转账已不在当前分支，未继续生成"
-                        }
-                    }
-                }
-
-                // 开始补全
-                if (answer) {
-                    val completed = handleMessageComplete(
-                        conversationId = conversationId,
-                        transientSystemPrompt = transientSystemPrompt,
-                        enableTools = enableTools,
-                        diagnosticTrace = trace,
-                        transientImageUrls = transientImageUrls,
-                        transientImageScope = transientImageScope,
-                        transientImageAnchorMessageId = transientImageAnchorMessageId,
-                        requestToken = requestToken,
-                        videoCallUserMessageId = queued.id.takeIf { requestToken != null },
-                        // 音频锚点与图片锚点是同一条用户消息（队列项 ID）；工具多步不会把它顶掉。
-                        transientAudioUrl = transientAudio?.fileUrl,
-                        transientAudioAnchorMessageId = transientImageAnchorMessageId,
-                    )
-                    if (!completed) {
-                        failure = IllegalStateException("生成失败，请检查会话中的错误信息")
-                        session.messageQueue.pause()
-                    }
-                }
-                if (session.state.value.currentMessages.lastOrNull()?.getTools().orEmpty().any { it.isPending || it.canResumeExecution }) {
-                    queued.reply.completeExceptionally(IllegalStateException("请先处理工具审批"))
-                }
-
-                _generationDoneFlow.emit(conversationId)
-
-            } catch (e: CancellationException) {
-                failure = e
-                throw e
-            } catch (e: Exception) {
-                // A cancelled provider may throw a transport error during cleanup. It cannot pause a newer queue.
-                if (!coroutineContext.isActive) {
-                    failure = CancellationException("Generation cancelled", e)
-                    throw CancellationException("Generation cancelled", e)
-                }
-                failure = e
-                session.messageQueue.pause()
-                Log.e(TAG, "sendMessage failed, conversationId=$conversationId", e)
-                addError(e, conversationId, title = context.getString(R.string.error_title_send_message))
-            } finally {
-                session.messageQueue.complete(
-                    queued.id,
-                    result = queuedReplyText(session.state.value.currentMessages, queued.existingMessageId ?: queued.id),
-                    error = failure,
-                )
-                activeQueueGenerations.computeIfPresent(conversationId) { _, owner ->
-                    owner.takeUnless { it.message.id == queued.id }
-                }
-                // 请求作用域结束：删除本次专用的临时帧（自动抓帧），聊天历史里只有文字。
-                // 临时帧的所有权始终在本请求，任何队列清理都不会提前删掉它们。
-                VideoFrameStore.deleteTransient(context, transientImageUrls)
-                // 这一轮的录音到此为止：请求结束（完成/失败/取消）后立刻删文件，
-                // 不留任何"受管音频"在磁盘上；历史里本来就只有占位文字。
-                audioOwnership?.release()
-                // 本次**新建**的永久帧（手动夹帧）：只有"从未被历史引用"才删。
-                // 落库了它就是历史的一部分（旧实现按目录删 parts 里的 Image，会把历史照片删掉）。
-                // claimDeletion 是幂等的 CAS：这个 finally 和下面的 invokeOnCompletion 兜底
-                // 只有一条会真正删；状态一旦进过 PUBLISHING 就永远返回 false。
-                if (frameOwnership.claimDeletion()) {
-                    ownedImageUrls.forEach { url -> VideoFrameStore.deleteOwned(context, url) }
-                }
-                // 这一轮的通话授权（礼物/留影）：请求自己决定是"正常完成"还是"被取消"。
-                // complete 保留已经发出的留影许可（合法的异步留影落在请求结束之后）；
-                // cancel 会撤销这次请求的全部许可。
-                requestToken?.let { token ->
-                    if (failure == null) {
-                        VideoCallRuntime.completeTurnRequest(token)
-                    } else {
-                        VideoCallRuntime.cancelTurnRequest(token)
-                    }
-                }
-                // An API failure must not leave the proactive timer cancelled forever. Do not
-                // restart it for a cancelled job that was superseded by a newer user message.
-                if (coroutineContext.isActive && !session.messageQueue.hasPendingOrInFlight) {
-                    val proactiveSetting = settingsStore.settingsFlow.value.proactiveMessageSetting
-                    if (proactiveSetting.enabled) {
-                        // Other participants kept their alarms while this request ran. Start
-                        // this conversation's full idle interval only after its queue is done.
-                        me.rerere.rikkahub.data.service.ProactiveMessageService.resetConversationSlot(context, conversationId.toString())
-                        me.rerere.rikkahub.data.service.ProactiveMessageService.resetTimer(context, proactiveSetting)
-                    }
-                }
-            }
-        }
-        job.invokeOnCompletion { cause ->
-            trace.close()
-            // A lazy request can be cancelled before its body (and finally block) ever starts.
-            session.messageQueue.complete(queued.id,
-                result = queuedReplyText(session.state.value.currentMessages, queued.existingMessageId ?: queued.id), error = cause)
-            activeQueueGenerations.computeIfPresent(conversationId) { _, owner ->
-                    owner.takeUnless { it.message.id == queued.id }
-                }
-            // 连协程体都没跑起来就被取消：临时帧和授权都必须在这里收尾。
-            if (cause != null) {
-                VideoFrameStore.deleteTransient(context, transientImageUrls)
-                // 未启动只释放 QUEUED；已启动只凭本 job 的认领释放，不能删其他请求的录音。
-                audioOwnership?.release()
-                if (frameOwnership.claimDeletion()) {
-                    ownedImageUrls.forEach { url -> VideoFrameStore.deleteOwned(context, url) }
-                }
-                requestToken?.let { VideoCallRuntime.cancelTurnRequest(it) }
-            }
-        }
-        return job
-    }
+    private fun createQueuedMessageJob(session: ConversationSession, queued: QueuedMessage): Job =
+        queuedGenerationRunner.createJob(session, queued)
 
     /** Avatar actions are genuine user events and follow the normal send/cancel/notification lifecycle. */
     fun sendAvatarInteraction(conversationId: Uuid, targetMessage: UIMessage) =
@@ -1071,47 +897,8 @@ class ChatService(
 
     // ---- 添加主动消息 ----
 
-    fun addProactiveMessage(conversationId: Uuid, aiMessage: UIMessage) {
-        launchWithConversationReference(conversationId) {
-            try {
-                appendProactiveAiMessageUnderLock(conversationId, aiMessage)
-            } catch (e: Exception) {
-                Log.e(TAG, "addProactiveMessage failed, conversationId=$conversationId", e)
-            }
-        }
-    }
-
-    /**
-     * 在 saveMutex 保护下，把 AI 主动生成的消息追加到对话并落库。
-     * 与 sendMessage/regenerate 等共享同一把锁，避免 read-modify-write 竞态导致消息被覆盖。
-     */
-    private suspend fun appendProactiveAiMessageUnderLock(
-        conversationId: Uuid,
-        aiMessage: UIMessage,
-    ) {
-        val session = getOrCreateSession(conversationId)
-
-        // 等待当前正在进行的生成任务（如果有）先完全结束，再追加这条主动消息。
-        // 消息现已按 UUID 写回；等待仍确保主动回复位于本轮工具续接之后。
-        session.getJob()?.let { job ->
-            if (job.isActive) {
-                Log.i(TAG, "appendProactiveAiMessageUnderLock: waiting for ongoing generation to finish, conversationId=$conversationId")
-                job.join()
-            }
-        }
-
-        session.withStateLock {
-            // 优先从数据库读取完整对话，避免 session 被 idle 清除后用空对话覆盖数据库已有数据
-            val currentConversation = conversationRepo.getConversationById(conversationId)
-                ?: session.state.value
-            val updated = currentConversation.copy(
-                messageNodes = currentConversation.messageNodes + aiMessage.toMessageNode(),
-                updateAt = java.time.Instant.now()
-            )
-            updateConversation(conversationId, updated)
-            saveConversationLocked(conversationId, updated)
-        }
-    }
+    fun addProactiveMessage(conversationId: Uuid, aiMessage: UIMessage) =
+        proactivePublisher.addProactiveMessage(conversationId, aiMessage)
 
     /** Isolated background output enters chat only at this guarded, non-suspending publication point.
      * Both deletion and normal user writes share the session lock. Never recreate a deleted window. */
@@ -1122,51 +909,14 @@ class ChatService(
         task: me.rerere.rikkahub.data.service.ProactiveTask,
         messages: List<UIMessage>,
         executor: me.rerere.rikkahub.data.service.ProactiveTaskExecutor,
-    ): Boolean {
-        val session = getOrCreateSession(conversationId)
-        return session.withStateLock {
-            kotlinx.coroutines.currentCoroutineContext().ensureActive()
-            if (conversationId in deletedConversationIds || session.isDeleted) return@withStateLock false
-            if (!conversationRepo.existsConversationById(conversationId)) return@withStateLock false
-            kotlinx.coroutines.currentCoroutineContext().ensureActive()
-            session.requireActive()
-            if (conversationId in deletedConversationIds) return@withStateLock false
-            val current = session.state.value
-            if (current.assistantId != assistantId ||
-                current.currentMessages.lastOrNull { it.role == MessageRole.USER }?.id != anchorId ||
-                messages.isEmpty() || messages.any { message ->
-                    message.role != MessageRole.ASSISTANT || current.messageNodes.any { node ->
-                        node.messages.any { it.id == message.id }
-                    }
-                }
-            ) return@withStateLock false
-            if (!executor.prepareCommit(task, messages)) return@withStateLock false
-            val committing = executor.startCommit(task) ?: return@withStateLock false
-            val payload = executor.decodeCommitPayload(committing) ?: run {
-                executor.store.abandonCommit(task.taskId,
-                    me.rerere.rikkahub.data.service.ProactiveTaskStatus.Failed, "invalid_commit_payload")
-                return@withStateLock false
-            }
-            val saved = withContext(NonCancellable) {
-                conversationRepo.appendProactiveMessagesIdempotently(conversationId, assistantId, anchorId, payload)
-            } ?: run {
-                // A null result is a definitive guard rejection, not an ambiguous database failure.
-                // Retaining CommitPending here used to lock out every subsequent proactive task.
-                executor.store.abandonCommit(task.taskId,
-                    me.rerere.rikkahub.data.service.ProactiveTaskStatus.Interrupted, "publication_guard_changed")
-                return@withStateLock false
-            }
-            // Room already committed. A ledger receipt failure must not hide the saved message or
-            // cause regeneration: keep its payload for exact-ID reconciliation on the next check.
-            runCatching { executor.markCommitSent(committing) }.onFailure {
-                Log.w(TAG, "Proactive message committed; ledger receipt needs reconciliation", it)
-            }
-            updateConversation(conversationId, saved)
-            session.persistedConversation = saved
-            session.messageJournal.invalidate()
-            true
-        }
-    }
+    ): Boolean = proactivePublisher.publishProactiveMessages(
+        conversationId = conversationId,
+        assistantId = assistantId,
+        anchorId = anchorId,
+        task = task,
+        messages = messages,
+        executor = executor,
+    )
 
     // ---- 语音通话被拒接通知 ----
 
@@ -1343,456 +1093,21 @@ class ChatService(
         /** 这一轮仅本次请求可用的录音（视频通话直传）；历史里永远不存 audio part。 */
         transientAudioUrl: String? = null,
         transientAudioAnchorMessageId: String? = null,
-    ): Boolean {
-        diagnosticTrace?.stage("reading generation settings")
-        val initialConversation = bindConversationConfig(conversationId)
-        val settings = settingsStore.settingsFlow.first().withConversationConfig(initialConversation)
-        val assistant = settings.getAssistantOf(initialConversation)
-        val model = settings.getChatModelOf(initialConversation) ?: error("请先为会话选择可用的聊天模型")
-
-        val senderName = if (assistant.useAssistantAvatar) {
-            assistant.name.ifEmpty { context.getString(R.string.assistant_page_default_assistant) }
-        } else {
-            model.displayName
-        }
-
-        // session 需要在 runCatching 外声明，以便 .onSuccess 中也能访问 saveMutex
-        val session = getOrCreateSession(conversationId)
-        val activityStore = me.rerere.rikkahub.data.service.ProactiveActivityStore(
-            context, assistant.id.toString(), conversationId.toString(),
-        )
-        var activitySnapshot = emptyList<me.rerere.rikkahub.data.service.ProactiveActivity>()
-        var activityUserId: String? = null
-        var activityTransformer: me.rerere.rikkahub.data.service.ProactiveActivityTransformer? = null
-        var reactionTurn: ReactionContextTurn? = null
-        val rawArchiveOwner = kotlinx.coroutines.currentCoroutineContext()[kotlinx.coroutines.Job]
-        val rawArchiveMessageIds = mutableSetOf<String>()
-        val hookConfig = settings.sereinHook
-        fun hookIsCurrent(): Boolean = settingsStore.settingsFlow.value.let { live ->
-            live.sereinHook == hookConfig && hookConfig.usableBy(assistant.id.toString()) &&
-                live.assistants.any { it.id == assistant.id } && !session.isDeleted
-        }
-        var hookTransformer: me.rerere.rikkahub.data.serein.SereinRecallTransformer? = null
-        var hookParticipating = false
-        var hookUser: UIMessage? = null
-        var hookRecall: me.rerere.rikkahub.data.serein.HookRecall? = null
-        var hookElapsedMs = 0L
-        var completedGenerationReplyId: Uuid? = null
-        val hookObservedAt = System.currentTimeMillis()
-        val hookReceipt = "orangechat:${Uuid.random()}"
-        suspend fun reportHook(status: String, delivered: List<String> = emptyList()) {
-            val user = hookUser ?: return
-            if (!hookParticipating || !hookIsCurrent()) return
-            try {
-                sereinHookRepository.report(hookConfig, conversationId.toString(), hookReceipt, user,
-                    hookRecall, delivered, status, hookElapsedMs, hookObservedAt)
-            } catch (e: CancellationException) { throw e }
-            catch (_: Exception) { Log.w(TAG, "Could not queue Serein observation") }
-        }
-
-        val generationResult = runCatching {
-
-            // reset suggestions
-            updateConversation(conversationId, initialConversation.copy(chatSuggestions = emptyList()))
-
-            // memory tool
-            if (!model.abilities.contains(ModelAbility.TOOL)) {
-                if (settings.enableWebSearch || mcpManager.getAllAvailableTools(assistant).isNotEmpty()) {
-                    addError(
-                        IllegalStateException(context.getString(R.string.tools_warning)),
-                        conversationId,
-                        title = context.getString(R.string.error_title_tool_unavailable)
-                    )
-                }
-            }
-
-            // check invalid messages
-            diagnosticTrace?.stage("validating message attachments")
-            checkInvalidMessages(conversationId)
-            val conversation = getConversationFlow(conversationId).value
-            val messagesForGeneration = conversation.messagesForGeneration(messageRange)
-            val regenerationNodeId = messageRange?.let { conversation.messageNodes.getOrNull(it.endInclusive + 1)?.id }
-            val requestMessageIds = messagesForGeneration.map { it.id }.toSet()
-            var regenerationMessageId: Uuid? = null
-            val latestUserMessage = messagesForGeneration.lastOrNull { it.role == MessageRole.USER }
-            diagnosticTrace?.stage("collecting extra information")
-            val extraInfoContext = kotlinx.coroutines.coroutineScope {
-                val hookPending = async {
-                    if (latestUserMessage == null || (messageRange != null && !retryFailedRecall) || transientSystemPrompt != null || !hookIsCurrent()) null
-                    else {
-                        hookParticipating = true
-                        hookUser = latestUserMessage
-                        val started = System.nanoTime()
-                        try {
-                            sereinHookRepository.prepare(hookConfig, assistant.id.toString(), conversationId.toString(),
-                                latestUserMessage, messagesForGeneration.lastOrNull()?.role == MessageRole.USER, ::hookIsCurrent,
-                                retryFailed = retryFailedRecall)
-                                .also { hookRecall = it }
-                        } finally { hookElapsedMs = (System.nanoTime() - started) / 1_000_000 }
-                    }
-                }
-                val extra = if (latestUserMessage != null && messageRange == null) {
-                    extraInfoRequestCache.resolve(
-                        conversationId = conversationId,
-                        assistantId = assistant.id,
-                        user = latestUserMessage,
-                        option = settings.systemToolsSetting,
-                        allowCollection = messagesForGeneration.lastOrNull()?.role == MessageRole.USER,
-                    ) {
-                        session.processingStatus.value = "正在读取额外信息…"
-                        try {
-                            extraInfoInjectionCollector.collect(
-                                settings = settings,
-                                assistantId = assistant.id.toString(),
-                                queryText = latestUserMessage.toText().take(300),
-                            )
-                        } finally {
-                            session.processingStatus.value = null
-                        }
-                    }
-                } else {
-                    null
-                }
-                hookPending.await()?.let { recalled ->
-                    latestUserMessage?.let {
-                        hookTransformer = me.rerere.rikkahub.data.serein.SereinRecallTransformer(it.id, recalled, ::hookIsCurrent)
-                    }
-                }
-                extra
-            }
-            // Every historical user message keeps the snapshot it was first sent with, so the
-            // request prefix stays byte-identical across turns and the provider cache survives.
-            // The latest message uses only this turn's resolved snapshot.
-            val extraInfoSnapshots = extraInfoRequestCache.snapshots(
-                conversationId = conversationId,
-                messages = messagesForGeneration,
-                option = settings.systemToolsSetting,
-            ).let { stored ->
-                if (latestUserMessage == null || messageRange != null) stored
-                else stored - latestUserMessage.id + listOfNotNull(
-                    extraInfoContext?.takeIf { it.isNotBlank() }?.let { latestUserMessage.id to it }
-                )
-            }
-            activitySnapshot = runCatching { activityStore.snapshot() }.getOrElse {
-                Log.w(TAG, "Could not read proactive activity records", it)
-                emptyList()
-            }
-            activityUserId = messagesForGeneration.lastOrNull { it.role == MessageRole.USER }
-                ?.id?.toString()?.takeIf { messageRange == null }
-            val activityCutoff = messagesForGeneration.lastOrNull { it.id.toString() == activityUserId }
-                ?.createdAt?.toInstant(TimeZone.currentSystemDefault())?.toEpochMilliseconds()
-            activitySnapshot = activitySnapshot.filter {
-                it.claimedByUserId != null || (activityCutoff != null && it.timestamp <= activityCutoff)
-            }
-            activityTransformer = me.rerere.rikkahub.data.service.ProactiveActivityTransformer(
-                activitySnapshot, activityUserId,
-            )
-
-            // start generating
-            diagnosticTrace?.stage("building generation tools and context")
-            val availableTools = if (enableTools) buildAvailableTools(
-                settings = settings, assistant = assistant, conversationId = conversationId,
-                conversation = conversation, allowAppUsage = true,
-                // Scope LocalMoments budget to the user message this request answers; an older
-                // assistant regeneration must not borrow a newer user turn's budget.
-                momentsTurnAnchorUserId = latestUserMessage?.id,
-            ) else emptyList()
-            val paymentToolsUnavailableReason = me.rerere.rikkahub.data.interaction.paymentToolUnavailableReason(
-                model, model.findProvider(settings.providers))
-            val paymentToolsAvailable = paymentToolsUnavailableReason == null &&
-                availableTools.any { it.name == "respond_to_payment" }
-            if (enableTools && paymentToolsUnavailableReason != null && conversation.currentMessages.any { message ->
-                message.annotations.any { it is me.rerere.ai.ui.UIMessageAnnotation.ChatInteraction &&
-                    it.kind in setOf("red_packet", "transfer") && it.status == "pending" }
-            }) addError(IllegalStateException(paymentToolsUnavailableReason), conversationId, title = "红包/转账工具不可用")
-            val listenTurn = latestUserMessage?.let { user ->
-                org.koin.core.context.GlobalContext.get().get<me.rerere.rikkahub.data.listen.ListenRepository>()
-                    .captureTurn(conversationId.toString(), assistant.id.toString(), user.id)
-            }
-            generationHandler.generateText(
-                listenRequestContext = listenTurn?.let { it::attach },
-                settings = settings,
-                model = model,
-                processingStatus = session.processingStatus,
-                messages = messagesForGeneration,
-                conversationContextSummary = conversation.summaryForGeneration(),
-                assistant = assistant,
-                conversationSystemPrompt = listOfNotNull(
-                    conversation.customSystemPrompt?.takeIf { it.isNotBlank() },
-                    // 视频通话轮：这一轮的通话上下文走 appendedSystemContext（**追加**在主文后面），
-                    // 不再混进"对话级 prompt"里被 allowConversationSystemPrompt 开关整段丢掉。
-                    transientSystemPrompt?.takeIf { it.isNotBlank() && requestToken == null },
-                ).joinToString("\n\n").ifBlank { null },
-                appendedSystemContext = transientSystemPrompt?.takeIf { it.isNotBlank() && requestToken != null },
-                workspaceCwd = conversation.workspaceCwd,
-                memories = if (assistant.useGlobalMemory) {
-                    memoryRepository.getGlobalMemories()
-                } else {
-                    memoryRepository.getMemoriesOfAssistant(assistant.id.toString())
-                },
-                inputTransformers = buildList {
-                    addAll(inputTransformers)
-                    add(templateTransformer)
-                    add(workspaceReminderTransformer)
-                    add(me.rerere.rikkahub.data.reading.ReadContextTransformer(
-                        org.koin.core.context.GlobalContext.get().get(), conversationId.toString(), assistant.id.toString()))
-                    add(requireNotNull(activityTransformer))
-                    add(ExtraInfoRequestTransformer(extraInfoSnapshots))
-                    hookTransformer?.let { add(it) }
-                    add(object : me.rerere.rikkahub.data.ai.transformers.InputMessageTransformer {
-                        override suspend fun transform(ctx: me.rerere.rikkahub.data.ai.transformers.TransformerContext, messages: List<UIMessage>): List<UIMessage> {
-                            val current = session.state.value
-                            val prompt = me.rerere.rikkahub.data.interaction.interactionStatePrompt(
-                                current.currentMessages, assistant.pretendRich,
-                                VoiceCallService.activeConversationId.value == conversationId.toString() &&
-                                    VoiceCallService.activeUiState.value.status in setOf(
-                                        me.rerere.rikkahub.ui.pages.voice.VoiceCallStatus.Listening,
-                                        me.rerere.rikkahub.ui.pages.voice.VoiceCallStatus.Processing,
-                                        me.rerere.rikkahub.ui.pages.voice.VoiceCallStatus.Speaking),
-                                paymentToolsAvailable = paymentToolsAvailable,
-                                paymentToolsUnavailableReason = paymentToolsUnavailableReason,
-                                paymentMessageIds = requestMessageIds.takeIf { messageRange != null })
-                            val systemIndex = messages.indexOfFirst { it.role == MessageRole.SYSTEM }
-                            return if (systemIndex < 0) listOf(UIMessage(role = MessageRole.SYSTEM, parts = listOf(UIMessagePart.Text(prompt)))) + messages
-                            else messages.mapIndexed { index, message ->
-                                if (index == systemIndex) message.copy(parts = message.parts + UIMessagePart.Text(prompt)) else message
-                            }
-                        }
-                    })
-                },
-                outputTransformers = outputTransformers,
-                tools = availableTools,
-                pluginPromptInjections = buildList {
-                    diagnosticTrace?.stage("loading plugin prompt injections")
-                    addAll(pluginToolProvider.getPluginPromptInjections())
-                    settings.displaySetting.buildAnniversaryPrompt()?.let(::add)
-                },
-                conversationId = conversationId.toString(),
-                reactionSourceMessages = conversation.currentMessages.take(
-                    conversation.currentMessages.indexOfLast { it.id in requestMessageIds } + 1,
-                ),
-                // 视频通话自动抓帧：只作为本次请求的临时图片输入，不写聊天历史。
-                transientImageUrls = transientImageUrls,
-                transientImageScope = transientImageScope,
-                transientImageAnchorMessageId = transientImageAnchorMessageId,
-                // 视频通话手动录音：只作为本次请求的临时音频输入，不写聊天历史。
-                transientAudioUrl = transientAudioUrl,
-                transientAudioAnchorMessageId = transientAudioAnchorMessageId,
-                requestToken = requestToken,
-                onReactionContextPrepared = { reactionTurn = it },
-                onGenerationCompleted = { completedGenerationReplyId = it },
-                onToolCheckpoint = { checkpointMessages ->
-                    diagnosticTrace?.stage("saving tool checkpoint")
-                    session.withStateLock {
-                        if (session.isDeleted || session.getJob() !== rawArchiveOwner) return@withStateLock
-                        if (regenerationNodeId != null && regenerationMessageId == null) {
-                            regenerationMessageId = checkpointMessages.firstOrNull { it.id !in requestMessageIds }?.id
-                        }
-                        val mutation = session.state.value.generationMessageMutation(
-                            me.rerere.rikkahub.data.interaction.associateVideoCallReplies(
-                                checkpointMessages, requestMessageIds, conversationId, videoCallUserMessageId), buildMap {
-                            if (regenerationNodeId != null) regenerationMessageId?.let { put(it, regenerationNodeId) }
-                        })
-                        applyMessageMutationLocked(conversationId, mutation)
-                        saveConversationLocked(conversationId, session.state.value)
-                    }
-                },
-            ).onStart {
-                diagnosticTrace?.stage("collecting generation pipeline")
-            }.onCompletion {
-                // 取消 Live Update 通知
-                cancelLiveUpdateNotification(conversationId)
-
-                // 可能被取消了，或者意外结束，兜底更新
-                withContext(NonCancellable) {
-                    if (!session.isDeleted) session.withStateLock {
-                        val current = session.state.value
-                        val archived = current.activeCompressedMessageNodeIds
-                        val mutation = current.generationMessageMutation(current.messageNodes
-                            .filterNot { it.id in archived }.flatMap { it.messages }.map { it.finishReasoning() })
-                        applyMessageMutationLocked(conversationId, mutation)
-                        updateConversation(conversationId, session.state.value.copy(updateAt = Instant.now()))
-                    }
-                }
-
-                // Show notification if app is not in foreground
-                if (!isForeground.value && settings.displaySetting.enableNotificationOnMessageGeneration) {
-                    sendGenerationDoneNotification(conversationId, senderName)
-                }
-            }.collect { chunk ->
-                diagnosticTrace?.stage("applying generation update")
-                when (chunk) {
-                    is GenerationChunk.Messages -> {
-                        chunk.messages.lastOrNull()?.takeIf { it.role == MessageRole.ASSISTANT }?.let {
-                            rawArchiveMessageIds += it.id.toString()
-                        }
-                        if (regenerationNodeId != null && regenerationMessageId == null) {
-                            regenerationMessageId = chunk.messages.firstOrNull { it.id !in requestMessageIds }?.id
-                        }
-                        session.withStateLock {
-                            val mutation = session.state.value.generationMessageMutation(
-                                me.rerere.rikkahub.data.interaction.associateVideoCallReplies(
-                                    chunk.messages, requestMessageIds, conversationId, videoCallUserMessageId), buildMap {
-                                if (regenerationNodeId != null) regenerationMessageId?.let { put(it, regenerationNodeId) }
-                            })
-                            applyMessageMutationLocked(conversationId, mutation)
-                        }
-
-                        // 如果应用不在前台，发送 Live Update 通知
-                        if (!isForeground.value && settings.displaySetting.enableNotificationOnMessageGeneration && settings.displaySetting.enableLiveUpdateNotification) {
-                            sendLiveUpdateNotification(conversationId, chunk.messages, senderName)
-                        }
-                    }
-                }
-            }
-        }.onFailure {
-            withContext(NonCancellable) { reportHook(if (it is CancellationException) "interrupted" else "failed") }
-            // 取消 Live Update 通知
-            cancelLiveUpdateNotification(conversationId)
-
-            // Freeze only already-persisted partial originals. Never archive request injections
-            // or let a cancelled writer overwrite a newer session checkpoint.
-            withContext(NonCancellable) {
-                runCatching {
-                    session.withStateLock {
-                        if (!session.isDeleted && session.getJob() === rawArchiveOwner) {
-                            conversationRepo.interruptPendingRawOriginals(conversationId, rawArchiveMessageIds)
-                        }
-                    }
-                }.onFailure { Log.w(TAG, "Could not finalize local original-text archive") }
-            }
-
-            if (it is CancellationException) throw it
-            kotlinx.coroutines.currentCoroutineContext().ensureActive()
-            it.printStackTrace()
-            addError(it, conversationId, title = context.getString(R.string.error_title_generation))
-            Logging.log(TAG, "handleMessageComplete: $it")
-            Logging.log(TAG, it.stackTraceToString())
-        }.onSuccess {
-            kotlinx.coroutines.currentCoroutineContext().ensureActive()
-            val finalConversation = session.withStateLock {
-                kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                val latest = getConversationFlow(conversationId).value
-                check(latest.assistantId == assistant.id) { "助手已变更，请重新发送" }
-                val reply = latest.currentMessages.lastOrNull()
-                val receipted = reply?.let {
-                    reactionTurn?.finish(it, latest.currentMessages, latest.id.toString(), latest.assistantId.toString())
-                } ?: reply
-                if (receipted != null && receipted != reply) {
-                    applyMessageMutationLocked(conversationId, latest.generationMessageMutation(listOf(receipted)))
-                }
-                try {
-                    saveConversationLocked(conversationId, session.state.value)
-                } catch (error: Exception) {
-                    if (receipted != null && receipted != reply && reply != null) {
-                        applyMessageMutationLocked(conversationId, session.state.value.generationMessageMutation(listOf(reply)))
-                    }
-                    throw error
-                }
-                session.state.value
-            }
-            val completedReply = finalConversation.currentMessages.lastOrNull()
-            if (hookParticipating && hookIsCurrent() && completedReply != null) {
-                try {
-                    val status = sereinSuccessfulRequestStatus(completedGenerationReplyId, completedReply)
-                    if (status == "completed") {
-                        sereinHookRepository.acknowledge(hookConfig, conversationId.toString(), completedReply,
-                            hookTransformer?.deliveredIds.orEmpty())
-                    }
-                    val valid = completedReply.isSereinCompletedReply()
-                    // Completion is an observed model event; ACK/upload eligibility remains stricter.
-                    reportHook(status, if (status == "completed" && valid) hookTransformer?.deliveredIds.orEmpty() else emptyList())
-                } catch (e: CancellationException) { throw e }
-                catch (_: Exception) { Log.w(TAG, "Could not record Serein recall delivery") }
-            }
-            if (activityUserId != null && completedReply?.role == MessageRole.ASSISTANT &&
-                completedReply.finishedAt != null && completedReply.getTools().isEmpty()
-            ) {
-                runCatching {
-                    activityStore.claim(
-                        activityTransformer?.deliveredPendingIds.orEmpty(),
-                        activityUserId,
-                    )
-                }.onFailure { Log.w(TAG, "Could not acknowledge proactive activity records", it) }
-            }
-
-            // 自动唤起网易云音乐：扫描刚完成的 assistant 文本中的 orpheus:// scheme
-            try {
-                val lastAssistantMessage = finalConversation.currentMessages.lastOrNull { it.role == MessageRole.ASSISTANT }
-                val messageText = lastAssistantMessage?.toText() ?: ""
-                launchNeteaseCloudMusic(messageText)
-            } catch (e: Exception) {
-                Log.w(TAG, "Failed to launch NetEase Cloud Music", e)
-            }
-
-            // 检测并执行 [JUMP] 标记 - 正常聊天中的切屏（AI总是可以跳转，不需要开关）
-            try {
-                val lastAssistantMessage = finalConversation.currentMessages.lastOrNull { it.role == MessageRole.ASSISTANT }
-                val rawText = lastAssistantMessage?.parts?.filterIsInstance<UIMessagePart.Text>()
-                    ?.joinToString("\n") { it.text } ?: ""
-                if (rawText.contains("[JUMP]", ignoreCase = true)) {
-                    // Merge into the live state under its lock: an older reply snapshot must not
-                    // overwrite a payment receipt or hang-up that arrived during generation.
-                    if (lastAssistantMessage != null) session.withStateLock {
-                        val current = session.state.value
-                        val cleanedConversation = current.copy(messageNodes = current.messageNodes.map { node ->
-                            node.copy(messages = node.messages.map { msg ->
-                                if (msg.id == lastAssistantMessage.id) msg.withoutJumpControl() else msg
-                            })
-                        })
-                        saveConversationLocked(conversationId, cleanedConversation)
-                    }
-                    // 拉起 RouteActivity 切屏（正常聊天中不受时间阈值限制）
-                    val jumpIntent = Intent(context, RouteActivity::class.java).apply {
-                        addFlags(
-                            Intent.FLAG_ACTIVITY_NEW_TASK or
-                                Intent.FLAG_ACTIVITY_CLEAR_TOP or
-                                Intent.FLAG_ACTIVITY_SINGLE_TOP
-                        )
-                        putExtra("conversationId", conversationId.toString())
-                    }
-                    context.startActivity(jumpIntent)
-                    Log.d(TAG, "[JUMP] detected in normal chat, force jump to conversation $conversationId")
-                }
-            } catch (e: Exception) {
-                Log.w(TAG, "Failed to handle [JUMP] in normal chat", e)
-            }
-
-            // 触发 message_received 事件钩子
-            // 同 message_sent: 用 appScope.launch 提交独立协程, 不阻塞 handleMessageComplete
-            // 后续的标题生成/建议生成等流程, 也不随上一条消息的 job 取消而中断。
-            runCatching {
-                val lastAssistantMessage = finalConversation.currentMessages.lastOrNull { it.role == MessageRole.ASSISTANT }
-                val eventData = JsonObject(
-                    mapOf(
-                        "assistant_id" to JsonPrimitive(assistant.id.toString()),
-                        "conversation_id" to JsonPrimitive(conversationId.toString()),
-                        "message" to JsonPrimitive(lastAssistantMessage?.toText() ?: ""),
-                        "role" to JsonPrimitive("assistant"),
-                        "timestamp" to JsonPrimitive(System.currentTimeMillis())
-                    )
-                )
-                appScope.launch {
-                    try {
-                        pluginLoader.callEvent("message_received", eventData)
-                    } catch (e: Exception) {
-                        Log.w(TAG, "Failed to trigger message_received event", e)
-                    }
-                }
-            }.onFailure { e ->
-                Log.w(TAG, "Failed to trigger message_received event", e)
-            }
-
-            launchWithConversationReference(conversationId) {
-                generateTitle(conversationId, finalConversation)
-            }
-            launchWithConversationReference(conversationId) {
-                generateSuggestion(conversationId, finalConversation)
-            }
-
-        }
-        return generationResult.isSuccess
-    }
+    ): Boolean = completionRunner.handleMessageComplete(
+        conversationId = conversationId,
+        messageRange = messageRange,
+        transientSystemPrompt = transientSystemPrompt,
+        enableTools = enableTools,
+        diagnosticTrace = diagnosticTrace,
+        retryFailedRecall = retryFailedRecall,
+        transientImageUrls = transientImageUrls,
+        transientImageScope = transientImageScope,
+        transientImageAnchorMessageId = transientImageAnchorMessageId,
+        requestToken = requestToken,
+        videoCallUserMessageId = videoCallUserMessageId,
+        transientAudioUrl = transientAudioUrl,
+        transientAudioAnchorMessageId = transientAudioAnchorMessageId,
+    )
 
     internal fun buildProactiveWakeupTools(
         settings: me.rerere.rikkahub.data.datastore.Settings,

@@ -6,10 +6,6 @@
 
 package me.rerere.rikkahub.service
 
-import me.rerere.tts.model.SpeechMarkup
-import me.rerere.rikkahub.data.datastore.getSelectedTTSProvider
-
-import me.rerere.rikkahub.data.sync.isChatRecoveryBlocking
 import android.app.NotificationManager
 import android.app.Service
 import android.content.Context
@@ -23,15 +19,10 @@ import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.async
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.currentCoroutineContext
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -48,26 +39,19 @@ import me.rerere.ai.provider.supportsDirectAudio
 import me.rerere.rikkahub.data.model.getChatModelOf
 import me.rerere.rikkahub.data.datastore.findProvider
 import me.rerere.rikkahub.data.datastore.getSelectedASRProvider
-import me.rerere.rikkahub.data.video.AsrSegmentResult
-import me.rerere.rikkahub.data.video.AsrSegmentWatcher
+import me.rerere.rikkahub.data.sync.isChatRecoveryBlocking
 import me.rerere.rikkahub.data.video.CallCapabilityState
 import me.rerere.rikkahub.data.video.CallForegroundCapability
 import me.rerere.rikkahub.data.video.CallReconcileAction
 import me.rerere.rikkahub.data.video.CallSessionMode
-import me.rerere.rikkahub.data.video.DirectSegmentResult
 import me.rerere.rikkahub.data.video.TransientAudioClip
 import me.rerere.rikkahub.data.video.VideoCallPolicy
 import me.rerere.rikkahub.data.video.VideoCallRefreshAction
 import me.rerere.rikkahub.data.video.VideoCallRuntime
 import me.rerere.rikkahub.data.video.VideoFrameStore
-import me.rerere.rikkahub.data.video.VideoGiftProtocol
 import me.rerere.rikkahub.data.video.VideoVoiceAvailability
 import me.rerere.rikkahub.data.video.VideoVoicePolicy
-import me.rerere.rikkahub.data.video.VideoVoiceRoute
-import me.rerere.rikkahub.data.video.VideoVoiceStatus
 import me.rerere.rikkahub.data.video.VideoVoiceUiState
-import me.rerere.rikkahub.data.video.directSegmentResult
-import me.rerere.rikkahub.data.video.VoiceCallTurnGate
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.ui.hooks.CustomAsrState
@@ -86,15 +70,9 @@ import kotlin.uuid.Uuid
 
 private const val TAG = "VoiceCallService"
 
-/** 视频面板里打的字只用来显示在字幕上，不许无限增长。 */
-private const val MAX_TYPED_TRANSCRIPT = 200
-
 /** 单次 ASR 运行时错误当瞬时故障自动恢复；这么多错误挤在这个窗口里才算"链路真的坏了"。 */
 private const val ASR_ERROR_WINDOW_MS = 30_000L
 private const val ASR_ERROR_WINDOW_MAX = 3
-
-/** 视频通话"说完自动发送"的判定节拍：150ms 一次，比人停顿的感知更细。 */
-private const val VIDEO_SILENCE_POLL_MS = 150L
 
 /**
  * 语音通话后台服务
@@ -307,76 +285,22 @@ class VoiceCallService : Service(), KoinComponent {
     private var initJob: Job? = null
     private var initEpoch: Long = 0L
 
-    /** 每轮对话的令牌门禁：打断/挂断先失效，旧任务在检查点就会自己退出。 */
-    private val turnGate = VoiceCallTurnGate()
-    private var turnJob: Job? = null
-
     // ------------------------------------------------------------------
     // 视频通话的**手动**录音（纯语音通话完全不经过这里）
     // ------------------------------------------------------------------
 
-    /**
-     * 手动录音这一段的状态（纯数据）：开始录音 / 结束并发送 / 转写中 / 发送中 / 不可用。
-     *
-     * 存在 [VoiceCallUiState.voiceInput] 里（而不是另开一条 flow）：面板已经订阅了
-     * `activeUiState`，这样即使 binder 还没连上也能拿到安全 Idle 初值。
-     * 默认就是 Idle：进入视频页**不会**自动采音，也不会显示"正在聆听"。
-     */
-    private var videoVoice: VideoVoiceUiState
-        get() = _uiState.value.voiceInput
-        set(value) {
-            // 单段录音状态不代表用户关闭了麦克风；等回复时仍保留免提意图。
-            // 静音字段与 UI 在 videoHandsFree 变化时一并更新。
-            _uiState.update { it.copy(voiceInput = value) }
-        }
-
-    /** 当前这一段的代次：任何旧回调/旧协程发现代次不对就不许动状态。 */
-    private var videoVoiceSegment: Long = 0L
-    private var videoVoiceJob: Job? = null
-    private var videoVoiceDeadlineJob: Job? = null
     // Coroutine delay is cancellable and replaceable with a virtual clock in service tests.
     internal var videoVoiceDelay: suspend (Long) -> Unit = { delay(it) }
     internal var videoVoiceSilenceDelay: suspend (Long) -> Unit = { delay(it) }
     internal var videoVoiceNowMillis: () -> Long = { android.os.SystemClock.elapsedRealtime() }
     internal var videoAsrRecordingTimeoutMs: Long = VideoVoicePolicy.MAX_RECORDING_MS
     internal var videoAsrTranscriptionTimeoutMs: Long = 30_000L
-    private var videoVoiceRecorder: ManualVoiceRecorder? = null
-    private var videoVoiceStartedAt: Long? = null
-    private var videoVoiceStopRequested = false
-    private var videoVoiceRoute: VideoVoiceRoute? = null
-    /** "说完自动发送"的判定器；每段开始时 reset。 */
-    private var videoVoiceActivity = me.rerere.rikkahub.data.video.VideoVoiceActivity()
-    private var videoVoiceSilenceJob: Job? = null
-    /**
-     * 免提：用户点过一次麦克风之后，这一段发出去、助手答完，自动接着听下一段。
-     * 点输入框打字、手动结束、取消、挂断都会关掉它。
-     */
-    private var videoHandsFree = false
-        set(value) {
-            field = value
-            if (videoMode) {
-                isMuted = !value
-                _uiState.update { it.copy(isMuted = !value) }
-            }
-        }
-    private var videoAsrActive = false
 
-    /** 已经录好、还没被 [TransientAudioClip] 接管的文件（取消时要删掉）。 */
-    private var videoVoicePendingPath: String? = null
-
-    /**
-     * 最近一次手动录音相关的面板提示（用户能看到的原文）。
-     *
-     * 单独留一份的原因：面板提示走 `video?.notify(...)`，而协调器在服务集成回归里是注入点
-     * （测试里为 null）。保存原文既能断言"到上限时确实提示了用户"，也方便真机排查。
-     */
-    internal var lastVideoVoiceNotice: String? = null
-        private set
+    internal val lastVideoVoiceNotice: String?
+        get() = videoVoiceController.lastNotice
 
     private fun notifyVideoVoice(text: String) {
-        if (text.isBlank()) return
-        lastVideoVoiceNotice = text
-        video?.notify(text)
+        videoVoiceController.notify(text)
     }
 
     /** 一次性面板提示：写入 uiState.notice 并 bump noticeSeq（同样的提示再发也会重新淡入）。 */
@@ -424,9 +348,6 @@ class VoiceCallService : Service(), KoinComponent {
             .getOrDefault(false)
     }
 
-    /** 当前这一轮的请求 token（视频通话授权凭证）；随队列项不可变地传给生成管线。 */
-    private var activeRequestToken: String? = null
-
     internal val videoState: StateFlow<VideoCallPanelState> = _panelState.asStateFlow()
 
     /** 当前绑定的服务是否就是这通视频通话（面板用来避免控制别人的通话）。 */
@@ -467,25 +388,122 @@ class VoiceCallService : Service(), KoinComponent {
 
     // 任务协程
     private var vadJob: Job? = null
-    private var speakingMonitorJob: Job? = null
     private var playbackMonitorJob: Job? = null
-    private var conversationMonitorJob: Job? = null
     private var asrMonitorJob: Job? = null
-    private var interruptDetectJob: Job? = null
     private var lastSpokenText: String = ""
-    private var activeVoiceMessage: QueuedMessage? = null
-    private val voiceRequestIds = mutableSetOf<Uuid>()
-
-    // 跟踪 AI 消息的增量, 用于流式 TTS
-    private var lastAssistantText: String = ""
-    private var hasSentCurrentMessage = false
-
-    // 流式 TTS: 记录已发送给 TTS 的文本长度
-    private var ttsSentLength: Int = 0
 
     // 静音状态 (独立于 _uiState.isMuted, 检测循环里直接读这个字段更快)
     private var isMuted: Boolean = false
     private val audioRouter by lazy { VoiceCallAudioRouter(this) }
+
+    private val videoVoiceController: VideoVoiceInputController = VideoVoiceInputController(
+        object : VideoVoiceHost {
+            override val serviceScope: CoroutineScope get() = this@VoiceCallService.serviceScope
+            override val uiState: MutableStateFlow<VoiceCallUiState> get() = _uiState
+            override val videoMode: Boolean get() = this@VoiceCallService.videoMode
+            override val callEnded: Boolean get() = this@VoiceCallService.callEnded
+            override val hasAsr: Boolean get() = this@VoiceCallService.hasAsr
+            override val currentAsr: CustomAsrState? get() = if (hasAsr) asr else null
+            override val sessionToken: Long get() = this@VoiceCallService.sessionToken
+            override val videoCoordinator: VideoCallCoordinator? get() = video
+            override val settingsStore: SettingsStore get() = this@VoiceCallService.settingsStore
+            override fun hasMicrophonePermission(): Boolean = this@VoiceCallService.hasMicrophonePermission()
+            override fun videoVoiceDirectory(): java.io.File = this@VoiceCallService.videoVoiceDirectory()
+            override suspend fun videoVoiceDelay(ms: Long) = this@VoiceCallService.videoVoiceDelay(ms)
+            override suspend fun videoVoiceSilenceDelay(ms: Long) = this@VoiceCallService.videoVoiceSilenceDelay(ms)
+            override fun videoVoiceNowMillis(): Long = this@VoiceCallService.videoVoiceNowMillis()
+            override val videoAsrRecordingTimeoutMs: Long get() = this@VoiceCallService.videoAsrRecordingTimeoutMs
+            override val videoAsrTranscriptionTimeoutMs: Long get() = this@VoiceCallService.videoAsrTranscriptionTimeoutMs
+            override fun createVoiceRecorder(): ManualVoiceRecorder = this@VoiceCallService.createVoiceRecorder()
+            override fun directAudioSupported(): Boolean = this@VoiceCallService.directAudioSupported()
+            override fun asrConfigured(): Boolean = this@VoiceCallService.asrConfigured()
+            override fun invalidateAsrPipeline() {
+                asrToken = -1L
+                microphoneToken = -1L
+                capabilityState.setAudioPipelineReady(false)
+            }
+            override fun startInitialization() = this@VoiceCallService.startInitialization()
+            override fun onHandsFreeChanged(enabled: Boolean) {
+                if (videoMode) {
+                    isMuted = !enabled
+                    _uiState.update { it.copy(isMuted = !enabled) }
+                }
+            }
+            override fun prepareInterruptForNewSegment() {
+                invalidateTurnAndWithdraw()
+                turnOrchestrator.resetTurnTextForVoiceInterrupt()
+                _uiState.update { it.copy(status = VoiceCallStatus.Listening) }
+            }
+            override fun beginTurn(
+                text: String,
+                fromVoice: Boolean,
+                bubbleText: String,
+                transientAudio: TransientAudioClip?,
+            ): Boolean = this@VoiceCallService.beginTurn(
+                text = text,
+                fromVoice = fromVoice,
+                bubbleText = bubbleText,
+                transientAudio = transientAudio,
+            )
+        },
+    )
+
+    private val turnOrchestrator: VoiceCallTurnOrchestrator = VoiceCallTurnOrchestrator(
+        object : VoiceCallTurnHost {
+            override val applicationContext: Context get() = this@VoiceCallService.applicationContext
+            override val serviceScope: CoroutineScope get() = this@VoiceCallService.serviceScope
+            override val uiState: MutableStateFlow<VoiceCallUiState> get() = _uiState
+            override val settingsStore: SettingsStore get() = this@VoiceCallService.settingsStore
+            override fun conversationIdOrNull(): Uuid? =
+                if (::conversationId.isInitialized) conversationId else null
+            override fun conversation(): StateFlow<Conversation> = this@VoiceCallService.conversation
+            override val videoMode: Boolean get() = this@VoiceCallService.videoMode
+            override val callEnded: Boolean get() = this@VoiceCallService.callEnded
+            override val videoCoordinator: VideoCallCoordinator? get() = video
+            override val hasTts: Boolean get() = this@VoiceCallService.hasTts
+            override val currentTts: CustomTtsState? get() = if (hasTts) tts else null
+            override val hasMicrophone: Boolean get() = this@VoiceCallService.hasMicrophone
+            override val currentMicrophone: VoiceCallMicrophone?
+                get() = if (hasMicrophone) microphone else null
+            override val callTranscript: VoiceCallTranscript get() = this@VoiceCallService.callTranscript
+            override fun shouldListenToCall(): Boolean = this@VoiceCallService.shouldListenToCall()
+            override fun syncMicrophone() = this@VoiceCallService.syncMicrophone()
+            override fun startListening(recoveryMessage: String?) = this@VoiceCallService.startListening(recoveryMessage)
+            override fun interruptSpeaking() = this@VoiceCallService.interruptSpeaking()
+            override fun postNotice(text: String?) = this@VoiceCallService.postNotice(text)
+            override fun notifyVideoVoice(text: String) = this@VoiceCallService.notifyVideoVoice(text)
+            override fun videoVoiceAvailability(): VideoVoiceAvailability =
+                this@VoiceCallService.videoVoiceAvailability()
+            override fun refreshVideoVoiceInput(): Unit = this@VoiceCallService.refreshVideoVoiceInput()
+            override fun resumeVideoHandsFree(): Unit = this@VoiceCallService.resumeVideoHandsFree()
+            override fun recordVideoCallMessage(id: Uuid) = this@VoiceCallService.recordVideoCallMessage(id)
+            override fun beginVideoTurnRequest(token: String): Boolean =
+                video?.beginTurnRequest(token) == true
+            override fun finishVideoTurnRequest(token: String, cancelled: Boolean) {
+                video?.let { if (cancelled) it.cancelTurnRequest(token) else it.completeTurnRequest(token) }
+            }
+            override fun submitCallMessage(
+                parts: List<UIMessagePart>,
+                transientSystemPrompt: String?,
+                transientImageUrls: List<String>,
+                ownedImageUrls: List<String>,
+                transientSystemPromptWithoutImages: String?,
+                requestToken: String?,
+                transientAudio: TransientAudioClip?,
+                imageScope: me.rerere.rikkahub.data.video.VideoFrameRequestScope?,
+            ): QueuedMessage? = this@VoiceCallService.submitCallMessage(
+                parts,
+                transientSystemPrompt,
+                transientImageUrls,
+                ownedImageUrls,
+                transientSystemPromptWithoutImages,
+                requestToken,
+                transientAudio,
+                imageScope,
+            )
+            override fun cancelCallRequest(id: Uuid) = this@VoiceCallService.cancelCallRequest(id)
+        },
+    )
 
     companion object {
         private val _startedAtMillis = MutableStateFlow(0L)
@@ -757,8 +775,7 @@ class VoiceCallService : Service(), KoinComponent {
         sessionToken += 1
         callStarted = false
         capabilityState.reset()
-        turnGate.invalidate()
-        endActiveRequestToken(cancelled = true)
+        turnOrchestrator.resetForNewSession()
         // 新会话：手动录音这一段的状态、录音器与段代次一律归零（旧段的一切回调作废）。
         resetVideoVoiceState()
         disposeVoiceRecorder()
@@ -1196,15 +1213,14 @@ class VoiceCallService : Service(), KoinComponent {
         asrMonitorJob = null
         vadJob?.cancel()
         vadJob = null
-        interruptDetectJob?.cancel()
-        interruptDetectJob = null
+        turnOrchestrator.cancelInterruptDetection()
         microphonePolicyJob?.cancel()
         microphonePolicyJob = null
         audioUnavailable = true
         capabilityState.setAudioPipelineReady(false)
         _uiState.update { it.copy(amplitudes = emptyList(), userTranscript = "") }
         // 视频通话的手动录音同样立刻作废：撤权之后既不能再录，也不能把上一段当完整语音请求送出去。
-        if (videoMode && videoVoiceActive) {
+        if (videoMode && videoVoiceController.isActive) {
             cancelVideoVoiceInput("麦克风不可用：这一段录音已取消，不会发送")
         } else {
             refreshVideoVoiceInput()
@@ -1259,10 +1275,8 @@ class VoiceCallService : Service(), KoinComponent {
             interactionStartJob = beginCallInteraction(conversationId, _startedAtMillis.value, videoMode)
         }
         callStarted = true
-        lastAssistantText = ""
         lastSpokenText = ""
-        hasSentCurrentMessage = false
-        ttsSentLength = 0
+        turnOrchestrator.resetForListening()
         isMuted = videoMode
 
         _uiState.update {
@@ -1325,14 +1339,9 @@ class VoiceCallService : Service(), KoinComponent {
     private fun startListening(recoveryMessage: String? = null) {
         if (callEnded) return
         if (hasTts) tts.stop()
-        ttsSentLength = 0
-        lastAssistantText = ""
-        hasSentCurrentMessage = false
+        turnOrchestrator.resetForListening()
 
         _uiState.update { it.listeningAfterReply(recoveryMessage) }
-
-        // 停止"打断检测"协程 (Speaking 状态才需要它)
-        interruptDetectJob?.cancel()
 
         syncMicrophone()
 
@@ -1404,7 +1413,7 @@ class VoiceCallService : Service(), KoinComponent {
      * 先切换麦克风策略，再发送请求。
      */
     private fun sendCurrentMessage() {
-        if (_uiState.value.status != VoiceCallStatus.Listening || hasSentCurrentMessage) return
+        if (_uiState.value.status != VoiceCallStatus.Listening || turnOrchestrator.hasSentCurrentMessage) return
         val transcript = _uiState.value.userTranscript.trim()
         vadJob?.cancel()
 
@@ -1430,129 +1439,29 @@ class VoiceCallService : Service(), KoinComponent {
         val typed = text.trim()
         if (typed.isEmpty() || callEnded) return false
         if (!::conversationId.isInitialized) return false
-        if (videoMode) videoHandsFree = false
-        // 打字发送 = 明确的"改说文字"：正在录/正在转写的那一段作废（不自动提交）。
-        if (videoMode && videoVoice.status != VideoVoiceStatus.Idle) {
-            cancelVideoVoiceInput("已改用文字发送，刚才那一段录音已取消")
-        }
+        videoVoiceController.onTypedTextSubmitted()
         when (_uiState.value.status) {
             VoiceCallStatus.Processing, VoiceCallStatus.Speaking -> invalidateTurnAndWithdraw()
             else -> Unit
         }
         vadJob?.cancel()
-        interruptDetectJob?.cancel()
+        turnOrchestrator.cancelInterruptDetection()
         return beginTurn(typed, fromVoice = false)
     }
 
     // ------------------------------------------------------------------
-    // 视频通话：手动录音（点一次开始，再点一次结束并发送）
+    // 视频通话：手动录音（委派给 VideoVoiceInputController）
     // ------------------------------------------------------------------
 
-    /**
-     * 面板上的那一颗麦克风：与语音通话同一种手感。
-     *
-     * - 空闲时点一下 = **开始免提聆听**：说完停下来（[VideoVoiceActivity]）自动发出去，
-     *   助手答完自动接着听下一段，不用每次都点两下；
-     * - 录音中再点一下 = 立刻发送这一段，并且**退出免提**（之后不再自动接听）；
-     * - 转写中/发送中重复点按一律忽略（绝不重复提交同一段）。
-     *
-     * @return true 表示这次点按真的开始了一段或结束并提交了一段。
-     */
-    fun toggleVideoVoiceInput(): Boolean {
-        if (!videoMode || callEnded) return false
-        return when (videoVoice.status) {
-            VideoVoiceStatus.Recording -> {
-                // 手动点停 = 明确的"就到这里，别再自动听着了"。
-                videoHandsFree = false
-                finishVideoVoiceSegment()
-                true
-            }
+    fun toggleVideoVoiceInput(): Boolean = videoVoiceController.toggle()
 
-            VideoVoiceStatus.Idle, VideoVoiceStatus.Unavailable -> {
-                videoHandsFree = true
-                startVideoVoiceSegment()
-            }
+    fun onHostBackground() = videoVoiceController.onHostBackground()
 
-            VideoVoiceStatus.Transcribing, VideoVoiceStatus.Sending -> false
-        }
-    }
+    fun cancelVideoVoiceInput(reason: String = "") = videoVoiceController.cancel(reason)
 
-    /** 当前是否真的有一段在录/在转写/在发送（面板提示只在真的有事发生时出现）。 */
-    private val videoVoiceActive: Boolean
-        get() = videoVoice.status == VideoVoiceStatus.Recording ||
-            videoVoice.status == VideoVoiceStatus.Transcribing ||
-            videoVoice.status == VideoVoiceStatus.Sending
+    fun refreshVideoVoiceInput(): Unit = videoVoiceController.refresh()
 
-    /** 页面退到后台：未发送的那一段作废（**不发送**），并停掉采集。 */
-    fun onHostBackground() {
-        if (!videoMode) return
-        videoHandsFree = false
-        if (videoVoiceActive) {
-            cancelVideoVoiceInput("已离开视频页：这一段录音没有发送")
-        } else {
-            // 没在录也照样停掉采集（回到前台时是干净状态）。
-            releaseVideoVoiceCapture(discard = true)
-        }
-    }
-
-    /**
-     * 取消正在录/正在转写的一段（闭麦、打断、挂断、退回后台、权限撤回都走这里）。
-     *
-     * 取消 = 停止采集 + 取消未发送的录音 + **不发消息**；这是与"结束并发送"的唯一区别。
-     *
-     * @param reason 面板提示文案（空串表示静默清理）。
-     */
-    fun cancelVideoVoiceInput(reason: String = "") {
-        if (!videoMode) return
-        video?.discardFrozenFrames()
-        // 取消 = 退出免提：用户刚刚明确表示"不要这一段"，再自动接着听会很吓人。
-        videoHandsFree = false
-        videoVoiceSegment += 1
-        videoVoiceJob?.cancel()
-        videoVoiceJob = null
-        videoVoiceDeadlineJob?.cancel()
-        videoVoiceDeadlineJob = null
-        stopVideoSilenceWatch()
-        videoVoiceStopRequested = false
-        releaseVideoVoiceCapture(discard = true)
-        _uiState.update { it.copy(amplitudes = emptyList()) }
-        // The reason is a one-shot panel notice, not persistent availability state.
-        videoVoice = refreshVideoVoiceState()
-        if (reason.isNotBlank()) notifyVideoVoice(reason)
-    }
-
-    /**
-     * 权限/设置变化之后的显式刷新（麦克风授权、ASR 配置变化）。
-     *
-     * 正在录/正在转写/正在发送时**不覆盖**当前状态（不能让一次刷新把录音状态清成 Idle）。
-     * 一次性失败原因只走面板提示，不在这里回填；`Unavailable` + reason 只表示能力真的
-     * 不可用（权限/ASR 配置/模型），由 [refreshVideoVoiceState] 按 availability 决定。
-     */
-    fun refreshVideoVoiceInput() {
-        if (!videoMode || callEnded) return
-        if (videoVoice.isActionable && videoVoice.isRecording) return
-        if (videoVoice.isBusy) return
-        val refreshed = refreshVideoVoiceState()
-        if (refreshed.status == VideoVoiceStatus.Unavailable) videoHandsFree = false
-        videoVoice = refreshed
-    }
-
-    private fun refreshVideoVoiceState(reason: String = ""): VideoVoiceUiState {
-        val availability = videoVoiceAvailability()
-        return VideoVoiceUiState(
-            status = if (availability.enabled) VideoVoiceStatus.Idle else VideoVoiceStatus.Unavailable,
-            route = availability.route,
-            reason = reason.ifBlank { availability.reason },
-            maxDurationMs = VideoVoicePolicy.MAX_RECORDING_MS,
-        )
-    }
-
-    private fun videoVoiceAvailability(): VideoVoiceAvailability = VideoVoicePolicy.resolve(
-        mode = settingsStore.settingsFlow.value.videoCallSetting.voiceInputMode,
-        directAudioSupported = runCatching { directAudioSupported() }.getOrDefault(false),
-        asrConfigured = runCatching { asrConfigured() }.getOrDefault(false),
-        microphoneGranted = hasMicrophonePermission(),
-    )
+    private fun videoVoiceAvailability(): VideoVoiceAvailability = videoVoiceController.availability()
 
     /** 生产实现：真正按 `Model.supportsDirectAudio(provider)` 判定（尊重模型自己的 audioInputMode）。 */
     private fun resolveDirectAudioSupported(): Boolean {
@@ -1565,906 +1474,34 @@ class VoiceCallService : Service(), KoinComponent {
 
     private fun videoVoiceDirectory(): java.io.File = TransientAudioClip.directory(cacheDir)
 
-    /**
-     * 这一段的已录时长。
-     *
-     * 优先用录音器/ASR 自己报的时长；有些 provider 一直不上报 durationMs，
-     * 那就用墙钟兜底（两者取大，时间不会倒流）。
-     */
-    private fun elapsedForSegment(reportedMs: Long): Long {
-        val started = videoVoiceStartedAt
-        val wall = if (started != null) videoVoiceNowMillis() - started else 0L
-        return maxOf(reportedMs, wall).coerceAtLeast(0L)
-    }
+    private fun disposeVoiceRecorder() = videoVoiceController.disposeRecorder()
 
-    private fun ensureVoiceRecorder(): ManualVoiceRecorder =
-        videoVoiceRecorder ?: createVoiceRecorder().also { videoVoiceRecorder = it }
+    private fun resetVideoVoiceState() = videoVoiceController.resetState()
 
-    /**
-     * 停掉这一段的采集。
-     *
-     * @param discard true 表示"取消"：录音器被 abort（已写出的文件当场删掉，不发布路径），
-     *        并且把已经录好但还没被接管的文件也删掉。
-     */
-    private fun releaseVideoVoiceCapture(discard: Boolean) {
-        videoVoiceRecorder?.let { recorder ->
-            if (discard) runCatching { recorder.abort() }.onFailure { Log.w(TAG, "取消录音失败", it) }
-            else runCatching { recorder.stop() }.onFailure { Log.w(TAG, "停止录音失败", it) }
-        }
-        if (discard) {
-            videoVoicePendingPath?.let { path ->
-                TransientAudioClip.discardFile(java.io.File(path), videoVoiceDirectory())
-            }
-        }
-        videoVoicePendingPath = null
-        if (discard) {
-            disposeVoiceRecorder()
-            if (videoAsrActive && hasAsr) {
-                // stop() would start a transcription request. Dispose cancels the provider request
-                // and its own temporary file instead; never infer ownership from an emitted path.
-                runCatching { asr.cleanup() }
-                asrToken = -1L
-                microphoneToken = -1L
-                capabilityState.setAudioPipelineReady(false)
-                if (!callEnded && hasMicrophonePermission()) startInitialization()
-            }
-            videoAsrActive = false
-        }
-    }
+    private fun startVideoVoiceSegment(interrupt: Boolean = true): Boolean =
+        videoVoiceController.startSegment(interrupt)
 
-    private fun disposeVoiceRecorder() {
-        videoVoiceRecorder?.let { runCatching { it.cleanup() } }
-        videoVoiceRecorder = null
-    }
+    private fun resumeVideoHandsFree(): Unit = videoVoiceController.resumeHandsFree()
 
-    /** 开始一段（换会话/挂断时也会被重置）。 */
-    private fun resetVideoVoiceState() {
-        videoVoiceSegment += 1
-        videoVoiceJob?.cancel()
-        videoVoiceJob = null
-        videoVoiceDeadlineJob?.cancel()
-        videoVoiceDeadlineJob = null
-        stopVideoSilenceWatch()
-        videoHandsFree = false
-        videoVoiceStopRequested = false
-        videoVoicePendingPath = null
-        videoVoiceRoute = null
-        videoVoiceStartedAt = null
-        videoVoice = VideoVoiceUiState()
-    }
+    // ------------------------------------------------------------------
+    // 回合调度 / TTS 播放 / 打断检测（委派给 VoiceCallTurnOrchestrator）
+    // ------------------------------------------------------------------
 
-    /**
-     * @param interrupt true = 用户点了麦克风（打断正在说的/正在生成的）；
-     *        false = 免提自动接听下一段（刚刚那一轮已经自然结束，不能再去撤它的授权）。
-     */
-    private fun startVideoVoiceSegment(interrupt: Boolean = true): Boolean {
-        if (!videoMode || callEnded) return false
-        val availability = videoVoiceAvailability()
-        if (!availability.enabled || availability.route == null) {
-            videoHandsFree = false
-            // 不能点就必须说清原因（没权限/没能力/ASR 没配置），绝不显示"正在聆听"骗人。
-            videoVoice = VideoVoiceUiState(
-                status = VideoVoiceStatus.Unavailable,
-                route = null,
-                reason = availability.reason,
-            )
-            notifyVideoVoice(availability.reason)
-            return false
-        }
-        // 同一时刻只允许一个麦克风在采音：先把任何旧的采集停掉（不发送）。
-        videoVoiceJob?.cancel()
-        videoVoiceJob = null
-        videoVoiceDeadlineJob?.cancel()
-        videoVoiceDeadlineJob = null
-        stopVideoSilenceWatch()
-        releaseVideoVoiceCapture(discard = true)
-        if (interrupt) {
-            // 避免把自己的朗读录进去：开始采音之前先停 TTS。
-            // Cancel streaming generation and withdraw its queued speech; keep its already-submitted
-            // user message id for the eventual video call record.
-            invalidateTurnAndWithdraw()
-            activeVoiceMessage = null
-            lastAssistantText = ""
-            ttsSentLength = 0
-            _uiState.update { it.copy(status = VoiceCallStatus.Listening) }
-        }
-        // 新的这一句从干净状态开始：旧的一轮文字/振幅不许被"说完自动发送"当成已经说到话。
-        _uiState.update { it.copy(userTranscript = "", amplitudes = emptyList()) }
-        videoVoiceActivity.reset()
-        val segment = ++videoVoiceSegment
-        videoVoiceStartedAt = videoVoiceNowMillis()
-        videoVoiceStopRequested = false
-        videoVoiceRoute = availability.route
-        val started = when (availability.route) {
-            VideoVoiceRoute.DIRECT_AUDIO -> startDirectVoiceSegment(segment)
-            VideoVoiceRoute.ASR -> startAsrVoiceSegment(segment)
-        }
-        if (started) startVideoSilenceWatch(segment)
-        return started
-    }
+    private fun invalidateTurnAndWithdraw() = turnOrchestrator.invalidateTurnAndWithdraw()
 
-    /** 这一段开始之后才启动"说完自动发送"的看守：没真的开始就不要空转。 */
-    private fun startVideoSilenceWatch(segment: Long) {
-        videoVoiceSilenceJob?.cancel()
-        videoVoiceSilenceJob = serviceScope.launch {
-            while (true) {
-                videoVoiceSilenceDelay(VIDEO_SILENCE_POLL_MS)
-                if (callEnded || segment != videoVoiceSegment) return@launch
-                if (videoVoice.status != VideoVoiceStatus.Recording) return@launch
-                val now = videoVoiceNowMillis()
-                videoVoiceActivity.onTranscript(_uiState.value.userTranscript, now)
-                if (videoVoiceActivity.shouldSend(elapsedForSegment(0L), now)) {
-                    // 与语音通话同一种手感：说完不用点，自己就发出去了。
-                    finishVideoVoiceSegment(bySilence = true)
-                    return@launch
-                }
-            }
-        }
-    }
-
-    private fun stopVideoSilenceWatch() {
-        videoVoiceSilenceJob?.cancel()
-        videoVoiceSilenceJob = null
-        videoVoiceActivity.reset()
-    }
-
-    /**
-     * 免提续听：上一轮已经自然答完，接着听下一段。
-     *
-     * 只在"还在 Listening + 空闲 + 真的开了免提"时才接，任何一步不满足就保持安静。
-     */
-    private fun resumeVideoHandsFree() {
-        if (!videoMode || callEnded || !videoHandsFree) return
-        if (videoVoice.status != VideoVoiceStatus.Idle) return
-        if (_uiState.value.status != VoiceCallStatus.Listening) return
-        if (videoVoiceAvailability().route == VideoVoiceRoute.ASR && !hasAsr) {
-            startInitialization()
-            return
-        }
-        startVideoVoiceSegment(interrupt = false)
-    }
-
-    /** 直传路线：录音器写 WAV，写完（用户点停或到 60 秒上限）就直接进这一次请求。 */
-    private fun startDirectVoiceSegment(segment: Long): Boolean {
-        val recorder = ensureVoiceRecorder()
-        try {
-            recorder.start { /* 直传不需要 partial 文字 */ }
-        } catch (error: Exception) {
-            Log.e(TAG, "视频通话开始录音失败", error)
-            failVideoVoiceSegment(segment, error.message ?: "无法开始录音")
-            return false
-        }
-        videoVoice = VideoVoiceUiState(
-            status = VideoVoiceStatus.Recording,
-            route = VideoVoiceRoute.DIRECT_AUDIO,
-            maxDurationMs = VideoVoicePolicy.MAX_RECORDING_MS,
-        )
-        videoVoiceJob = serviceScope.launch {
-            // 监听录音器自己的状态流（而不是定时轮询）：用户点停与"到 60 秒上限自动结束"
-            // 走的是同一条完成路径，所以两者都会**发送**，区别只在于要不要提示"已录满"。
-            recorder.state.collect { recorderState ->
-                if (segment != videoVoiceSegment || callEnded) return@collect
-                if (recorderState.isRecording) {
-                    videoVoice = videoVoice.copy(elapsedMs = elapsedForSegment(recorderState.durationMs))
-                    // 幅度也要露出来：既是给"说完自动发送"的输入，也让面板能显示有没有在说。
-                    _uiState.update { it.copy(amplitudes = recorderState.amplitudes.takeLast(24)) }
-                    recorderState.amplitudes.lastOrNull()?.let { peak ->
-                        videoVoiceActivity.onAmplitude(peak, videoVoiceNowMillis())
-                    }
-                }
-                when (val result = directSegmentResult(recorderState)) {
-                    null -> Unit
-                    is DirectSegmentResult.Failed -> {
-                        failVideoVoiceSegment(segment, result.reason)
-                    }
-
-                    is DirectSegmentResult.Ready -> {
-                        completeDirectVoiceSegment(segment, recorder, result)
-                    }
-                }
-            }
-        }
-        return true
-    }
-
-    private suspend fun completeDirectVoiceSegment(
-        segment: Long,
-        recorder: ManualVoiceRecorder,
-        ready: DirectSegmentResult.Ready,
-    ) {
-        if (segment != videoVoiceSegment || callEnded) {
-            TransientAudioClip.discardFile(java.io.File(ready.path), videoVoiceDirectory())
-            return
-        }
-        // 到上限自动结束也要发送，但必须明确提示（不允许悄悄吞掉那一段）。
-        val reachedLimit = recorder.reachedLimit
-        videoVoice = videoVoice.copy(
-            status = VideoVoiceStatus.Sending,
-            elapsedMs = ready.durationMs,
-            endedByLimit = reachedLimit,
-        )
-        videoVoicePendingPath = ready.path
-        val clip = TransientAudioClip.adopt(
-            file = java.io.File(ready.path),
-            directory = videoVoiceDirectory(),
-            durationMs = ready.durationMs,
-        )
-        if (clip == null) {
-            videoVoicePendingPath = null
-            failVideoVoiceSegment(segment, "录音文件不可用，请重新录一段")
-            return
-        }
-        // 所有权移交：文件从此由 clip 负责，取消路径也要经它才能删。
-        videoVoicePendingPath = null
-        if (reachedLimit) notifyVideoVoice(VideoVoicePolicy.limitReachedNotice())
-        submitVideoVoiceTurn(
-            segment = segment,
-            text = VideoVoicePolicy.directVoicePlaceholder(ready.durationMs),
-            bubbleText = "🎙️ 语音 ${VideoVoicePolicy.formatDuration(ready.durationMs)}",
-            clip = clip,
-        )
-    }
-
-    /** ASR 路线：复用既有 ASR 工厂，但由**手动**的那一次点击驱动。 */
-    private fun startAsrVoiceSegment(segment: Long): Boolean {
-        if (!hasAsr) {
-            failVideoVoiceSegment(segment, "语音识别还没准备好，请稍后再试，或者直接打字")
-            return false
-        }
-        val asrStream = asr
-        videoAsrActive = true
-        val token = sessionToken
-        // watcher 先把"启动这一刻的状态"喂一遍：即使状态流的中间值被合并掉（provider 很快就
-        // Listening → Idle），"这一段确实录过"这个事实也不会丢，不会把用户卡在"转写中"。
-        // stopRequested=false，所以启动之前的旧 Idle 不会被当成本次结果。
-        val watcher = AsrSegmentWatcher()
-        watcher.observe(asrStream.state.value, stopRequested = false)
-        try {
-            asrStream.start { partial ->
-                // partial 只用来展示，不参与"这一段说完了没有"的判断。
-                if (segment == videoVoiceSegment && partial.isNotBlank()) {
-                    videoVoiceActivity.onTranscript(partial, videoVoiceNowMillis())
-                    _uiState.update { it.copy(userTranscript = partial.take(MAX_TYPED_TRANSCRIPT)) }
-                }
-            }
-        } catch (error: Exception) {
-            Log.e(TAG, "视频通话语音识别启动失败", error)
-            failVideoVoiceSegment(segment, error.message ?: "语音识别启动失败")
-            return false
-        }
-        // start() 是同步返回的 provider 会立刻进入 Connecting/Listening：再看一次，别漏。
-        watcher.observe(asrStream.state.value, stopRequested = false)
-        videoVoice = VideoVoiceUiState(
-            status = VideoVoiceStatus.Recording,
-            route = VideoVoiceRoute.ASR,
-            maxDurationMs = VideoVoicePolicy.MAX_RECORDING_MS,
-        )
-        videoVoiceJob = serviceScope.launch {
-            asrStream.state.collect { state ->
-                // 会话号 + ASR 实例 + 段代次三重校验：旧会话/旧实例的回调一律不许动状态。
-                if (segment != videoVoiceSegment || callEnded) return@collect
-                if (token != sessionToken || !hasAsr || asrStream !== asr) return@collect
-                _uiState.update { it.copy(amplitudes = state.amplitudes) }
-                if (state.isRecording) {
-                    videoVoice = videoVoice.copy(elapsedMs = elapsedForSegment(state.durationMs))
-                    state.amplitudes.lastOrNull()?.let { peak ->
-                        videoVoiceActivity.onAmplitude(peak, videoVoiceNowMillis())
-                    }
-                }
-                when (val result = watcher.observe(state, videoVoiceStopRequested)) {
-                    null -> Unit
-                    is AsrSegmentResult.Failed ->
-                        failVideoVoiceSegment(segment, result.reason)
-
-                    AsrSegmentResult.Empty ->
-                        failVideoVoiceSegment(segment, "没有识别到内容，请重新录一段，或者直接打字")
-
-                    is AsrSegmentResult.Transcript -> {
-                        videoVoice = videoVoice.copy(
-                            status = VideoVoiceStatus.Sending,
-                            elapsedMs = state.durationMs,
-                        )
-                        submitVideoVoiceTurn(
-                            segment = segment,
-                            text = result.text,
-                            bubbleText = result.text.take(MAX_TYPED_TRANSCRIPT),
-                            clip = null,
-                        )
-                    }
-                }
-            }
-        }
-        videoVoiceDeadlineJob = serviceScope.launch {
-            videoVoiceDelay(videoAsrRecordingTimeoutMs)
-            if (segment == videoVoiceSegment && !callEnded &&
-                videoVoice.status == VideoVoiceStatus.Recording) {
-                videoVoice = videoVoice.copy(endedByLimit = true)
-                notifyVideoVoice("已经录满 60 秒，录音已自动结束，正在转写")
-                finishVideoVoiceSegment()
-            }
-        }
-        return true
-    }
-
-    /** 用户再点一次 = 结束这一段；[bySilence] = 说完停顿后自动结束。 */
-    private fun finishVideoVoiceSegment(bySilence: Boolean = false) {
-        if (videoVoice.status != VideoVoiceStatus.Recording) return
-        videoVoice = videoVoice.copy(endedBySilence = bySilence)
-        stopVideoSilenceWatch()
-        // 截止在"用户说完/点结束"这一刻：先把此刻的滚动帧钉住，
-        // 转写/收尾花掉的几秒不再偷换成更晚的画面。
-        video?.freezeFramesForTurn()
-        videoVoiceStopRequested = true
-        if (bySilence) notifyVideoVoice("听到你停下来了，这一段正在发出去")
-        when (videoVoiceRoute) {
-            VideoVoiceRoute.DIRECT_AUDIO -> {
-                videoVoice = videoVoice.copy(status = VideoVoiceStatus.Sending)
-                releaseVideoVoiceCapture(discard = false)
-            }
-
-            VideoVoiceRoute.ASR -> {
-                videoVoice = videoVoice.copy(status = VideoVoiceStatus.Transcribing)
-                videoVoiceDeadlineJob?.cancel()
-                val segment = videoVoiceSegment
-                videoVoiceDeadlineJob = serviceScope.launch {
-                    videoVoiceDelay(videoAsrTranscriptionTimeoutMs)
-                    if (segment == videoVoiceSegment && !callEnded &&
-                        videoVoice.status == VideoVoiceStatus.Transcribing) {
-                        failVideoVoiceSegment(segment, "语音转写超时，这一段没有发送，请重试或直接打字")
-                    }
-                }
-                if (hasAsr) runCatching { asr.stop() }.onFailure {
-                    failVideoVoiceSegment(segment, "停止语音识别失败：这一段没有发送")
-                }
-            }
-
-            null -> Unit
-        }
-    }
-
-    /**
-     * 把这一段的结论交给正常的通话回合链（同一队列、同一 TTS、同一挂断清理）。
-     *
-     * [clip] 非空表示音频直传：附件所有权会随请求一起移交；提交失败则当场释放。
-     */
-    private suspend fun submitVideoVoiceTurn(
-        segment: Long,
-        text: String,
-        bubbleText: String,
-        clip: TransientAudioClip?,
-    ) {
-        if (segment != videoVoiceSegment || callEnded) {
-            clip?.release(fromRequest = false)
-            return
-        }
-        if (clip != null && !runCatching { directAudioSupported() }.getOrDefault(false)) {
-            clip.release(fromRequest = false)
-            failVideoVoiceSegment(segment, "模型或通道已变化，不再支持音频直传：这段录音没有发送，请重新录音或打字")
-            return
-        }
-        videoVoice = videoVoice.copy(status = VideoVoiceStatus.Sending)
-        if (videoAsrActive && hasAsr) {
-            val completedAsr = asr
-            asrToken = -1L
-            microphoneToken = -1L
-            capabilityState.setAudioPipelineReady(false)
-            runCatching { completedAsr.cleanup() }
-            if (hasMicrophonePermission()) startInitialization()
-        }
-        videoAsrActive = false
-        stopVideoSilenceWatch()
-        disposeVoiceRecorder()
-        _uiState.update { it.copy(amplitudes = emptyList()) }
-        val accepted = runCatching {
-            beginTurn(
-                text = text,
-                fromVoice = false,
-                bubbleText = bubbleText,
-                transientAudio = clip,
-            )
-        }.getOrDefault(false)
-        if (!accepted) {
-            clip?.release(fromRequest = false)
-            failVideoVoiceSegment(segment, "这一轮没有发出去，请再录一次或直接打字")
-            return
-        }
-        videoVoice = VideoVoiceUiState(
-            status = VideoVoiceStatus.Idle,
-            route = videoVoiceRoute,
-            maxDurationMs = VideoVoicePolicy.MAX_RECORDING_MS,
-        )
-        // 这一段已经交给请求了：观察协程没有别的事要做（下一段会重新起一个）。
-        videoVoiceJob?.cancel()
-        videoVoiceJob = null
-        videoVoiceDeadlineJob?.cancel()
-        videoVoiceDeadlineJob = null
-    }
-
-    /** 这一段失败：停采集、清文件，回到可再录的 Idle；原因只走一次性面板提示，
-     * 不写进持久状态（否则按钮会一直停在"不可用"）。 */
-    private fun failVideoVoiceSegment(segment: Long, reason: String) {
-        if (segment != videoVoiceSegment) return
-        videoHandsFree = false
-        video?.discardFrozenFrames()
-        stopVideoSilenceWatch()
-        videoVoiceSegment += 1
-        videoVoiceJob?.cancel()
-        videoVoiceJob = null
-        videoVoiceDeadlineJob?.cancel()
-        videoVoiceDeadlineJob = null
-        videoVoiceStopRequested = false
-        releaseVideoVoiceCapture(discard = true)
-        _uiState.update { it.copy(amplitudes = emptyList(), userTranscript = "") }
-        videoVoice = VideoVoiceUiState(
-            status = VideoVoiceStatus.Idle,
-            route = videoVoiceRoute,
-            reason = "",
-            maxDurationMs = VideoVoicePolicy.MAX_RECORDING_MS,
-        )
-        notifyVideoVoice(reason)
-    }
-
-    /**
-     * 让"当前这一轮"失效并撤回它的请求：打断/挂断/开始新一轮都走这里。
-     *
-     * 先失效令牌（旧协程在下一个检查点会自己退出），再取消旧任务，最后撤回队列里的请求。
-     */
-    private fun invalidateTurnAndWithdraw() {
-        turnGate.invalidate()
-        turnJob?.cancel()
-        turnJob = null
-        speakingMonitorJob?.cancel()
-        speakingMonitorJob = null
-        interruptDetectJob?.cancel()
-        val entry = activeVoiceMessage
-        activeVoiceMessage = null
-        // 授权先关掉：被打断的这一轮即使还有旧回调跑完，也不可能再送礼/留影。
-        // 取消（而不是完成）还要撤销它已经发出的留影许可。
-        endActiveRequestToken(cancelled = true)
-        if (entry != null) {
-            voiceRequestIds -= entry.id
-            cancelCallRequest(entry.id)
-        }
-        if (hasTts) tts.stop()
-    }
-
-    /** 生成一轮视频请求的授权 token；非视频通话返回 null（也就没有任何送礼/留影权限）。 */
-    private fun beginTurnRequestIfVideoMode(): String? {
-        if (!videoMode) return null
-        val coordinator = video ?: return null
-        val candidate = "vc-${Uuid.random()}"
-        if (!coordinator.beginTurnRequest(candidate)) return null
-        activeRequestToken = candidate
-        return candidate
-    }
-
-    private fun endActiveRequestToken(cancelled: Boolean = false) {
-        val token = activeRequestToken ?: return
-        activeRequestToken = null
-        closeRequestToken(token, cancelled)
-    }
-
-    /**
-     * 关闭**指定的**那个 token，并且只在它仍是"当前 token"时才清全局变量。
-     *
-     * 旧实现只有一个全局 [activeRequestToken]：上一轮抓帧的协程在新一轮 `begin` 之后才跑到
-     * finally，它一把 `activeRequestToken` 置空/关闭，就会把**新一轮**的授权关掉。
-     * token 必须是局部的，全局变量只是"当前这一轮"的便捷指针。
-     */
-    private fun closeRequestToken(token: String, cancelled: Boolean) {
-        if (activeRequestToken == token) activeRequestToken = null
-        val coordinator = video ?: return
-        if (cancelled) coordinator.cancelTurnRequest(token) else coordinator.completeTurnRequest(token)
-    }
-
-    /**
-     * 开一轮通话对话。
-     *
-     * @param text 真正发给模型的文字（视频直传路线是占位文本，ASR 路线是转写，手打就是原文）。
-     * @param bubbleText 面板上显示的那一行（直传路线不带"仅本轮提供"这种说明，免得气泡太长）。
-     * @param transientAudio 这一轮仅本次请求可用的录音（音频直传路线）；所有权随请求移交。
-     */
     private fun beginTurn(
         text: String,
         fromVoice: Boolean,
         bubbleText: String = text,
         transientAudio: TransientAudioClip? = null,
-    ): Boolean {
-        if (callEnded) return false
-        // 新一轮开始前先让上一轮彻底失效（挂断/打断/旧请求回调都不许再提交）
-        turnGate.invalidate()
-        turnJob?.cancel()
-        endActiveRequestToken(cancelled = true)
-        val token = turnGate.begin()
-        _uiState.update {
-            it.copy(
-                status = VoiceCallStatus.Processing,
-                userTranscript = if (fromVoice) it.userTranscript else text.take(MAX_TYPED_TRANSCRIPT),
-                assistantText = "",
-                errorMessage = null
-            )
-        }
-        syncMicrophone()
-        if (hasTts) tts.stop()
-        ttsSentLength = 0
-        lastAssistantText = ""
-        hasSentCurrentMessage = true
-        video?.onUserTurn(bubbleText)
-        turnJob = serviceScope.launch {
-            try {
-                dispatchTurn(text, token, transientAudio)
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (error: Exception) {
-                Log.e(TAG, "发送通话消息失败, conversationId=$conversationId", error)
-                if (turnGate.isCurrent(token)) recoverAfterReplyFailure("发送失败: ${error.message}")
-            }
-        }
-        return true
-    }
-
-    private suspend fun dispatchTurn(
-        text: String,
-        token: Long,
-        transientAudio: TransientAudioClip? = null,
-    ) {
-        if (!turnGate.isCurrent(token) || callEnded) {
-            transientAudio?.release(fromRequest = false)
-            return
-        }
-        val parts = mutableListOf<UIMessagePart>(UIMessagePart.Text(text))
-        // 仅本次请求有效的临时图片（自动抓帧），请求结束后由 ChatService 删除。
-        val transientImages = mutableListOf<String>()
-        // 手动夹帧是永久文件：没交出去（打断/挂断/提交失败）就必须自己删，否则留下孤儿照片。
-        val permanentImages = mutableListOf<String>()
-        var handedOff = false
-        var audioHandedOff = false
-        // 视频通话的请求 token：由这里生成，随队列项不可变地传到生成管线。
-        // 非视频通话没有 token，礼物/留影因此不会在任何其它生成里生效。
-        val requestToken = beginTurnRequestIfVideoMode()
-        val imageScope = VideoCallRuntime.frameRequestScope(conversationId.toString(), requestToken)
-        try {
-            // 视频模式：本轮要附带的画面。手动夹帧永久保存，自动帧只作本次请求的临时输入。
-            video?.let { coordinator ->
-                val attachment = coordinator.frameAttachmentForTurn()
-                if (attachment != null && (imageScope == null || !VideoCallRuntime.isFrameRequestScopeCurrent(imageScope))) {
-                    // Closing the camera during compression must not leak a serialized old frame.
-                    if (attachment.permanent) VideoFrameStore.deleteOwned(applicationContext, attachment.url)
-                    else VideoFrameStore.deleteTransient(applicationContext, listOf(attachment.url))
-                } else if (attachment != null) {
-                    if (attachment.permanent) {
-                        parts += UIMessagePart.Image(url = attachment.url)
-                        permanentImages += attachment.url
-                        // Keep the camera image in history, but authorize it only for this request.
-                    } else {
-                        transientImages += attachment.url
-                    }
-                }
-            }
-            // 抓帧/压缩是挂起操作，期间可能已经被打断或挂断：提交前必须再校验一次。
-            if (!turnGate.isCurrent(token) || callEnded) {
-                if (transientImages.isNotEmpty()) VideoFrameStore.deleteTransient(applicationContext, transientImages)
-                permanentImages.forEach { VideoFrameStore.deleteOwned(applicationContext, it) }
-                transientAudio?.release(fromRequest = false)
-                return
-            }
-            val attachedPicture = parts.any { it is UIMessagePart.Image } || transientImages.isNotEmpty()
-            val permanentPicture = parts.any { it is UIMessagePart.Image }
-            val audioAttached = transientAudio != null
-            val prompts = callSystemPrompts(
-                pictureAttached = attachedPicture,
-                audioAttached = audioAttached,
-                permanentPicture = permanentPicture,
-                hasTransientAttachment = transientImages.isNotEmpty() || audioAttached,
-            )
-            val entry = requireNotNull(
-                submitCallMessage(
-                    parts.toList(),
-                    prompts.actual,
-                    transientImages.toList(),
-                    // 本次新建、还没进历史的永久帧：只有"没写入历史"时才允许删（ChatService 负责）。
-                    permanentImages.toList(),
-                    // 队列暂停会摘掉"本轮附图/本轮录音"，届时改用无附件版本的视频上下文。
-                    prompts.withoutTransientAttachments,
-                    // 授权随队列项不可变传入；入队与授权不存在"先失败一半"的中间态。
-                    requestToken,
-                    // 录音只给这一条请求；所有权在 ChatService 的请求 finally 里释放并删除。
-                    transientAudio,
-                    imageScope?.copy(systemPromptWithoutCamera = prompts.withoutCamera),
-                )
-            ) { "语音内容为空或会话已删除" }
-            handedOff = true
-            audioHandedOff = true
-            if (!turnGate.isCurrent(token)) {
-                // 提交过程中被打断：立刻撤回这条请求，不留在队列里。
-                voiceRequestIds -= entry.id
-                cancelCallRequest(entry.id)
-                return
-            }
-            activeVoiceMessage = entry
-            callTranscript.record("user:" + entry.id, "user",
-                settingsStore.settingsFlow.value.displaySetting.userNickname.ifBlank { "我" }, text)
-            // 视频通话：把这条用户消息记进"这通电话覆盖了哪些消息"（见 endCall 写入通话卡）。
-            if (videoMode) recordVideoCallMessage(entry.id)
-            voiceRequestIds += entry.id
-            speakingMonitorJob?.cancel()
-            speakingMonitorJob = serviceScope.launch {
-                try {
-                    val finalText = entry.reply.await()
-                    voiceRequestIds -= entry.id
-                    if (activeVoiceMessage !== entry) return@launch
-                    if (finalText == null) {
-                        failVoiceReply(entry, "本次语音消息已撤回或中断")
-                    } else if (finalText.isBlank()) {
-                        failVoiceReply(entry, "本次未返回可朗读的回复，请到聊天页查看")
-                    } else {
-                        publishVoiceReply(entry, queuedSpeechReplyText(conversation.value.currentMessages, entry.id)
-                            .ifBlank { finalText })
-                        onGenerationDone(entry)
-                    }
-                } catch (cancelled: CancellationException) {
-                    if (!currentCoroutineContext().isActive) throw cancelled
-                    voiceRequestIds -= entry.id
-                    failVoiceReply(entry, "本次回复已中断，请重新发送")
-                } catch (_: MessageQueuePausedException) {
-                    // A paused entry remains queued; hang-up can still withdraw this utterance by ID.
-                    failVoiceReply(entry, "发送队列已暂停，请先在聊天页继续或撤回")
-                } catch (_: Exception) {
-                    voiceRequestIds -= entry.id
-                    failVoiceReply(entry, "本次回复失败，请到聊天页查看错误")
-                }
-            }
-        } finally {
-            // 没交出去的临时帧必须自己清掉；交出去的那份由 ChatService 在请求结束时删除。
-            if (!handedOff) {
-                if (transientImages.isNotEmpty()) {
-                    VideoFrameStore.deleteTransient(applicationContext, transientImages)
-                }
-                // 手动夹帧同样是"没交出去就删"：不能留下没人引用的永久照片。
-                permanentImages.forEach { VideoFrameStore.deleteOwned(applicationContext, it) }
-                // 这一轮根本没进队列：**这个** token 的生命周期到此结束。
-                // 交出去之后 token 的所有权在请求本身（ChatService job 的 finally 决定
-                // 是 complete 还是 cancel），这里绝不能提前关掉它 —— 那会让本轮礼物/留影全部失效。
-                // 关键：只关自己的 token，旧协程晚到的 finally 不许把新一轮的授权关掉。
-                requestToken?.let { closeRequestToken(it, cancelled = true) }
-            }
-            // 录音：没交出去（提交失败/被打断）就必须自己释放并删文件；
-            // 交出去之后所有权在请求本身（job 的 finally），这里绝不能提前删。
-            if (!audioHandedOff) transientAudio?.release(fromRequest = false)
-        }
-    }
-
-    private fun callSystemPrompts(
-        pictureAttached: Boolean,
-        audioAttached: Boolean,
-        permanentPicture: Boolean = false,
-        hasTransientAttachment: Boolean = false,
-    ): TurnSystemPrompts = buildCallSystemPrompts(
-        ttsProvider = settingsStore.settingsFlow.value.getSelectedTTSProvider(),
-        coordinator = video,
-        pictureAttached = pictureAttached,
-        audioAttached = audioAttached,
-        permanentPicture = permanentPicture,
-        hasTransientAttachment = hasTransientAttachment,
+    ): Boolean = turnOrchestrator.beginTurn(
+        text = text,
+        fromVoice = fromVoice,
+        bubbleText = bubbleText,
+        transientAudio = transientAudio,
     )
 
-    private data class VoiceCallRouteKey(
-        val providers: List<me.rerere.ai.provider.ProviderSetting>,
-        val assistants: List<me.rerere.rikkahub.data.model.Assistant>,
-        val asrProviders: List<me.rerere.asr.ASRProviderSetting>,
-        val selectedASRProviderId: Uuid?,
-        val chatModelId: Uuid,
-        val videoCallSetting: me.rerere.rikkahub.data.video.VideoCallSetting,
-    )
-
-    /**
-     * 监听对话流变化, 实现:
-     * 1. 流式 TTS (检测到新句子即朗读)
-     * 2. AI 开始输出时立即进入 Speaking 状态, 让用户可以打断
-     * 3. AI 回复完成后回到 Listening
-     */
-    private fun startConversationMonitor() {
-        conversationMonitorJob?.cancel()
-        conversationMonitorJob = serviceScope.launch {
-            // 只在"语音输入可用性真的变了"（模型/服务商/权限/ASR 配置）时才刷新。
-            // 无条件刷新会把一次性的提示（例如"没有识别到内容，请重新录一段"）在每次
-            // settings 发射时清回 Idle，用户就再也看不到失败原因了。
-            var lastAvailability: me.rerere.rikkahub.data.video.VideoVoiceAvailability? = null
-            combine(
-                conversation,
-                settingsStore.settingsFlow.map {
-                    VoiceCallRouteKey(
-                        providers = it.providers,
-                        assistants = it.assistants,
-                        asrProviders = it.asrProviders,
-                        selectedASRProviderId = it.selectedASRProviderId,
-                        chatModelId = it.chatModelId,
-                        videoCallSetting = it.videoCallSetting,
-                    )
-                }.distinctUntilChanged(),
-            ) { conv, _ -> conv }.collect { conv ->
-                // Route follows this conversation's model/provider and current settings while idle.
-                // Active recordings retain their frozen route until they finish or are cancelled.
-                val availability = runCatching { videoVoiceAvailability() }.getOrNull()
-                if (availability != null) {
-                    // 第一次发射只记录基线：进入通话时已经由 startVideoCall 刷新过一次，
-                    // 这里再"刷新"会把期间刚设置的一次性提示（例如"没有识别到内容"）清回 Idle。
-                    if (lastAvailability == null) {
-                        lastAvailability = availability
-                    } else if (availability != lastAvailability) {
-                        lastAvailability = availability
-                        refreshVideoVoiceInput()
-                    }
-                }
-                if (_uiState.value.status != VoiceCallStatus.Processing &&
-                    _uiState.value.status != VoiceCallStatus.Speaking
-                ) return@collect
-
-                val entry = activeVoiceMessage ?: return@collect
-                val currentText = queuedSpeechReplyText(conv.currentMessages, entry.id)
-                if (currentText.isNotBlank()) publishVoiceReply(entry, currentText)
-            }
-        }
-    }
-
-    private fun publishVoiceReply(entry: QueuedMessage, currentText: String) {
-        if (activeVoiceMessage !== entry || _uiState.value.status !in
-            setOf(VoiceCallStatus.Processing, VoiceCallStatus.Speaking)) return
-        // 防御：任何协议标签都不允许进入气泡/字幕/TTS。
-        val text = VideoGiftProtocol.strip(currentText)
-        _uiState.update { it.copy(assistantText = SpeechMarkup.transcript(text)) }
-        callTranscript.record("assistant:" + entry.id, "assistant",
-            settingsStore.settingsFlow.value.assistants.firstOrNull { it.id == conversation.value.assistantId }
-                ?.name?.ifBlank { "对方" } ?: "对方", text)
-        video?.onAssistantText(text)
-        if (hasTts && text.length > ttsSentLength) {
-            val newText = text.substring(ttsSentLength)
-            // 流式朗读：整句先到先读；等不到整句时按够长的分句先出声，首字更快。
-            val ready = SpeechMarkup.streamPrefixLength(newText)
-            if (ready > 0) tts.enqueueText(newText.substring(0, ready))
-            ttsSentLength += ready
-        }
-        if (_uiState.value.status == VoiceCallStatus.Processing && text.isNotBlank()) {
-            _uiState.update { it.copy(status = VoiceCallStatus.Speaking) }
-            if (hasMicrophone) startInterruptDetection()
-        }
-        lastAssistantText = text
-    }
-
-    private fun failVoiceReply(entry: QueuedMessage, message: String) {
-        if (activeVoiceMessage !== entry) return
-        recoverAfterReplyFailure(message)
-    }
-
-    private fun recoverAfterReplyFailure(message: String) {
-        if (callEnded) return
-        activeVoiceMessage = null
-        // 这一轮失败了：授权随之关闭，并且撤销它已经发出的留影许可 ——
-        // 一次失败的回复不该还能把画面写进聊天。
-        endActiveRequestToken(cancelled = true)
-        interruptDetectJob?.cancel()
-        // Invalidate partial ASR text from the failed turn, even with reply-listening enabled.
-        if (hasMicrophone) {
-            microphone.update(VoiceCallStatus.Idle, muted = true, keepListeningDuringReply = false)
-        }
-        startListening(message + "；已恢复聆听，请重新说。")
-        resumeVideoHandsFree()
-    }
-
-    private suspend fun onGenerationDone(entry: QueuedMessage) {
-        if (activeVoiceMessage !== entry || _uiState.value.status !in
-            setOf(VoiceCallStatus.Processing, VoiceCallStatus.Speaking)) return
-        // 朗读最后剩余的文本
-        val finalText = lastAssistantText
-        if (hasTts && finalText.length > ttsSentLength) {
-            val remaining = finalText.substring(ttsSentLength)
-            if (remaining.isNotBlank()) {
-                tts.enqueueText(remaining)
-                ttsSentLength = finalText.length
-            }
-        }
-        // 收尾：把最后半句也补成一条气泡
-        video?.onAssistantTurnFinished(finalText)
-        // 这一轮**正常结束**：关闭授权 token，但保留它已经发出的留影许可
-        // （合法的异步留影本来就落在请求结束之后）。
-        endActiveRequestToken(cancelled = false)
-
-        _uiState.update { it.copy(status = VoiceCallStatus.Speaking) }
-        if (hasMicrophone) startInterruptDetection()
-        if (hasTts) waitForTtsToFinish()
-
-        // 回到监听
-        if (activeVoiceMessage === entry && _uiState.value.status == VoiceCallStatus.Speaking) {
-            activeVoiceMessage = null
-            startListening()
-            // 免提：答完了就接着听下一段，跟语音通话一样不用动手。
-            resumeVideoHandsFree()
-        }
-    }
-
-    private suspend fun waitForTtsToFinish() = coroutineScope {
-        // 等待整条朗读队列完成，而不是重新等待已经结束的播放开始。
-        val completion = async(start = CoroutineStart.UNDISPATCHED) { tts.awaitCompletion() }
-        var previous = tts.playbackState.value
-        var previousChunk = tts.currentChunk.value
-        var stalledMs = 0L
-        try {
-            // 等待 TTS 播放完成。
-            // 不能只靠 isSpeaking：它在 worker 的 finally 里才会变 false。
-            // worker 挂在合成或播放时，持续观察真实播放进度，不能把恒为 true 当作进展。
-            // 有进度就继续等；没有进度才累计超时。
-            // 正常播完、无 TTS 或合成失败的队列可以立即退出，不再固定等待。
-            // 超时前先停止旧队列，避免恢复采音后才冒出迟到的朗读。
-            while (!completion.isCompleted) {
-                delay(100)
-                val playback = tts.playbackState.value
-                val chunk = tts.currentChunk.value
-                stalledMs = if (playback.positionMs != previous.positionMs ||
-                    playback.currentChunkIndex != previous.currentChunkIndex || chunk != previousChunk) {
-                    0L
-                } else {
-                    stalledMs + 100L
-                }
-                previous = playback
-                previousChunk = chunk
-                // 连续 30 秒无播放进展才停止，不截断仍在正常播放的长回复。
-                if (stalledMs >= 30_000L) {
-                    Log.w(TAG, "TTS 连续 30 秒无播放进展，停止朗读并恢复通话")
-                    tts.stop()
-                    val notice = "朗读暂时没有响应，已停止朗读"
-                    if (videoMode) notifyVideoVoice(notice) else postNotice(notice)
-                    break
-                }
-            }
-            // 传播队列完成时的异常，交给本轮的恢复路径处理。
-            if (completion.isCompleted) completion.await()
-        } finally {
-            // 等待被打断时也不遗留子任务。
-            completion.cancel()
-        }
-    }
-
-    /**
-     * Speaking 状态下的打断检测.
-     *
-     * 与 startVadDetection (判断"该发送了") 职责不同:
-     * 这里只关心"用户是否开始说话了", 一旦检测到就立即打断, 不等静音判断.
-     *
-     * 用比 Listening 状态更高的音量阈值 (0.15f vs 0.05f), 降低被 AI 自己声音误触发的概率.
-     * 残留风险: AEC 不是 100% 完美, 外放音量很大或低端机型硬件 AEC 差时仍可能误触发,
-     * 后续可加音量差阈值调优, 但不阻塞现在的实现.
-     */
-    private fun startInterruptDetection() {
-        // 视频通话手动模式不监听麦克风，因此没有"听着听着被打断"这条路径。
-        if (videoMode) return
-        interruptDetectJob?.cancel()
-        interruptDetectJob = serviceScope.launch {
-            var baselineTranscript = _uiState.value.userTranscript
-            while (true) {
-                delay(150)
-                if (_uiState.value.status != VoiceCallStatus.Speaking) break
-                if (!shouldListenToCall() || !hasMicrophone || !microphone.isListening) continue
-
-                val currentTranscript = _uiState.value.userTranscript
-                val amplitudes = _uiState.value.amplitudes
-                val recentAmplitude = amplitudes.takeLast(3).average().toFloat()
-
-                // 转写文本相较于进入 Speaking 时有新增内容, 或者音量突然超过阈值,
-                // 都视为"用户开始说话了"
-                val hasNewTranscript = currentTranscript.length > baselineTranscript.length + 1
-                val hasLoudVoice = recentAmplitude > 0.15f
-
-                if (hasNewTranscript || hasLoudVoice) {
-                    Log.d(
-                        TAG,
-                        "检测到用户打断, amplitude=$recentAmplitude"
-                    )
-                    interruptSpeaking()
-                    break
-                }
-            }
-        }
-    }
+    private fun startConversationMonitor() = turnOrchestrator.startConversationMonitor()
 
     /**
      * 用户打断 AI 说话 (Barge-in).
@@ -2483,7 +1520,7 @@ class VoiceCallService : Service(), KoinComponent {
     fun requestInterrupt() {
         // 视频通话：打断是"取消"动作，正在录/正在转写的那一段跟着作废（不发消息）。
         // 没有在录的时候什么都不做，避免每次打断都弹出"录音已取消"这种噪音提示。
-        if (videoMode && videoVoiceActive) {
+        if (videoMode && videoVoiceController.isActive) {
             cancelVideoVoiceInput("已打断，这一段录音没有发送")
         }
         when (_uiState.value.status) {
@@ -2598,12 +1635,7 @@ class VoiceCallService : Service(), KoinComponent {
         // 视频通话里的麦克风只切换免提：开麦后自动分段，静音时取消未发送的录音。
         // 语音通话保持原语义（连续采音的开/关）。
         if (videoMode) {
-            if (videoHandsFree) {
-                cancelVideoVoiceInput()
-            } else {
-                videoHandsFree = true
-                if (!videoVoice.isBusy) startVideoVoiceSegment()
-            }
+            videoVoiceController.toggleMuteInVideoMode()
             return
         }
         isMuted = !isMuted
@@ -2624,12 +1656,7 @@ class VoiceCallService : Service(), KoinComponent {
      * 转写中/发送中不动（那一段已经交给请求了）。语音通话不受影响。
      */
     fun muteForTyping() {
-        if (!videoMode || callEnded) return
-        // 去打字就是明确的"别再自动听着"：免提在这里关掉（转写中的那一段仍照常发完）。
-        videoHandsFree = false
-        if (videoVoice.status == VideoVoiceStatus.Recording) {
-            cancelVideoVoiceInput("已切换到打字：刚才那一段录音没有发送")
-        }
+        videoVoiceController.muteForTypingInVideoMode()
     }
 
     fun toggleVideoCamera() {
@@ -2742,12 +1769,7 @@ class VoiceCallService : Service(), KoinComponent {
         cancelVideoVoiceInput()
         resetVideoVoiceState()
         disposeVoiceRecorder()
-        // 先让这一轮彻底失效（等待抓帧/等待提交的旧任务会自己退出），再取消。
-        turnGate.invalidate()
-        turnJob?.cancel()
-        turnJob = null
-        // 挂断：这一轮的 token 与它发出的留影许可全部作废（下面 exitVideoCall 还会整体清一遍）。
-        endActiveRequestToken(cancelled = true)
+        turnOrchestrator.endCallCleanup(withdrawRequests = ::conversationId.isInitialized)
         // 初始化协程换代：旧 ASR/TTS 的恢复不许再影响任何后来的通话。
         initEpoch += 1
         initJob?.cancel()
@@ -2767,16 +1789,8 @@ class VoiceCallService : Service(), KoinComponent {
         VideoFrameStore.sweepStaleTransients(applicationContext)
         microphonePolicyJob?.cancel()
         microphonePolicyJob = null
-        activeVoiceMessage = null
         vadJob?.cancel()
-        speakingMonitorJob?.cancel()
-        conversationMonitorJob?.cancel()
         asrMonitorJob?.cancel()
-        interruptDetectJob?.cancel()
-        if (::conversationId.isInitialized) {
-            voiceRequestIds.toList().forEach { cancelCallRequest(it) }
-        }
-        voiceRequestIds.clear()
         // 挂断必须**释放**语音链路（不只是 stop）：否则被复用承载下一通电话时，
         // 旧 ASR 会被当成"这次已经建好"的链路，旧转写回调也可能串到新通话（REVIEW_R6 §2）。
         releaseAudioPipeline()
