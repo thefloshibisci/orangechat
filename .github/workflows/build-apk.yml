@@ -77,7 +77,7 @@ jobs:
         run: ./gradlew -I .github/gradle/robolectric-ci.gradle :search:testDebugUnitTest :workspace:testDebugUnitTest :terminal:testDebugUnitTest
 
       - name: Test app and AI regressions
-        run: ./gradlew -I .github/gradle/robolectric-ci.gradle :app:testDebugUnitTest :ai:testDebugUnitTest :speech:testDebugUnitTest :app:compileDebugAndroidTestKotlin
+        run: ./gradlew -I .github/gradle/robolectric-ci.gradle :plugin-localdata:testDebugUnitTest :video:testDebugUnitTest :reading:testDebugUnitTest :app:testDebugUnitTest :ai:testDebugUnitTest :speech:testDebugUnitTest :app:compileDebugAndroidTestKotlin
 
       - name: Test Image Atelier plugin regressions
         run: node --test plugins/image-atelier/tests/references.test.cjs

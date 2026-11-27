@@ -299,7 +299,8 @@ internal class VideoVoiceInputController(
     fun startSegment(interrupt: Boolean = true): Boolean {
         if (!host.videoMode || host.callEnded) return false
         val avail = availability()
-        if (!avail.enabled || avail.route == null) {
+        val route = avail.route
+        if (!avail.enabled || route == null) {
             handsFree = false
             // 不能点就必须说清原因（没权限/没能力/ASR 没配置），绝不显示"正在聆听"骗人。
             videoVoice = VideoVoiceUiState(
@@ -329,8 +330,8 @@ internal class VideoVoiceInputController(
         val segment = ++videoVoiceSegment
         videoVoiceStartedAt = host.videoVoiceNowMillis()
         videoVoiceStopRequested = false
-        videoVoiceRoute = avail.route
-        val started = when (avail.route) {
+        videoVoiceRoute = route
+        val started = when (route) {
             VideoVoiceRoute.DIRECT_AUDIO -> startDirectSegment(segment)
             VideoVoiceRoute.ASR -> startAsrSegment(segment)
         }

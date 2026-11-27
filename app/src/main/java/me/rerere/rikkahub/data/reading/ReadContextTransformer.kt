@@ -1,8 +1,5 @@
 package me.rerere.rikkahub.data.reading
 
-import kotlinx.serialization.json.buildJsonArray
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.put
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -52,49 +49,4 @@ class ReadContextTransformer(
             this[systemIndex] = system.copy(parts = system.parts + UIMessagePart.Text(prompt))
         }
     }
-}
-
-internal fun buildReadContext(snapshot: ReadSnapshot): String {
-    val chapter = snapshot.book.chapters.getOrNull(snapshot.progress.chapter) ?: return ""
-    val current = snapshot.progress.paragraph
-    if (current !in chapter.paragraphs.indices) return ""
-    val visible = snapshot.visibleParagraphs(snapshot.progress.chapter)
-    return buildJsonObject {
-        put("bookId", snapshot.book.id)
-        put("title", snapshot.book.title.readTake(160))
-        put("author", snapshot.book.author.readTake(160))
-        put("chapter", snapshot.progress.chapter)
-        put("chapterTitle", chapter.title.readTake(160))
-        put("paragraph", current)
-        put("character_offset", snapshot.progress.offset)
-        put("excerpts", buildJsonArray {
-            if (snapshot.viewport != null) {
-                var budget = 4000
-                for (fragment in snapshot.viewport.fragments.take(100)) {
-                    if (budget <= 0) break
-                    val source = chapter.paragraphs[fragment.paragraph].substring(fragment.start, fragment.end)
-                    val text = source.readTake(minOf(1500, budget))
-                    budget -= text.length
-                    add(buildJsonObject {
-                        put("paragraph", fragment.paragraph); put("start", fragment.start)
-                        put("end", fragment.start + text.length); put("text", text)
-                        put("truncated", text.length < source.length)
-                    })
-                }
-            } else {
-              if (current > 0) add(buildJsonObject {
-                put("paragraph", current - 1)
-                put("start", 0); put("end", visible[current - 1].readTake(800).length)
-                put("text", visible[current - 1].readTake(800))
-                put("truncated", visible[current - 1].length > 800)
-            })
-            add(buildJsonObject {
-                put("paragraph", current)
-                put("start", 0); put("end", visible[current].readTake(2000).length)
-                put("text", visible[current].readTake(2000))
-                put("truncated", visible[current].length > 2000)
-            })
-            }
-        })
-    }.toString().replace("<", "\\u003c").replace(">", "\\u003e")
 }

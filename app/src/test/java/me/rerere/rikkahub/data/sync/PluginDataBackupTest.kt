@@ -176,15 +176,15 @@ class PluginDataBackupTest {
 
         assertEquals(env.pluginId, contents.manifest.pluginId)
         assertNotNull(contents.localDataZip)
-        assertNotNull(contents.localTasksJson)
-        val payload = LocalTasksBackupCodec.decode(contents.localTasksJson!!)
+        val localTasksJson = checkNotNull(contents.localTasksJson)
+        val payload = LocalTasksBackupCodec.decode(localTasksJson)
         val ledger = payload.ledger!!
         val running = ledger.tasks.getValue("lt_running")
         assertEquals(LocalTaskState.INTERRUPTED, running.state)
         assertTrue(running.pendingReview.isEmpty())
         assertEquals(LocalTaskState.COMPLETED, ledger.tasks.getValue("lt_done").state)
-        assertFalse(contents.localTasksJson.contains("apiKey", ignoreCase = true))
-        assertFalse(contents.localTasksJson.contains("grant", ignoreCase = true))
+        assertFalse(localTasksJson.contains("apiKey", ignoreCase = true))
+        assertFalse(localTasksJson.contains("grant", ignoreCase = true))
     }
 
     @Test

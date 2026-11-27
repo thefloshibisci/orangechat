@@ -372,6 +372,9 @@ dependencies {
     implementation(project(":common"))
     implementation(project(":workspace"))
     implementation(project(":material3"))
+    implementation(project(":plugin-localdata"))
+    implementation(project(":video"))
+    implementation(project(":reading"))
     implementation(fileTree(mapOf("dir" to "libs", "include" to listOf("*.jar", "*.aar"))))
     implementation(kotlin("reflect"))
 
@@ -379,6 +382,7 @@ dependencies {
     // debugImplementation(libs.leakcanary.android)
 
     // tests
+    testImplementation(testFixtures(project(":plugin-localdata")))
     testImplementation(libs.junit)
     testImplementation(libs.androidx.ui.test.junit4)
     testImplementation("androidx.test:core:1.7.0")

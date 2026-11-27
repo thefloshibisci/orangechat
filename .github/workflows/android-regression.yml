@@ -10,6 +10,9 @@ on:
       - 'speech/**'
       - 'terminal/**'
       - 'workspace/**'
+      - 'plugin-localdata/**'
+      - 'video/**'
+      - 'reading/**'
       - 'web/**'
       - 'web-ui/**'
       - 'plugins/**'
@@ -61,7 +64,7 @@ jobs:
           node --test deploy/listen/test/listen.test.js deploy/listen/test/netease.test.js
           python3 -m unittest discover -s tools -p 'test_*.py'
       - name: Test regressions and compile device tests
-        run: bash gradlew -I .github/gradle/robolectric-ci.gradle :app:testDebugUnitTest :ai:testDebugUnitTest :speech:testDebugUnitTest :search:testDebugUnitTest :workspace:testDebugUnitTest :terminal:testDebugUnitTest :app:compileDebugAndroidTestKotlin
+        run: bash gradlew -I .github/gradle/robolectric-ci.gradle :plugin-localdata:testDebugUnitTest :video:testDebugUnitTest :reading:testDebugUnitTest :app:testDebugUnitTest :ai:testDebugUnitTest :speech:testDebugUnitTest :search:testDebugUnitTest :workspace:testDebugUnitTest :terminal:testDebugUnitTest :app:compileDebugAndroidTestKotlin
       - name: Build debug APK
         run: bash gradlew :app:assembleDebug -PorangechatAbis=arm64-v8a -PorangechatUniversalApk=false
       - uses: actions/upload-artifact@v4
@@ -69,6 +72,9 @@ jobs:
         with:
           name: android-regression-results
           path: |
+            plugin-localdata/build/reports/tests/
+            video/build/reports/tests/
+            reading/build/reports/tests/
             app/build/reports/tests/
             ai/build/reports/tests/
             app/build/outputs/apk/debug/*.apk

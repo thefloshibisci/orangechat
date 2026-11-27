@@ -43,5 +43,8 @@ include(":document")
 include(":web")
 include(":workspace")
 include(":material3")
+include(":plugin-localdata")
+include(":video")
+include(":reading")
 
 include(":terminal")
