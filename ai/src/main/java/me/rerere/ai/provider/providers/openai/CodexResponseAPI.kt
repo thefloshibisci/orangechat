@@ -67,6 +67,7 @@ class CodexStreamFailure(message: String) : IOException(message)
 private val CODEX_BEARER_REGEX = Regex("""Bearer\s+\S+""", RegexOption.IGNORE_CASE)
 private val CODEX_SK_KEY_REGEX = Regex("""sk-[A-Za-z0-9_-]+""")
 private val CODEX_JWT_REGEX = Regex("""eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)?""")
+private val CODEX_RT_TOKEN_REGEX = Regex("""rt_[A-Za-z0-9._-]+""")
 private val CODEX_URL_REGEX = Regex("""https?://\S+""", RegexOption.IGNORE_CASE)
 private val CODEX_CONTROL_REGEX = Regex("""[\r\n\t\u0000-\u001F\u007F]+""")
 private val HTML_TITLE_REGEX = Regex("""<title[^>]*>(.*?)</title>""", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
@@ -77,6 +78,7 @@ internal fun sanitizeCodexErrorDetail(raw: String?): String? {
         .replace(CODEX_BEARER_REGEX, "[redacted]")
         .replace(CODEX_SK_KEY_REGEX, "[redacted]")
         .replace(CODEX_JWT_REGEX, "[redacted]")
+        .replace(CODEX_RT_TOKEN_REGEX, "[redacted]")
         .replace(CODEX_URL_REGEX, "[url]")
         .replace(CODEX_CONTROL_REGEX, " ")
         .replace(Regex("""\s{2,}"""), " ")
@@ -137,7 +139,15 @@ internal fun extractCodexStructuredError(obj: JsonObject): String? {
     }
     val errorObj = obj["error"]?.jsonObjectOrNull
         ?: obj["response"]?.jsonObjectOrNull?.get("error")?.jsonObjectOrNull
+    val oauthError = obj["error"]?.jsonPrimitiveOrNull?.takeIf { it.isString }?.contentOrNull
+        ?.takeIf { it.isNotBlank() }
+    val oauthDesc = obj["error_description"]?.jsonPrimitiveOrNull?.takeIf { it.isString }?.contentOrNull
+        ?.takeIf { it.isNotBlank() }
+    val oauthCandidate = oauthError?.let { code ->
+        if (oauthDesc != null) "[$code] $oauthDesc" else "[$code]"
+    }
     val candidate = errorObj?.let(::formatErrorObj)
+        ?: oauthCandidate
         ?: obj["response"]?.jsonObjectOrNull?.get("incomplete_details")?.jsonObjectOrNull
             ?.get("reason")?.jsonPrimitiveOrNull?.contentOrNull
         ?: obj["detail"]?.jsonPrimitiveOrNull?.contentOrNull

@@ -306,4 +306,16 @@ class CodexResponseAPITest {
         assertTrue(nonJsonErr is CodexStreamFailure)
         assertFalse(nonJsonErr!!.message.orEmpty().contains("secret-non-json") || nonJsonErr.message.orEmpty().contains("sk-secret456"))
     }
+
+    @Test fun `rfc6749 oauth error json extracts code and redacts rt tokens`() {
+        val detail = extractCodexHttpErrorDetail(
+            cfMitigated = null,
+            contentType = "application/json",
+            bodyText = """{"error":"invalid_grant","error_description":"Refresh token rt_secret123 expired"}""",
+        )
+        assertNotNull(detail)
+        assertTrue(detail!!, detail.contains("invalid_grant"))
+        assertFalse(detail, detail.contains("rt_secret123"))
+        assertTrue(detail, detail.contains("[redacted]"))
+    }
 }

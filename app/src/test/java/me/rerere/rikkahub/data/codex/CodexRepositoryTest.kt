@@ -144,10 +144,30 @@ class CodexRepositoryTest {
         for (code in listOf(400, 500)) {
             val store = MemoryStore(CodexAccountState(listOf(account())))
             val repo = CodexAccountRepository(store, client(code, """{"error":"invalid_grant"}"""), Json)
-            assertTrue(runCatching { repo.acquireAccount() }.isFailure)
+            val err = runCatching { repo.acquireAccount() }.exceptionOrNull()
+            assertTrue(err is me.rerere.ai.provider.providers.openai.CodexHttpFailure)
+            assertEquals(code, (err as me.rerere.ai.provider.providers.openai.CodexHttpFailure).code)
+            assertTrue(err.message.orEmpty().contains("invalid_grant"))
             assertEquals(code == 400, repo.accounts.value.single().tokenStatus == CodexTokenStatus.INVALID)
             assertEquals("old-refresh", store.state.accounts.single().refreshToken)
         }
+    }
+
+    @Test fun `cloudflare 403 refresh surfaces structured CodexHttpFailure without dropping login`() = runBlocking {
+        val cfClient = OkHttpClient.Builder().addInterceptor { chain ->
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(403).message("Forbidden")
+                .header("cf-mitigated", "challenge")
+                .body("<!DOCTYPE html><html><title>Just a moment</title><body>Cloudflare</body></html>".toResponseBody("text/html".toMediaType()))
+                .build()
+        }.build()
+        val store = MemoryStore(CodexAccountState(listOf(account())))
+        val repo = CodexAccountRepository(store, cfClient, Json)
+        val err = runCatching { repo.acquireAccount() }.exceptionOrNull()
+        assertTrue(err is me.rerere.ai.provider.providers.openai.CodexHttpFailure)
+        val msg = err!!.message.orEmpty()
+        assertTrue(msg, msg.contains("403") && msg.contains("Cloudflare"))
+        assertEquals(CodexTokenStatus.EXPIRED, repo.accounts.value.single().tokenStatus)
+        assertEquals("old-refresh", store.state.accounts.single().refreshToken)
     }
 
     @Test fun `malformed token response never exposes body in exception chain`() = runBlocking {

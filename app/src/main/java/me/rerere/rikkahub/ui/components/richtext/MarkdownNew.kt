@@ -102,13 +102,16 @@ fun MarkdownNew(
     }
 
     ProvideTextStyle(style) {
-        Column(modifier = modifier.padding(start = 4.dp)) {
+        Column(modifier = modifier.padding(horizontal = 4.dp)) {
             parsed.body().childNodes().fastForEach { node ->
                 HtmlBodyNode(node = node, onClickCitation = onClickCitation)
             }
         }
     }
 }
+
+private fun TextAlign.requiresFillMaxWidth(): Boolean =
+    this == TextAlign.Center || this == TextAlign.Right || this == TextAlign.End || this == TextAlign.Justify
 
 // ---- Node dispatching ----
 
@@ -230,7 +233,8 @@ private fun HtmlBlockElement(
         "progress" -> HtmlProgress(element = element)
 
         "div" -> HtmlStyledElement(element = element) {
-            Column(modifier = Modifier.fillMaxWidth()) {
+            val needsFillWidth = LocalTextStyle.current.textAlign.requiresFillMaxWidth()
+            Column(modifier = if (needsFillWidth) Modifier.fillMaxWidth() else Modifier) {
                 element.childNodes().fastForEach { HtmlBodyNode(it, onClickCitation) }
             }
         }
@@ -285,7 +289,7 @@ private fun HtmlParagraphContent(
     if (hasImages || hasBlockMath) {
         // Mixed block content: render children individually in a FlowRow
         FlowRow(
-            modifier = modifier.fillMaxWidth(),
+            modifier = if (hasBlockMath) modifier.fillMaxWidth() else modifier,
             itemVerticalAlignment = Alignment.CenterVertically,
         ) {
             element.childNodes().fastForEach { child ->
@@ -325,12 +329,13 @@ private fun HtmlParagraphContent(
         text to contents
     }
 
+    val needsFillWidth = textStyle.textAlign.requiresFillMaxWidth()
     Text(
         text = annotatedString,
         inlineContent = inlineContents,
         softWrap = true,
         overflow = TextOverflow.Visible,
-        modifier = modifier.fillMaxWidth(),
+        modifier = if (needsFillWidth) modifier.fillMaxWidth() else modifier,
         style = textStyle.copy(
             lineHeight = if (hasInlineMath && enableLatexRendering)
                 TextUnit.Unspecified

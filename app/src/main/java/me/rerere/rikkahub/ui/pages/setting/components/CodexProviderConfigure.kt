@@ -16,6 +16,8 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import me.rerere.ai.provider.ProviderManager
 import me.rerere.ai.provider.ProviderSetting
+import me.rerere.ai.provider.providers.openai.CodexHttpFailure
+import me.rerere.ai.provider.providers.openai.CodexStreamFailure
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.codex.*
 import org.koin.compose.koinInject
@@ -55,7 +57,13 @@ fun CodexProviderConfigure(provider: ProviderSetting.Codex, onEdit: (ProviderSet
         if (status is CodexOAuthStatus.Success) {
             feedback = "ChatGPT 登录成功"
             try { loadModels() } catch (e: CancellationException) { throw e }
-            catch (_: Exception) { feedback = "登录成功，模型获取失败；请点击刷新模型重试" }
+            catch (e: Exception) {
+                feedback = if (e is CodexHttpFailure || e is CodexStreamFailure) {
+                    "登录成功，但获取模型失败：${e.message}"
+                } else {
+                    "登录成功，模型获取失败；请点击刷新模型重试"
+                }
+            }
             oauth.consumeResult()
         }
     }
@@ -129,7 +137,14 @@ fun CodexProviderConfigure(provider: ProviderSetting.Codex, onEdit: (ProviderSet
                 OutlinedButton(enabled = !busy, onClick = { scope.launch {
                     busy = true
                     try { repository.refreshAccount(account.id); feedback = "额度已更新" }
-                    catch (e: CancellationException) { throw e } catch (_: Exception) { feedback = "额度获取失败；请检查登录和网络" }
+                    catch (e: CancellationException) { throw e }
+                    catch (e: Exception) {
+                        feedback = if (e is CodexHttpFailure || e is CodexStreamFailure) {
+                            "额度获取失败：${e.message}"
+                        } else {
+                            "额度获取失败；请检查登录和网络"
+                        }
+                    }
                     finally { busy = false }
                 } }) { Text("刷新额度") }
                 TextButton(enabled = !busy, onClick = { scope.launch {
@@ -142,7 +157,13 @@ fun CodexProviderConfigure(provider: ProviderSetting.Codex, onEdit: (ProviderSet
         if (accounts.isNotEmpty()) OutlinedButton(enabled = !busy, onClick = { scope.launch {
             busy = true
             try { loadModels() } catch (e: CancellationException) { throw e }
-            catch (_: Exception) { feedback = "模型获取失败，请检查登录和网络" }
+            catch (e: Exception) {
+                feedback = if (e is CodexHttpFailure || e is CodexStreamFailure) {
+                    "模型获取失败：${e.message}"
+                } else {
+                    "模型获取失败，请检查登录和网络"
+                }
+            }
             finally { busy = false }
         } }) { Text("刷新模型") }
         feedback?.let { Text(it, style = MaterialTheme.typography.bodySmall) }

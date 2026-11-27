@@ -16,10 +16,15 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import me.rerere.ai.provider.providers.openai.CodexHttpFailure
+import me.rerere.ai.provider.providers.openai.CodexResponseAPI
+import me.rerere.ai.provider.providers.openai.CodexStreamFailure
+import me.rerere.ai.provider.providers.openai.extractCodexHttpErrorDetail
 import me.rerere.common.http.await
 import okhttp3.FormBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import java.io.IOException
 
 class CodexAccountRepository internal constructor(
     private val store: CodexAccountStore,
@@ -55,11 +60,21 @@ class CodexAccountRepository internal constructor(
             ensureLoadedLocked()
             kotlinx.coroutines.currentCoroutineContext().ensureActive()
             val token = json.parseToJsonElement(tokenJson).jsonObject
-            val identity = parseCodexIdentity(
-                idToken = token["id_token"]?.jsonPrimitive?.contentOrNull
-                    ?: error("Missing ID token"),
-                json = json,
-            )
+            val idToken = token["id_token"]?.jsonPrimitive?.contentOrNull
+                ?: throw CodexStreamFailure("登录响应缺少 id_token")
+            val identity = try {
+                parseCodexIdentity(idToken = idToken, json = json)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: CodexHttpFailure) {
+                throw e
+            } catch (e: CodexStreamFailure) {
+                throw e
+            } catch (_: Exception) {
+                throw CodexStreamFailure("登录响应缺少 ChatGPT 账号标识")
+            }
+            val accessToken = token["access_token"]?.jsonPrimitive?.contentOrNull
+                ?: throw CodexStreamFailure("登录响应缺少 access_token")
             val now = System.currentTimeMillis()
             val existing = state.accounts.firstOrNull {
                 it.chatgptAccountId == identity.accountId &&
@@ -75,11 +90,10 @@ class CodexAccountRepository internal constructor(
                 name = identity.name,
                 email = identity.email,
                 chatgptAccountId = identity.accountId,
-                accessToken = token["access_token"]?.jsonPrimitive?.contentOrNull
-                    ?: error("Missing access token"),
+                accessToken = accessToken,
                 refreshToken = token["refresh_token"]?.jsonPrimitive?.contentOrNull
                     ?: existing?.refreshToken
-                    ?: error("Missing refresh token"),
+                    ?: throw CodexStreamFailure("登录响应缺少 refresh_token"),
                 expiresAt = now + (
                     token["expires_in"]?.jsonPrimitive?.contentOrNull?.toLongOrNull() ?: 3600L
                     ) * 1000,
@@ -87,11 +101,17 @@ class CodexAccountRepository internal constructor(
                 tokenStatus = CodexTokenStatus.AVAILABLE,
                 usage = existing?.usage,
             )
-            updateState(
-                state.copy(
-                    accounts = state.accounts.filterNot { it.id == account.id } + account
+            try {
+                updateState(
+                    state.copy(
+                        accounts = state.accounts.filterNot { it.id == account.id } + account
+                    )
                 )
-            )
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                throw CodexStreamFailure("无法保存本机 Codex 凭据")
+            }
             account
         }
     }
@@ -106,13 +126,24 @@ class CodexAccountRepository internal constructor(
                     java.util.UUID.nameUUIDFromBytes("$affinityKey:${state.accounts[index].id}".toByteArray()).toString()
                 }
             } else state.accounts.indices.map { (it + state.nextAccountIndex).mod(state.accounts.size) }
+            var lastRefreshError: Exception? = null
             for (index in candidates) {
                 val candidate = state.accounts[index]
                 if (!candidate.isAvailable()) continue
-                val fresh = try { ensureFreshLocked(candidate) } catch (e: CancellationException) { throw e } catch (_: Exception) { null } ?: continue
+                val fresh = try {
+                    ensureFreshLocked(candidate)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    lastRefreshError = e
+                    null
+                } ?: continue
                 // Rotation position is ephemeral; do not rewrite encrypted credentials on every request.
                 state = state.copy(nextAccountIndex = (index + 1) % state.accounts.size)
                 return@withLock fresh
+            }
+            if (lastRefreshError is CodexHttpFailure || lastRefreshError is CodexStreamFailure) {
+                throw lastRefreshError
             }
             error("No available Codex account")
         }
@@ -195,26 +226,43 @@ class CodexAccountRepository internal constructor(
         // Refresh tokens can rotate server-side before cancellation arrives. Finish consuming
         // and persisting the replacement under the mutex, with a bounded timeout.
         return withContext(NonCancellable + Dispatchers.IO) { withTimeout(60_000) {
-        val response = withContext(Dispatchers.IO) {
-            val body = FormBody.Builder()
-                .add("grant_type", "refresh_token")
-                .add("client_id", CodexOAuthManager.CLIENT_ID)
-                .add("refresh_token", account.refreshToken)
-                .add("scope", CodexOAuthManager.REFRESH_SCOPES)
-                .build()
-            client.newCall(
-                Request.Builder()
-                    .url(CodexOAuthManager.TOKEN_URL)
-                    .post(body)
+        val response = try {
+            withContext(Dispatchers.IO) {
+                val body = FormBody.Builder()
+                    .add("grant_type", "refresh_token")
+                    .add("client_id", CodexOAuthManager.CLIENT_ID)
+                    .add("refresh_token", account.refreshToken)
+                    .add("scope", CodexOAuthManager.REFRESH_SCOPES)
                     .build()
-            ).await()
+                client.newCall(
+                    Request.Builder()
+                        .url(CodexOAuthManager.TOKEN_URL)
+                        .header("User-Agent", CodexResponseAPI.USER_AGENT)
+                        .header("Accept", "application/json")
+                        .header("originator", "codex_cli_rs")
+                        .post(body)
+                        .build()
+                ).await()
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: IOException) {
+            if (e is CodexHttpFailure || e is CodexStreamFailure) throw e
+            val errName = e.javaClass.simpleName.takeIf { it.isNotBlank() } ?: "IOException"
+            throw CodexStreamFailure("Codex Token 刷新网络连接失败（$errName）；请检查代理/VPN 或网络状态")
         }
         val responseBody = response.body.string()
-        if (!response.isSuccessful) {
-            if (isCodexRefreshAuthenticationFailure(response.code, responseBody, json)) {
+        val cfMitigated = response.header("cf-mitigated")
+        val contentType = response.header("Content-Type")
+        val code = response.code
+        val ok = response.isSuccessful
+        response.close()
+        if (!ok) {
+            if (isCodexRefreshAuthenticationFailure(code, responseBody, json)) {
                 replaceAccount(account.id) { it.copy(tokenStatus = CodexTokenStatus.INVALID) }
             }
-            error("Token refresh failed: ${response.code}")
+            val detail = extractCodexHttpErrorDetail(cfMitigated, contentType, responseBody)
+            throw CodexHttpFailure(code, detail)
         }
         val token = json.parseToJsonElement(responseBody).jsonObject
         val updated = account.copy(
@@ -233,21 +281,37 @@ class CodexAccountRepository internal constructor(
     }
 
     private suspend fun fetchUsageLocked(account: CodexAccount, retryUnauthorized: Boolean = true): CodexAccount {
-        val response = withContext(Dispatchers.IO) {
-            client.newCall(
-                Request.Builder()
-                    .url("$CODEX_BASE_URL/wham/usage")
-                    .codexHeaders(account)
-                    .get()
-                    .build()
-            ).await()
+        val response = try {
+            withContext(Dispatchers.IO) {
+                client.newCall(
+                    Request.Builder()
+                        .url("$CODEX_BASE_URL/wham/usage")
+                        .codexHeaders(account)
+                        .get()
+                        .build()
+                ).await()
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: IOException) {
+            if (e is CodexHttpFailure || e is CodexStreamFailure) throw e
+            val errName = e.javaClass.simpleName.takeIf { it.isNotBlank() } ?: "IOException"
+            throw CodexStreamFailure("Codex 额度查询网络连接失败（$errName）；请检查代理/VPN 或网络状态")
         }
         if (!response.isSuccessful) {
+            val code = response.code
+            val detail = runCatching {
+                extractCodexHttpErrorDetail(
+                    response.header("cf-mitigated"),
+                    response.header("Content-Type"),
+                    response.peekBody(4096L).string(),
+                )
+            }.getOrNull()
             response.close()
-            if (response.code == 401 && retryUnauthorized) {
+            if (code == 401 && retryUnauthorized) {
                 return fetchUsageLocked(ensureFreshLocked(account, force = true), retryUnauthorized = false)
             }
-            error("Failed to fetch Codex usage: ${response.code}")
+            throw CodexHttpFailure(code, detail)
         }
         val usage = parseCodexUsage(json.parseToJsonElement(response.body.string()).jsonObject)
         val updated = account.copy(
@@ -262,6 +326,7 @@ class CodexAccountRepository internal constructor(
         return addHeader("Authorization", "Bearer ${account.accessToken}")
             .addHeader("ChatGPT-Account-Id", account.chatgptAccountId)
             .addHeader("originator", "codex_cli_rs")
+            .addHeader("User-Agent", CodexResponseAPI.USER_AGENT)
             .addHeader("Accept", "application/json")
     }
 

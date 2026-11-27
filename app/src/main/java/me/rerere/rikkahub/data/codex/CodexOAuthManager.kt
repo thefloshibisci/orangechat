@@ -16,12 +16,17 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.serialization.json.*
+import me.rerere.ai.provider.providers.openai.CodexHttpFailure
+import me.rerere.ai.provider.providers.openai.CodexResponseAPI
+import me.rerere.ai.provider.providers.openai.CodexStreamFailure
+import me.rerere.ai.provider.providers.openai.extractCodexHttpErrorDetail
 import me.rerere.common.http.await
 import okhttp3.FormBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
+import java.io.IOException
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.Base64
@@ -37,6 +42,13 @@ class CodexOAuthManager(
     val status = mutableStatus.asStateFlow()
     private var job: Job? = null
 
+    private data class HttpResult(
+        val code: Int,
+        val body: String,
+        val cfMitigated: String?,
+        val contentType: String?,
+    )
+
     fun startLogin(device: Boolean = true) {
         if (job?.isActive == true) return
         mutableStatus.value = CodexOAuthStatus.Waiting()
@@ -50,8 +62,13 @@ class CodexOAuthManager(
                 mutableStatus.value = CodexOAuthStatus.Error("登录已超时，请重试")
             } catch (e: CancellationException) {
                 throw e
-            } catch (_: Exception) {
-                mutableStatus.value = CodexOAuthStatus.Error("登录未完成；请检查网络，或开启 ChatGPT 安全设置中的设备码登录后重试")
+            } catch (e: CodexHttpFailure) {
+                mutableStatus.value = CodexOAuthStatus.Error(e.message ?: "Codex 登录请求失败（HTTP ${e.code}）")
+            } catch (e: CodexStreamFailure) {
+                mutableStatus.value = CodexOAuthStatus.Error(e.message ?: "Codex 登录连接失败；请检查代理/VPN")
+            } catch (e: Exception) {
+                val errName = e.javaClass.simpleName.takeIf { it.isNotBlank() } ?: "Exception"
+                mutableStatus.value = CodexOAuthStatus.Error("登录未完成（$errName）；请检查网络、代理节点或设备码登录设置后重试")
             }
         }
     }
@@ -69,14 +86,45 @@ class CodexOAuthManager(
         context.openCodexAuthBrowser(url)
     }
 
-    private suspend fun postJson(url: String, body: JsonObject): Pair<Int, String> = client.newCall(
-        Request.Builder().url(url).post(body.toString().toRequestBody("application/json".toMediaType())).build()
-    ).await().use { it.code to it.body.string() }
+    private suspend fun postJson(url: String, body: JsonObject): HttpResult {
+        val request = Request.Builder()
+            .url(url)
+            .header("User-Agent", CodexResponseAPI.USER_AGENT)
+            .header("Accept", "application/json")
+            .header("originator", "codex_cli_rs")
+            .post(body.toString().toByteArray(Charsets.UTF_8).toRequestBody("application/json".toMediaType()))
+            .build()
+        return try {
+            client.newCall(request).await().use { response ->
+                HttpResult(
+                    code = response.code,
+                    body = response.body.string(),
+                    cfMitigated = response.header("cf-mitigated"),
+                    contentType = response.header("Content-Type"),
+                )
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: IOException) {
+            if (e is CodexHttpFailure || e is CodexStreamFailure) throw e
+            val errName = e.javaClass.simpleName.takeIf { it.isNotBlank() } ?: "IOException"
+            throw CodexStreamFailure("Codex 登录网络连接失败（$errName）；请检查代理/VPN 或网络状态")
+        }
+    }
 
     private suspend fun deviceLogin(): CodexAccount {
-        val (statusCode, body) = postJson("$DEVICE_API/usercode", buildJsonObject { put("client_id", CLIENT_ID) })
-        check(statusCode in 200..299)
-        val device = json.parseToJsonElement(body).jsonObject
+        val res = postJson("$DEVICE_API/usercode", buildJsonObject { put("client_id", CLIENT_ID) })
+        if (res.code !in 200..299) {
+            val rawDetail = extractCodexHttpErrorDetail(res.cfMitigated, res.contentType, res.body)
+            val combinedDetail = if (res.code in setOf(403, 404) && !rawDetail.orEmpty().contains("Cloudflare", ignoreCase = true)) {
+                if (rawDetail != null) "$rawDetail；请确认已在 ChatGPT 安全设置中开启设备码登录"
+                else "请确认已在 ChatGPT 安全设置中开启设备码登录"
+            } else {
+                rawDetail
+            }
+            throw CodexHttpFailure(res.code, combinedDetail)
+        }
+        val device = json.parseToJsonElement(res.body).jsonObject
         val authId = device.getValue("device_auth_id").jsonPrimitive.content
         val userCode = (device["user_code"] ?: device.getValue("usercode")).jsonPrimitive.content
         val interval = (device["interval"]?.jsonPrimitive?.content?.toLongOrNull() ?: 5L).coerceIn(1, 60)
@@ -84,15 +132,27 @@ class CodexOAuthManager(
         // Show the code before opening the browser; the user explicitly opens it from the settings card.
         while (currentCoroutineContext().isActive) {
             delay(interval * 1000)
-            val (code, result) = postJson("$DEVICE_API/token", buildJsonObject {
+            val poll = postJson("$DEVICE_API/token", buildJsonObject {
                 put("device_auth_id", authId)
                 put("user_code", userCode)
             })
-            if (code == 403 || code == 404) continue
-            check(code in 200..299)
-            val token = json.parseToJsonElement(result).jsonObject
-            return exchangeCode(token.getValue("authorization_code").jsonPrimitive.content,
-                token.getValue("code_verifier").jsonPrimitive.content, "https://auth.openai.com/deviceauth/callback")
+            if (poll.code == 403 || poll.code == 404) continue
+            if (poll.code == 429) {
+                delay(interval * 1000)
+                continue
+            }
+            if (poll.code !in 200..299) {
+                throw CodexHttpFailure(
+                    poll.code,
+                    extractCodexHttpErrorDetail(poll.cfMitigated, poll.contentType, poll.body),
+                )
+            }
+            val token = json.parseToJsonElement(poll.body).jsonObject
+            return exchangeCode(
+                token.getValue("authorization_code").jsonPrimitive.content,
+                token.getValue("code_verifier").jsonPrimitive.content,
+                "https://auth.openai.com/deviceauth/callback",
+            )
         }
         throw CancellationException()
     }
@@ -113,7 +173,15 @@ class CodexOAuthManager(
                         call.respondText("Invalid OAuth state", status = HttpStatusCode.BadRequest)
                     } else if (query["error"] != null || query["code"].isNullOrBlank()) {
                         call.respondText("Sign-in failed. Return to OrangeChat.")
-                        callback.completeExceptionally(IllegalStateException("OAuth authorization declined"))
+                        val errCode = query["error"]
+                            ?.filter { it.isLetterOrDigit() || it == '_' || it == '-' }
+                            ?.take(48)
+                            ?.takeIf { it.isNotBlank() }
+                        callback.completeExceptionally(
+                            CodexStreamFailure(
+                                errCode?.let { "ChatGPT 浏览器授权被拒绝（$it）" } ?: "ChatGPT 浏览器授权未返回授权码"
+                            )
+                        )
                     } else {
                         call.respondText("<html lang='zh-CN'><meta charset='utf-8'><meta name=viewport content='width=device-width'><title>西瓜瓣</title><p>授权已收到，请关闭此页并返回西瓜瓣查看登录结果。</p></html>", ContentType.Text.Html)
                         callback.complete(query["code"]!!)
@@ -122,7 +190,14 @@ class CodexOAuthManager(
             }
         }
         try {
-            server.start(wait = false)
+            try {
+                server.start(wait = false)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                val errName = e.javaClass.simpleName.takeIf { it.isNotBlank() } ?: "Exception"
+                throw CodexStreamFailure("本地回调端口 1455 启动失败（$errName）；请稍后重试或改用设备码登录")
+            }
             val uri = Uri.parse(AUTHORIZE_URL).buildUpon()
                 .appendQueryParameter("response_type", "code")
                 .appendQueryParameter("client_id", CLIENT_ID)
@@ -134,21 +209,56 @@ class CodexOAuthManager(
                 .appendQueryParameter("id_token_add_organizations", "true")
                 .appendQueryParameter("codex_cli_simplified_flow", "true")
                 .appendQueryParameter("originator", "codex_cli_rs").build()
-            withContext(Dispatchers.Main) { openBrowser(uri.toString()) }
+            try {
+                withContext(Dispatchers.Main) { openBrowser(uri.toString()) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                val errName = e.javaClass.simpleName.takeIf { it.isNotBlank() } ?: "Exception"
+                throw CodexStreamFailure("无法打开浏览器完成授权（$errName）；请确认系统浏览器可用或改用设备码登录")
+            }
             return exchangeCode(callback.await(), verifier, redirect)
         } finally {
-            server.stop(0, 500)
+            runCatching { server.stop(0, 500) }
         }
     }
 
     private suspend fun exchangeCode(code: String, verifier: String, redirect: String): CodexAccount {
-        val body = client.newCall(Request.Builder().url(TOKEN_URL).post(FormBody.Builder()
-            .add("grant_type", "authorization_code").add("client_id", CLIENT_ID)
-            .add("code", code).add("code_verifier", verifier).add("redirect_uri", redirect).build()).build())
-            .await().use { response ->
-                check(response.isSuccessful) { "Token exchange failed" }
-                response.body.string()
+        val request = Request.Builder()
+            .url(TOKEN_URL)
+            .header("User-Agent", CodexResponseAPI.USER_AGENT)
+            .header("Accept", "application/json")
+            .header("originator", "codex_cli_rs")
+            .post(
+                FormBody.Builder()
+                    .add("grant_type", "authorization_code")
+                    .add("client_id", CLIENT_ID)
+                    .add("code", code)
+                    .add("code_verifier", verifier)
+                    .add("redirect_uri", redirect)
+                    .build()
+            )
+            .build()
+        val body = try {
+            client.newCall(request).await().use { response ->
+                val responseBody = response.body.string()
+                if (!response.isSuccessful) {
+                    val detail = extractCodexHttpErrorDetail(
+                        response.header("cf-mitigated"),
+                        response.header("Content-Type"),
+                        responseBody,
+                    )
+                    throw CodexHttpFailure(response.code, detail)
+                }
+                responseBody
             }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: IOException) {
+            if (e is CodexHttpFailure || e is CodexStreamFailure) throw e
+            val errName = e.javaClass.simpleName.takeIf { it.isNotBlank() } ?: "IOException"
+            throw CodexStreamFailure("Codex 换取登录凭据网络连接失败（$errName）；请检查代理/VPN 或网络状态")
+        }
         currentCoroutineContext().ensureActive()
         return repository.saveLogin(body)
     }
